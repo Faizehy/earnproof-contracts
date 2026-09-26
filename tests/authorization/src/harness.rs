@@ -262,6 +262,7 @@ impl Deployment<'_> {
                 &self.issuer,
                 &APPROVED_SCHEMA,
                 &expires_at,
+                &None::<BytesN<32>>,
             )
                 .into_val(&self.env),
         );
@@ -271,6 +272,7 @@ impl Deployment<'_> {
             &self.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
+            &None,
         );
         proof_id
     }

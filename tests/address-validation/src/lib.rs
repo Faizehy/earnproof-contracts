@@ -95,7 +95,7 @@ mod tests {
             &Address::from_str(&env, ZERO_ADDR),
             &1,
             &1_000,
-        );
+         &None,);
         assert_eq!(result, Err(Ok(ProofError::InvalidAddress)));
 
         let self_result = proof_client.try_register_proof(
@@ -104,7 +104,7 @@ mod tests {
             &proof_id,
             &1,
             &1_000,
-        );
+         &None,);
         assert_eq!(self_result, Err(Ok(ProofError::InvalidAddress)));
     }
 

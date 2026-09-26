@@ -217,7 +217,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &initial_dep.issuer,
         &1,
         &FAR_FUTURE,
-    );
+     &None,);
     observed.record(
         "proof-registry duplicate proof id",
         code(initial_dep.proofs.try_register_proof(
@@ -226,7 +226,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &initial_dep.issuer,
             &1,
             &FAR_FUTURE,
-        )),
+         &None,)),
     );
     observed.record(
         "proof-registry get unknown proof",
@@ -245,7 +245,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &initial_dep.issuer,
             &1,
             &0,
-        )),
+         &None,)),
     );
     observed.record(
         "proof-registry schema version zero",
@@ -255,7 +255,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &initial_dep.issuer,
             &0,
             &FAR_FUTURE,
-        )),
+         &None,)),
     );
     observed.record(
         "proof-registry unapproved schema version",
@@ -265,7 +265,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &initial_dep.issuer,
             &7,
             &FAR_FUTURE,
-        )),
+         &None,)),
     );
 
     // New precondition codes (307-309): drive a real failure path for each.
@@ -281,7 +281,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &deployment2.issuer,
             &1,
             &FAR_FUTURE,
-        )),
+         &None,)),
     );
 
     // 308: IssuerInactive — suspend the issuer then attempt registration.
@@ -296,7 +296,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &deployment3.issuer,
             &1,
             &FAR_FUTURE,
-        )),
+         &None,)),
     );
 
     // 309: UnsupportedSchema — use an unapproved schema version on a live contract.
@@ -310,6 +310,73 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &deployment4.issuer,
             &7,
             &FAR_FUTURE,
+         &None,)),
+    );
+
+    // 311: CyclicSupersession - register a proof succeeding itself
+    let deployment_cyclic = deployment();
+    let env_cyclic = &deployment_cyclic.env;
+    observed.record(
+        "proof-registry cyclic supersession",
+        code(deployment_cyclic.proofs.try_register_proof(
+            &bytes32(env_cyclic, 70),
+            &bytes32(env_cyclic, 71),
+            &deployment_cyclic.issuer,
+            &1,
+            &FAR_FUTURE,
+            &Some(bytes32(env_cyclic, 70)),
+        )),
+    );
+
+    // 312: CrossIssuerSupersession - register a proof succeeding one from another issuer
+    let deployment_cross = deployment();
+    let env_cross = &deployment_cross.env;
+    let issuer_cross = Address::generate(env_cross);
+    deployment_cross.issuers.register_issuer(&bytes32(env_cross, 80), &issuer_cross, &bytes32(env_cross, 81), &bytes32(env_cross, 82));
+    deployment_cross.proofs.register_proof(&bytes32(env_cross, 83), &bytes32(env_cross, 84), &deployment_cross.issuer, &1, &FAR_FUTURE, &None);
+    observed.record(
+        "proof-registry cross issuer supersession",
+        code(deployment_cross.proofs.try_register_proof(
+            &bytes32(env_cross, 85),
+            &bytes32(env_cross, 86),
+            &issuer_cross,
+            &1,
+            &FAR_FUTURE,
+            &Some(bytes32(env_cross, 83)),
+        )),
+    );
+
+    // 313: PredecessorNotFound - register a proof succeeding one that doesn't exist
+    let deployment_missing = deployment();
+    let env_missing = &deployment_missing.env;
+    observed.record(
+        "proof-registry predecessor not found",
+        code(deployment_missing.proofs.try_register_proof(
+            &bytes32(env_missing, 90),
+            &bytes32(env_missing, 91),
+            &deployment_missing.issuer,
+            &1,
+            &FAR_FUTURE,
+            &Some(bytes32(env_missing, 92)),
+        )),
+    );
+
+    // 314: TooManySuccessors - register a proof succeeding one that already has 5 successors
+    let deployment_many = deployment();
+    let env_many = &deployment_many.env;
+    deployment_many.proofs.register_proof(&bytes32(env_many, 100), &bytes32(env_many, 101), &deployment_many.issuer, &1, &FAR_FUTURE, &None);
+    for i in 1..=5 {
+        deployment_many.proofs.register_proof(&bytes32(env_many, 100 + i), &bytes32(env_many, 200 + i), &deployment_many.issuer, &1, &FAR_FUTURE, &Some(bytes32(env_many, 100)));
+    }
+    observed.record(
+        "proof-registry too many successors",
+        code(deployment_many.proofs.try_register_proof(
+            &bytes32(env_many, 110),
+            &bytes32(env_many, 111),
+            &deployment_many.issuer,
+            &1,
+            &FAR_FUTURE,
+            &Some(bytes32(env_many, 100)),
         )),
     );
 
@@ -351,7 +418,7 @@ fn a_paused_protocol_is_reported_as_contract_paused() {
         &deployment.issuer,
         &1,
         &FAR_FUTURE,
-    );
+     &None,);
 
     assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
     assert_ne!(
@@ -380,7 +447,7 @@ fn a_suspended_issuer_is_reported_as_issuer_inactive() {
         &suspended,
         &1,
         &FAR_FUTURE,
-    );
+     &None,);
 
     assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
     assert_ne!(
@@ -404,7 +471,7 @@ fn an_uninitialized_proof_registry_reports_proof_not_found_and_writes_nothing() 
         &issuer,
         &1,
         &FAR_FUTURE,
-    );
+     &None,);
 
     assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
     assert!(!proofs.is_valid_proof(&bytes32(&env, 1)));
@@ -425,7 +492,7 @@ fn a_registry_pointed_at_an_empty_config_reports_unsupported_schema() {
         &deployment.issuer,
         &1,
         &FAR_FUTURE,
-    );
+     &None,);
 
     assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
 }

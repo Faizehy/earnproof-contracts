@@ -1,0 +1,20 @@
+[package]
+name = "supersession-tests"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+earnproof-shared.workspace = true
+soroban-sdk.workspace = true
+
+[dev-dependencies]
+issuer-registry = { path = "../../contracts/issuer-registry" }
+proof-registry = { path = "../../contracts/proof-registry" }
+protocol-config = { path = "../../contracts/protocol-config" }
+soroban-sdk = { workspace = true, features = ["testutils"] }

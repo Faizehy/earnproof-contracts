@@ -268,6 +268,10 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    CyclicSupersession = 311,
+    CrossIssuerSupersession = 312,
+    PredecessorNotFound = 313,
+    TooManySuccessors = 314,
 }
 
 #[contracttype]
@@ -342,6 +346,7 @@ pub struct ProofRecord {
     pub expires_at: u64,
     pub created_at: u64,
     pub revoked_at: u64,
+    pub predecessor_id_hash: Option<BytesN<32>>,
 }
 
 #[contracttype]
@@ -532,3 +537,5 @@ pub mod test_utils {
         }
     }
 }
+
+pub const MAX_SUCCESSORS: u32 = 5;

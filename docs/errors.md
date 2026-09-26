@@ -104,6 +104,10 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 308 | `IssuerInactive` | `ProofError` | proof-registry | returned | after-operator-action | 403 |
 | 309 | `UnsupportedSchema` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 310 | `MalformedInput` | `ProofError` | proof-registry | reserved | after-caller-change | 400 |
+| 311 | `CyclicSupersession` | `ProofError` | proof-registry | returned | never | 400 |
+| 312 | `CrossIssuerSupersession` | `ProofError` | proof-registry | returned | never | 403 |
+| 313 | `PredecessorNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
+| 314 | `TooManySuccessors` | `ProofError` | proof-registry | returned | never | 400 |
 
 ## Details
 
@@ -381,5 +385,49 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Validate the proof input data against the schema before resubmitting. Ensure all required fields are present and data sizes conform to the schema limits.
 - Suggested HTTP status: 400
 - Client message: "Malformed proof input"
+
+### 311 - `CyclicSupersession`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: The proof identifier matches its own predecessor.
+- Remediation: A proof cannot supersede itself.
+- Suggested HTTP status: 400
+- Client message: "Cyclic supersession detected"
+
+### 312 - `CrossIssuerSupersession`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: The predecessor proof was registered by a different issuer.
+- Remediation: Cross-issuer supersession is rejected.
+- Suggested HTTP status: 403
+- Client message: "Cross-issuer supersession rejected"
+
+### 313 - `PredecessorNotFound`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: The specified predecessor proof was not found.
+- Remediation: Ensure the predecessor proof exists.
+- Suggested HTTP status: 404
+- Client message: "Predecessor proof not found"
+
+### 314 - `TooManySuccessors`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: The predecessor proof already has the maximum number of successors.
+- Remediation: A predecessor can only have a bounded number of successors.
+- Suggested HTTP status: 400
+- Client message: "Too many successors"
 
 <!-- END GENERATED -->

@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 25] = [
+pub const ERROR_CATALOG: [ErrorSpec; 29] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -455,6 +455,54 @@ pub const ERROR_CATALOG: [ErrorSpec; 25] = [
         remediation: "Validate the proof input data against the schema before resubmitting. Ensure all required fields are present and data sizes conform to the schema limits.",
         http_status: 400,
         client_message: "Malformed proof input",
+    },
+    ErrorSpec {
+        code: 311,
+        name: "CyclicSupersession",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The proof identifier matches its own predecessor.",
+        retry: Retry::Never,
+        remediation: "A proof cannot supersede itself.",
+        http_status: 400,
+        client_message: "Cyclic supersession detected",
+    },
+    ErrorSpec {
+        code: 312,
+        name: "CrossIssuerSupersession",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The predecessor proof was registered by a different issuer.",
+        retry: Retry::Never,
+        remediation: "Cross-issuer supersession is rejected.",
+        http_status: 403,
+        client_message: "Cross-issuer supersession rejected",
+    },
+    ErrorSpec {
+        code: 313,
+        name: "PredecessorNotFound",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The specified predecessor proof was not found.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Ensure the predecessor proof exists.",
+        http_status: 404,
+        client_message: "Predecessor proof not found",
+    },
+    ErrorSpec {
+        code: 314,
+        name: "TooManySuccessors",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The predecessor proof already has the maximum number of successors.",
+        retry: Retry::Never,
+        remediation: "A predecessor can only have a bounded number of successors.",
+        http_status: 400,
+        client_message: "Too many successors",
     },
 ];
 

@@ -155,7 +155,7 @@ proptest! {
         let proof_id = bytes(&env, 1);
         let expires_at = base_time + expires_delta;
         let success = try_op(&env, || {
-            proof.register_proof(&proof_id, &bytes(&env, 2), &issuer_address, &1, &expires_at);
+            proof.register_proof(&proof_id, &bytes(&env, 2), &issuer_address, &1, &expires_at, &None);
         });
         prop_assert!(success);
 
@@ -193,7 +193,7 @@ proptest! {
 
         let proof_id = bytes(&env, 1);
         let success = try_op(&env, || {
-            proof.register_proof(&proof_id, &bytes(&env, 2), &issuer_address, &1, &2_000);
+            proof.register_proof(&proof_id, &bytes(&env, 2), &issuer_address, &1, &2_000, &None);
         });
         let exists = try_op(&env, || { proof.get_proof(&proof_id); });
 

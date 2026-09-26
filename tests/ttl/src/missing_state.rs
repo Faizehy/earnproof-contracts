@@ -49,7 +49,7 @@ fn registration_against_an_uninitialized_registry_fails_closed() {
         &issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
-    );
+     &None,);
 
     assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
     assert!(!client.is_valid_proof(&bytes(&env, 1)));
@@ -98,7 +98,7 @@ fn an_unapproved_schema_version_reads_as_unapproved_rather_than_failing() {
         &deployment.issuer,
         &7,
         &FAR_FUTURE,
-    );
+     &None,);
     assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
 }
 
@@ -155,7 +155,7 @@ fn a_registration_pointed_at_an_empty_protocol_config_is_rejected() {
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
-    );
+     &None,);
 
     assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
     assert!(!proofs.is_valid_proof(&bytes(env, 1)));

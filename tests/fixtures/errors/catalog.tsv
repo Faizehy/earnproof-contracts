@@ -26,3 +26,7 @@
 308	IssuerInactive	ProofError	proof-registry	returned	after-operator-action	403
 309	UnsupportedSchema	ProofError	proof-registry	returned	after-operator-action	400
 310	MalformedInput	ProofError	proof-registry	reserved	after-caller-change	400
+311	CyclicSupersession	ProofError	proof-registry	returned	never	400
+312	CrossIssuerSupersession	ProofError	proof-registry	returned	never	403
+313	PredecessorNotFound	ProofError	proof-registry	returned	after-caller-change	404
+314	TooManySuccessors	ProofError	proof-registry	returned	never	400

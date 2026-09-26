@@ -78,6 +78,7 @@ impl Deployment<'_> {
             &self.issuer,
             &APPROVED_SCHEMA,
             &(self.env.ledger().timestamp() + 100_000),
+            &None,
         );
         proof_id
     }

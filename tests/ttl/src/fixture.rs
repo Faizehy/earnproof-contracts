@@ -53,7 +53,7 @@ impl Deployment {
     }
 
     /// Registers the fixture proof and returns its identifier.
-    pub fn register_proof(&self, expires_at: u64) -> BytesN<32> {
+    pub fn register_proof(&self, expires_at: u64, predecessor: Option<BytesN<32>>) -> BytesN<32> {
         let proof_id = bytes(&self.env, PROOF_ID);
         self.proofs.register_proof(
             &proof_id,
@@ -61,6 +61,7 @@ impl Deployment {
             &self.issuer,
             &SCHEMA_VERSION,
             &expires_at,
+            &predecessor,
         );
         proof_id
     }

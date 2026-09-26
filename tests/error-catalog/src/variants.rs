@@ -132,6 +132,26 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "MalformedInput",
             ProofError::MalformedInput as u32,
         ),
+        (
+            "ProofError",
+            "CyclicSupersession",
+            ProofError::CyclicSupersession as u32,
+        ),
+        (
+            "ProofError",
+            "CrossIssuerSupersession",
+            ProofError::CrossIssuerSupersession as u32,
+        ),
+        (
+            "ProofError",
+            "PredecessorNotFound",
+            ProofError::PredecessorNotFound as u32,
+        ),
+        (
+            "ProofError",
+            "TooManySuccessors",
+            ProofError::TooManySuccessors as u32,
+        ),
     ]
 }
 

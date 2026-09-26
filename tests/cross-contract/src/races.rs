@@ -86,7 +86,7 @@ fn attempt(deployment: &Deployment, discriminator: u8) -> bool {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
-        )
+         &None,)
     });
     rejection == Rejection::Accepted
 }

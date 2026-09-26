@@ -300,6 +300,7 @@ impl Deployment<'_> {
             &self.issuer,
             &APPROVED_SCHEMA,
             &self.expiry(),
+            &None,
         );
         proof_id
     }
@@ -331,6 +332,7 @@ impl Deployment<'_> {
                 issuer,
                 &schema_version,
                 &expires_at,
+                &None,
             )
         });
 

@@ -110,7 +110,7 @@ mod tests {
             &fixture.issuer,
             &1,
             &expires_at,
-        );
+         &None,);
     }
 
     // ── Existing tests (preserved) ──────────────────────────────────────────
@@ -136,7 +136,7 @@ mod tests {
                     &fixture.issuer,
                     &1,
                     &expires_at,
-                ),
+                 &None,),
                 Err(Ok(ProofError::ProofExpired))
             );
         }
@@ -163,7 +163,7 @@ mod tests {
                 &fixture.issuer,
                 &0,
                 &(NOW + 1)
-            ),
+            , &None),
             Err(Ok(ProofError::InvalidSchemaVersion))
         );
         fixture.config.pause();
@@ -174,7 +174,7 @@ mod tests {
                 &fixture.issuer,
                 &1,
                 &(NOW + 1)
-            ),
+            , &None),
             Err(Ok(ProofError::ContractPaused))
         );
     }
@@ -231,7 +231,7 @@ mod tests {
                 &fixture.issuer,
                 &1,
                 &(NOW + 1),
-            ),
+             &None,),
             Err(Ok(ProofError::UnsupportedSchema))
         );
     }
@@ -250,7 +250,7 @@ mod tests {
                 &fixture.issuer,
                 &2,
                 &(NOW + 1),
-            ),
+             &None,),
             Err(Ok(ProofError::UnsupportedSchema))
         );
     }
@@ -273,7 +273,7 @@ mod tests {
                 &fixture.issuer,
                 &1,
                 &(NOW + 100),
-            ),
+             &None,),
             Err(Ok(ProofError::UnsupportedSchema))
         );
     }
@@ -290,7 +290,7 @@ mod tests {
                 &fixture.issuer,
                 &1,
                 &0,
-            ),
+             &None,),
             Err(Ok(ProofError::ProofExpired))
         );
     }
@@ -324,7 +324,7 @@ mod tests {
             &issuer,
             &1,
             &1,
-        );
+         &None,);
         assert!(proofs.is_valid_proof(&bytes(&clock.env, 41)));
     }
 

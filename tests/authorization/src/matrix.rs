@@ -22,7 +22,7 @@
 
 use crate::harness::{authorize, hash, issuer_id_hash, Deployment, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, IntoVal, Val};
+use soroban_sdk::{Address, BytesN, IntoVal, Val};
 
 /// The identity attempting the call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -522,6 +522,7 @@ fn matrix() -> std::vec::Vec<Case> {
                     &d.issuer,
                     &APPROVED_SCHEMA,
                     &expires_at,
+                    &None::<BytesN<32>>,
                 )
                     .into_val(&d.env);
                 match identity {
@@ -533,7 +534,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             &d.issuer,
                             &APPROVED_SCHEMA,
                             &expires_at,
-                        )
+                         &None,)
                         .is_ok(),
                     // The realistic "wrong" signer is a *different active
                     // issuer*: someone who holds valid issuer credentials but
@@ -553,7 +554,7 @@ fn matrix() -> std::vec::Vec<Case> {
                                 &d.issuer,
                                 &APPROVED_SCHEMA,
                                 &expires_at,
-                            )
+                             &None,)
                             .is_ok()
                     }
                     Identity::Authorized => {
@@ -565,7 +566,7 @@ fn matrix() -> std::vec::Vec<Case> {
                                 &d.issuer,
                                 &APPROVED_SCHEMA,
                                 &expires_at,
-                            )
+                             &None,)
                             .is_ok()
                     }
                 }

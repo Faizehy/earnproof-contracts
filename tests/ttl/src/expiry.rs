@@ -22,7 +22,7 @@ use soroban_sdk::testutils::Ledger as _;
 #[test]
 fn entry_has_one_ledger_left_the_ledger_before_expiry() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     deployment.idle(TTL_EXTEND_TO_LEDGERS - 1);
 
@@ -33,7 +33,7 @@ fn entry_has_one_ledger_left_the_ledger_before_expiry() {
 #[test]
 fn entry_is_still_live_on_its_final_ledger() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     deployment.idle(TTL_EXTEND_TO_LEDGERS);
 
@@ -46,7 +46,7 @@ fn entry_is_still_live_on_its_final_ledger() {
 #[test]
 fn a_read_on_the_final_ledger_extends_the_entry_back_to_the_target() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
     deployment.idle(TTL_EXTEND_TO_LEDGERS);
 
     deployment.proofs.get_proof(&proof_id);
@@ -57,7 +57,7 @@ fn a_read_on_the_final_ledger_extends_the_entry_back_to_the_target() {
 #[test]
 fn entry_is_archived_one_ledger_after_its_final_ledger() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     deployment.idle(TTL_EXTEND_TO_LEDGERS + 1);
 
@@ -82,7 +82,7 @@ fn instance_storage_archives_on_the_same_boundary_as_persistent_storage() {
 #[test]
 fn an_idle_contract_expires_because_nothing_extends_it_implicitly() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     // Reads of *other* keys do not keep this entry alive. The protocol config
     // is touched throughout the idle window; the proof entry still expires.
@@ -100,7 +100,7 @@ fn an_idle_contract_expires_because_nothing_extends_it_implicitly() {
 fn timestamp_expiry_and_ttl_expiry_are_independent() {
     let deployment = deployment();
     // Expires by timestamp long before the storage entry could archive.
-    let proof_id = deployment.register_proof(2_000);
+    let proof_id = deployment.register_proof(2_000, None);
 
     deployment.env.ledger().set_timestamp(2_001);
 

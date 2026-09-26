@@ -18,7 +18,7 @@
 
 use crate::harness::{authorize, hash, Deployment, APPROVED_SCHEMA};
 use soroban_sdk::testutils::{AuthorizedFunction, AuthorizedInvocation};
-use soroban_sdk::{Address, IntoVal, Symbol};
+use soroban_sdk::{Address, BytesN, IntoVal, Symbol};
 
 /// Asserts that the most recent invocation demanded exactly one authorization:
 /// `signer` for `fn_name` on `contract` with `args`, and nothing else.
@@ -64,7 +64,7 @@ fn register_proof_demands_exactly_the_named_issuer() {
         &d.issuer,
         &APPROVED_SCHEMA,
         &expires_at,
-    );
+     &None,);
 
     assert_single_auth_tree(
         &d,
@@ -77,6 +77,7 @@ fn register_proof_demands_exactly_the_named_issuer() {
             &d.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
+            &None::<BytesN<32>>,
         )
             .into_val(&d.env),
     );
@@ -210,6 +211,7 @@ fn registration_auth_is_not_forwardable_to_another_issuer() {
             &d.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
+            &None::<BytesN<32>>,
         )
             .into_val(&d.env),
     );
@@ -221,7 +223,7 @@ fn registration_auth_is_not_forwardable_to_another_issuer() {
                 &d.issuer,
                 &APPROVED_SCHEMA,
                 &expires_at,
-            )
+             &None,)
             .is_err(),
         "issuer B must not register proofs in issuer A's name"
     );
@@ -248,7 +250,7 @@ fn cross_contract_reads_leave_the_callees_untouched_on_rejection() {
             &d.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
-        )
+         &None,)
         .is_err());
     d.assert_no_side_effects(
         &before,

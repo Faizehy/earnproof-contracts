@@ -17,7 +17,7 @@ use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 #[test]
 fn write_sets_persistent_ttl_to_the_extension_target() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     assert_eq!(deployment.proof_ttl(&proof_id), TTL_EXTEND_TO_LEDGERS);
 }
@@ -80,7 +80,7 @@ fn schema_approval_extends_the_schema_flag() {
 #[test]
 fn a_read_one_ledger_above_the_threshold_does_not_extend() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     // Remaining TTL after the idle period is THRESHOLD + 1: one ledger short of
     // the trigger.
@@ -95,7 +95,7 @@ fn a_read_one_ledger_above_the_threshold_does_not_extend() {
 #[test]
 fn a_read_exactly_at_the_threshold_extends_back_to_the_target() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     deployment.idle(TTL_EXTEND_TO_LEDGERS - TTL_THRESHOLD_LEDGERS);
     assert_eq!(deployment.proof_ttl(&proof_id), TTL_THRESHOLD_LEDGERS);
@@ -108,7 +108,7 @@ fn a_read_exactly_at_the_threshold_extends_back_to_the_target() {
 #[test]
 fn repeated_extension_in_the_same_ledger_is_idempotent() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
     deployment.idle(TTL_EXTEND_TO_LEDGERS - TTL_THRESHOLD_LEDGERS);
 
     for _ in 0..5 {
@@ -120,7 +120,7 @@ fn repeated_extension_in_the_same_ledger_is_idempotent() {
 #[test]
 fn extension_never_shortens_an_entry() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     // One ledger of idling, then a burst of reads. The entry is far above the
     // threshold, so its live-until must not move at all.
@@ -135,7 +135,7 @@ fn extension_never_shortens_an_entry() {
 #[test]
 fn periodic_reads_keep_an_entry_alive_across_a_long_lifetime() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
 
     // Twenty extension cycles at the documented cadence: touch the entry once
     // per (target - threshold) ledgers. That is ten million ledgers of
@@ -157,7 +157,7 @@ fn periodic_reads_keep_an_entry_alive_across_a_long_lifetime() {
 #[test]
 fn revocation_extends_the_proof_entry() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE);
+    let proof_id = deployment.register_proof(FAR_FUTURE, None);
     deployment.idle(TTL_EXTEND_TO_LEDGERS - TTL_THRESHOLD_LEDGERS);
 
     deployment.proofs.revoke_proof(&proof_id);
@@ -168,7 +168,7 @@ fn revocation_extends_the_proof_entry() {
 #[test]
 fn no_contract_uses_temporary_storage() {
     let deployment = deployment();
-    deployment.register_proof(FAR_FUTURE);
+    deployment.register_proof(FAR_FUTURE, None);
     deployment.proofs.revoke_proof(&bytes(&deployment.env, 5));
     deployment.config.pause();
     deployment.config.unpause();

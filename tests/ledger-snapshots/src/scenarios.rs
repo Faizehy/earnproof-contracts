@@ -135,7 +135,7 @@ pub fn build(name: &str) -> Scenario {
                 &issuer,
                 &SCHEMA_VERSION,
                 &PROOF_EXPIRES_AT,
-            )
+             &None,)
         });
     }
 

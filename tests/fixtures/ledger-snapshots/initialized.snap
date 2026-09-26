@@ -1,6 +1,6 @@
 # scenario: initialized
-# revision: 6
-# reason: Update ledger snapshots for merged feature branch
+# revision: 7
+# reason: updating proof record format
 # body-digest: 2afb4dd02cefed5049b6c79f3245b3aba69fb6980a5d06b22347d271acac8f6d
 
 [ledger]

@@ -115,7 +115,7 @@ mod tests {
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
         let expires_at = 2_000;
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &expires_at);
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &expires_at, &None);
 
         let current_ledger = TtlTestHarness::current_ledger(&env);
         let expiry =
@@ -138,7 +138,7 @@ mod tests {
         let proof_id = bytes(&env, 5);
         let commitment = bytes(&env, 6);
         let expires_at = 2_000;
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &expires_at);
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &expires_at, &None);
 
         let current_ledger = TtlTestHarness::current_ledger(&env);
         let expiry =
@@ -166,7 +166,7 @@ mod tests {
         let proof_id = bytes(&env, 7);
         let commitment = bytes(&env, 8);
         let expires_at = 5_000;
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &expires_at);
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &expires_at, &None);
 
         assert!(client.is_valid_proof(&proof_id));
 
@@ -187,7 +187,7 @@ mod tests {
         let proof_id = bytes(&env, 15);
         let commitment = bytes(&env, 16);
         let expires_at = 5_000;
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &expires_at);
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &expires_at, &None);
 
         assert!(client.is_valid_proof(&proof_id));
 

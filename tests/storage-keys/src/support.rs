@@ -201,7 +201,7 @@ pub fn deployment() -> Deployment {
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
     proofs.initialize(&admin, &issuers_id, &config_id);
-    proofs.register_proof(&proof_id, &bytes32(&env, 6), &issuer, &1, &1_000_000);
+    proofs.register_proof(&proof_id, &bytes32(&env, 6), &issuer, &1, &1_000_000, &None);
 
     Deployment {
         env,
@@ -271,14 +271,14 @@ pub fn exercised_deployment() -> Deployment {
         &rotated_issuer,
         &1,
         &1_000_000,
-    );
+     &None,);
     proofs.register_proof(
         &bytes32(&env, 7),
         &bytes32(&env, 8),
         &rotated_issuer,
         &1,
         &1_000_000,
-    );
+     &None,);
     proofs.revoke_proof(&bytes32(&env, 7));
     config.pause();
 

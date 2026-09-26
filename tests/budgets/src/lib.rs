@@ -449,7 +449,7 @@ mod tests {
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
 
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &None);
 
         assert_budget(
             &env,
@@ -466,7 +466,7 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &None);
 
         env.cost_estimate().budget().reset_unlimited();
 
@@ -487,7 +487,7 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &None);
 
         env.cost_estimate().budget().reset_unlimited();
 
@@ -508,7 +508,7 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &None);
 
         env.cost_estimate().budget().reset_unlimited();
 
