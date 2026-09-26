@@ -449,6 +449,8 @@ pub enum ApprovalQuery {
 // across all contracts, ensuring consistent test coverage for re-initialization
 // guards, invalid dependencies, and state/event immutability on failure.
 
+pub const MAX_SUCCESSORS: u32 = 5;
+
 #[cfg(test)]
 pub mod test_utils {
     extern crate std;
@@ -538,5 +540,3 @@ pub mod test_utils {
         }
     }
 }
-
-pub const MAX_SUCCESSORS: u32 = 5;

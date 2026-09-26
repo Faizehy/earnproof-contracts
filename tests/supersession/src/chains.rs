@@ -1,6 +1,6 @@
 use crate::harness::Deployment;
 use soroban_sdk::testutils::BytesN as _;
-use soroban_sdk::{BytesN, vec};
+use soroban_sdk::{vec, BytesN};
 
 #[test]
 fn basic_chain() {

@@ -196,7 +196,8 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
         &issuer_address,
         &1,
         &(env.ledger().timestamp() + 1_000),
-     &None,);
+        &None,
+    );
 
     let record = proofs.get_proof(&proof_id_hash);
     assert_eq!(record.proof_id_hash, proof_id_hash);

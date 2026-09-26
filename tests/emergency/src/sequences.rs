@@ -183,7 +183,8 @@ fn apply_to_contracts(deployment: &Deployment, op: Op, step: usize) -> bool {
                     &deployment.issuer,
                     &APPROVED_SCHEMA,
                     &(deployment.env.ledger().timestamp() + 100_000),
-                 &None,)
+                    &None,
+                )
                 .is_ok()
         }
     }
@@ -364,7 +365,8 @@ fn a_stale_caller_cannot_register_against_a_deprecated_schema() {
                 &deployment.issuer,
                 &APPROVED_SCHEMA,
                 &(deployment.env.ledger().timestamp() + 100_000),
-             &None,)
+                &None,
+            )
             .is_err(),
         "a deprecated schema must not be usable after the pause lifts"
     );
@@ -404,7 +406,8 @@ fn cross_contract_disagreement_resolves_in_favour_of_containment() {
                 &deployment.issuer,
                 &APPROVED_SCHEMA,
                 &(deployment.env.ledger().timestamp() + 100_000),
-             &None,)
+                &None,
+            )
             .is_ok();
 
         assert_eq!(

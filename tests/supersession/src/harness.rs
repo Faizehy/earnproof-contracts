@@ -1,7 +1,6 @@
-
-use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
 use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
+use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
     Address, BytesN, Env,
@@ -14,6 +13,7 @@ fn hash(env: &Env, discriminator: u8) -> BytesN<32> {
     BytesN::from_array(env, &[discriminator; 32])
 }
 
+#[allow(dead_code)]
 pub struct Deployment {
     pub env: Env,
     pub config: ProtocolConfigContractClient<'static>,

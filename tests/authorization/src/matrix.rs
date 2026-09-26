@@ -620,7 +620,8 @@ fn matrix() -> std::vec::Vec<Case> {
                             &d.issuer,
                             &APPROVED_SCHEMA,
                             &expires_at,
-                         &None,)
+                            &None,
+                        )
                         .is_ok(),
                     // The realistic "wrong" signer is a *different active
                     // issuer*: someone who holds valid issuer credentials but
@@ -640,7 +641,8 @@ fn matrix() -> std::vec::Vec<Case> {
                                 &d.issuer,
                                 &APPROVED_SCHEMA,
                                 &expires_at,
-                             &None,)
+                                &None,
+                            )
                             .is_ok()
                     }
                     Identity::Authorized => {
@@ -652,7 +654,8 @@ fn matrix() -> std::vec::Vec<Case> {
                                 &d.issuer,
                                 &APPROVED_SCHEMA,
                                 &expires_at,
-                             &None,)
+                                &None,
+                            )
                             .is_ok()
                     }
                 }

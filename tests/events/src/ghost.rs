@@ -77,7 +77,8 @@ fn duplicate_proof_id_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-         &None,);
+            &None,
+        );
     });
 
     assert_silent(&events, "duplicate proof id");
@@ -113,7 +114,8 @@ fn registration_while_paused_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-         &None,);
+            &None,
+        );
     });
 
     assert_silent(&events, "registration while paused");
@@ -133,7 +135,8 @@ fn unapproved_schema_emits_no_event() {
             &deployment.issuer,
             &99, // never approved
             &expires,
-         &None,);
+            &None,
+        );
     });
 
     assert_silent(&events, "unapproved schema version");
@@ -154,7 +157,8 @@ fn deprecated_schema_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-         &None,);
+            &None,
+        );
     });
 
     assert_silent(&events, "deprecated schema version");
@@ -189,7 +193,8 @@ fn revoked_issuer_registration_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-         &None,);
+            &None,
+        );
     });
 
     assert_silent(&events, "registration by a revoked issuer");
@@ -211,7 +216,8 @@ fn suspended_issuer_registration_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-         &None,);
+            &None,
+        );
     });
 
     assert_silent(&events, "registration by a suspended issuer");
@@ -309,7 +315,8 @@ fn already_expired_proof_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &past,
-         &None,);
+            &None,
+        );
     });
 
     assert_silent(&events, "registration with a past expiry");
@@ -328,7 +335,8 @@ fn expiry_equal_to_now_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &now,
-         &None,);
+            &None,
+        );
     });
 
     assert_silent(&events, "registration expiring at the current ledger time");

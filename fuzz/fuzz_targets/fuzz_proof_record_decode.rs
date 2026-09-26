@@ -102,6 +102,7 @@ fuzz_target!(|data: &[u8]| {
     // Construct the ProofRecord - this should never panic or cause undefined behavior
     let _proof = ProofRecord {
         proof_id_hash,
+        predecessor_id_hash: None,
         commitment_hash,
         issuer_address: dummy_address,
         status,

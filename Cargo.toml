@@ -19,6 +19,7 @@ members = [
   "tests/ledger-snapshots",
   "tests/address-validation",
   "tests/supersession",
+  "tests/compatibility",
   "fuzz"
 ]
 resolver = "2"

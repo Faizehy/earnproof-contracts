@@ -281,14 +281,16 @@ pub fn exercised_deployment() -> Deployment {
         &rotated_issuer,
         &1,
         &1_000_000,
-     &None,);
+        &None,
+    );
     proofs.register_proof(
         &bytes32(&env, 7),
         &bytes32(&env, 8),
         &rotated_issuer,
         &1,
         &1_000_000,
-     &None,);
+        &None,
+    );
     proofs.revoke_proof(&bytes32(&env, 7));
     config.pause();
 

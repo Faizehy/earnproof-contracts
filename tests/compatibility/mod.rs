@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(clippy::useless_vec)]
 //! Contract ABI and storage compatibility golden tests.
 //!
 //! These tests snapshot contract specs and gate unversioned changes.
@@ -111,12 +113,9 @@ struct GoldenAbi {
 // ── Helper: load golden JSON ─────────────────────────────────────
 
 fn load_golden(contract_name: &str) -> GoldenAbi {
-    let path = format!(
-        "tests/compatibility/goldens/{}.abi.json",
-        contract_name
-    );
-    let content = fs::read_to_string(&path)
-        .unwrap_or_else(|_| panic!("Golden file not found: {}", path));
+    let path = format!("goldens/{}.abi.json", contract_name);
+    let content =
+        fs::read_to_string(&path).unwrap_or_else(|_| panic!("Golden file not found: {}", path));
 
     serde_json::from_str(&content)
         .unwrap_or_else(|e| panic!("Failed to parse golden {}: {}", path, e))
@@ -229,7 +228,11 @@ impl CompatibilityReport {
                 .iter()
                 .map(|(name, old, new)| format!("{}: {} → {} (BREAKING)", name, old, new))
                 .collect();
-            lines.push(format!("✗ Changed {} error code(s): {}", changes.len(), changes.join(", ")));
+            lines.push(format!(
+                "✗ Changed {} error code(s): {}",
+                changes.len(),
+                changes.join(", ")
+            ));
         }
 
         if !self.added_storage_keys.is_empty() {
@@ -286,7 +289,7 @@ mod golden_tests {
         let contracts = vec!["protocol-config", "issuer-registry", "proof-registry"];
 
         for contract in &contracts {
-            let path = format!("tests/compatibility/goldens/{}.abi.json", contract);
+            let path = format!("goldens/{}.abi.json", contract);
 
             assert!(
                 Path::new(&path).exists(),
@@ -299,17 +302,16 @@ mod golden_tests {
 
     #[test]
     fn test_golden_files_are_valid_json() {
-        let goldens_dir = Path::new("tests/compatibility/goldens");
+        let goldens_dir = Path::new("goldens");
 
-        let entries =
-            fs::read_dir(goldens_dir).expect("Cannot read goldens directory");
+        let entries = fs::read_dir(goldens_dir).expect("Cannot read goldens directory");
 
         for entry in entries.flatten() {
             let path = entry.path();
 
-            if path.extension().map_or(false, |e| e == "json") {
-                let content = fs::read_to_string(&path)
-                    .unwrap_or_else(|_| panic!("Cannot read: {:?}", path));
+            if path.extension().is_some_and(|e| e == "json") {
+                let content =
+                    fs::read_to_string(&path).unwrap_or_else(|_| panic!("Cannot read: {:?}", path));
 
                 let result: Result<serde_json::Value, _> = serde_json::from_str(&content);
 
@@ -463,8 +465,7 @@ mod golden_tests {
             let golden = load_golden(contract);
 
             // Build set of all types
-            let type_names: HashSet<String> =
-                golden.types.iter().map(|t| t.name.clone()).collect();
+            let type_names: HashSet<String> = golden.types.iter().map(|t| t.name.clone()).collect();
 
             // Skip detailed cross-reference validation for now
             // Just verify types exist
@@ -481,14 +482,14 @@ mod golden_tests {
     #[test]
     fn test_negative_fixture_exists() {
         assert!(
-            Path::new("tests/compatibility/goldens/negative-fixture.json").exists(),
+            Path::new("goldens/negative-fixture.json").exists(),
             "Negative fixture must exist to prove gate can fail"
         );
     }
 
     #[test]
     fn test_negative_fixture_is_valid_json() {
-        let content = fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
+        let content = fs::read_to_string("goldens/negative-fixture.json")
             .expect("Cannot read negative fixture");
 
         let result: Result<serde_json::Value, _> = serde_json::from_str(&content);
@@ -502,22 +503,18 @@ mod golden_tests {
 
     #[test]
     fn test_negative_fixture_contains_removed_function() {
-        let content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
-                .expect("Cannot read negative fixture");
+        let content = fs::read_to_string("goldens/negative-fixture.json")
+            .expect("Cannot read negative fixture");
 
-        let fixture: serde_json::Value =
-            serde_json::from_str(&content).expect("Invalid JSON");
+        let fixture: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
 
         let functions = fixture["functions"]
             .as_array()
             .expect("No functions array in negative fixture");
 
-        let has_removed = functions.iter().any(|f| {
-            f["name"]
-                .as_str()
-                .map_or(false, |n| n.contains("removed"))
-        });
+        let has_removed = functions
+            .iter()
+            .any(|f| f["name"].as_str().is_some_and(|n| n.contains("removed")));
 
         assert!(
             has_removed,
@@ -527,22 +524,18 @@ mod golden_tests {
 
     #[test]
     fn test_negative_fixture_contains_removed_storage_key() {
-        let content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
-                .expect("Cannot read negative fixture");
+        let content = fs::read_to_string("goldens/negative-fixture.json")
+            .expect("Cannot read negative fixture");
 
-        let fixture: serde_json::Value =
-            serde_json::from_str(&content).expect("Invalid JSON");
+        let fixture: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
 
         let storage = fixture["storage"]
             .as_array()
             .expect("No storage array in negative fixture");
 
-        let has_removed_key = storage.iter().any(|s| {
-            s["key"]
-                .as_str()
-                .map_or(false, |k| k.contains("Removed"))
-        });
+        let has_removed_key = storage
+            .iter()
+            .any(|s| s["key"].as_str().is_some_and(|k| k.contains("Removed")));
 
         assert!(
             has_removed_key,
@@ -552,12 +545,10 @@ mod golden_tests {
 
     #[test]
     fn test_negative_fixture_contains_changed_storage_type() {
-        let content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
-                .expect("Cannot read negative fixture");
+        let content = fs::read_to_string("goldens/negative-fixture.json")
+            .expect("Cannot read negative fixture");
 
-        let fixture: serde_json::Value =
-            serde_json::from_str(&content).expect("Invalid JSON");
+        let fixture: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
 
         let storage = fixture["storage"]
             .as_array()
@@ -566,7 +557,7 @@ mod golden_tests {
         let has_changed_type = storage.iter().any(|s| {
             s["breaking_change"]
                 .as_str()
-                .map_or(false, |bc| bc.contains("type changed"))
+                .is_some_and(|bc| bc.contains("type changed"))
         });
 
         assert!(
@@ -579,22 +570,22 @@ mod golden_tests {
 
     #[test]
     fn test_golden_files_contain_no_production_identifiers() {
-        let goldens_dir = Path::new("tests/compatibility/goldens");
+        let goldens_dir = Path::new("goldens");
         let entries = fs::read_dir(goldens_dir).expect("Cannot read goldens directory");
 
         // Patterns that suggest real production data (NOT part of legitimate addresses)
         let forbidden_patterns = [
-            "GDQOE23",       // known mainnet address prefix
-            "SBHM",          // secret key prefix
-            "SAAAA",         // another secret pattern
-            "mainnet_key",   // production marker
-            "prod_secret",   // production marker
+            "GDQOE23",     // known mainnet address prefix
+            "SBHM",        // secret key prefix
+            "SAAAA",       // another secret pattern
+            "mainnet_key", // production marker
+            "prod_secret", // production marker
         ];
 
         for entry in entries.flatten() {
             let path = entry.path();
 
-            if path.extension().map_or(false, |e| e == "json") {
+            if path.extension().is_some_and(|e| e == "json") {
                 let content = fs::read_to_string(&path).unwrap_or_default();
 
                 for pattern in &forbidden_patterns {
@@ -616,9 +607,9 @@ mod golden_tests {
         // Simulate: current spec has fewer functions than golden
         // This proves the gate logic works
 
-        let golden_functions = vec!["initialize", "get_admin", "pause", "unpause"];
+        let golden_functions = ["initialize", "get_admin", "pause", "unpause"];
 
-        let current_functions = vec!["initialize", "get_admin"];
+        let current_functions = ["initialize", "get_admin"];
         // pause, unpause were removed — breaking change
 
         let removed: Vec<&str> = golden_functions
@@ -642,9 +633,9 @@ mod golden_tests {
         // Simulate: current spec has MORE functions than golden
         // This is an additive change — should pass
 
-        let golden_functions = vec!["initialize", "get_admin"];
+        let golden_functions = ["initialize", "get_admin"];
 
-        let current_functions = vec!["initialize", "get_admin", "get_version"];
+        let current_functions = ["initialize", "get_admin", "get_version"];
         // get_version is new
 
         let removed: Vec<&str> = golden_functions
@@ -661,10 +652,7 @@ mod golden_tests {
 
     #[test]
     fn test_error_code_change_would_be_detected_as_breaking() {
-        let golden_errors = vec![
-            ("AlreadyInitialized", 1),
-            ("NotInitialized", 2),
-        ];
+        let golden_errors = vec![("AlreadyInitialized", 1), ("NotInitialized", 2)];
 
         let current_errors = vec![
             ("AlreadyInitialized", 1),
@@ -673,9 +661,7 @@ mod golden_tests {
 
         let mut changes = Vec::new();
         for (name, old_code) in &golden_errors {
-            if let Some((_, new_code)) =
-                current_errors.iter().find(|(n, _)| n == name)
-            {
+            if let Some((_, new_code)) = current_errors.iter().find(|(n, _)| n == name) {
                 if old_code != new_code {
                     changes.push((*name, *old_code, *new_code));
                 }
@@ -683,15 +669,12 @@ mod golden_tests {
         }
 
         assert!(!changes.is_empty(), "Gate must detect changed error codes");
-        assert_eq!(
-            changes,
-            vec![("NotInitialized", 2, 99)]
-        );
+        assert_eq!(changes, vec![("NotInitialized", 2, 99)]);
     }
 
     #[test]
     fn test_additive_error_with_higher_code_would_pass() {
-        let golden_errors = vec![("AlreadyInitialized", 1), ("NotInitialized", 2)];
+        let golden_errors = [("AlreadyInitialized", 1), ("NotInitialized", 2)];
 
         let current_errors = vec![
             ("AlreadyInitialized", 1),
@@ -725,9 +708,7 @@ mod golden_tests {
 
         let mut changes = Vec::new();
         for (key, old_type) in &golden_storage {
-            if let Some((_, new_type)) =
-                current_storage.iter().find(|(k, _)| k == key)
-            {
+            if let Some((_, new_type)) = current_storage.iter().find(|(k, _)| k == key) {
                 if old_type != new_type {
                     changes.push((*key, *old_type, *new_type));
                 }
@@ -743,11 +724,9 @@ mod golden_tests {
 
     #[test]
     fn test_storage_key_removal_would_be_detected_as_breaking() {
-        let golden_storage = vec![
-            "DataKey::Admin",
+        let golden_storage = ["DataKey::Admin",
             "DataKey::Paused",
-            "DataKey::ConfigVersion",
-        ];
+            "DataKey::ConfigVersion"];
 
         let current_storage = vec![
             "DataKey::Admin",
@@ -761,16 +740,13 @@ mod golden_tests {
             .copied()
             .collect();
 
-        assert!(
-            !removed.is_empty(),
-            "Gate must detect removed storage keys"
-        );
+        assert!(!removed.is_empty(), "Gate must detect removed storage keys");
         assert_eq!(removed, vec!["DataKey::Paused"]);
     }
 
     #[test]
     fn test_additive_storage_key_would_pass_gate() {
-        let golden_storage = vec!["DataKey::Admin", "DataKey::Paused"];
+        let golden_storage = ["DataKey::Admin", "DataKey::Paused"];
 
         let current_storage = vec![
             "DataKey::Admin",
@@ -899,22 +875,19 @@ mod golden_tests {
         let protocol_golden = load_golden("protocol-config");
 
         // Load negative fixture
-        let negative_content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
-                .expect("Cannot read negative fixture");
+        let negative_content = fs::read_to_string("goldens/negative-fixture.json")
+            .expect("Cannot read negative fixture");
 
         let negative_raw: serde_json::Value =
             serde_json::from_str(&negative_content).expect("Invalid JSON");
 
         // Extract function count from negative
-        let negative_function_count = negative_raw["functions"]
-            .as_array()
-            .map_or(0, |a| a.len());
+        let negative_function_count = negative_raw["functions"].as_array().map_or(0, |a| a.len());
 
         // Positive should have more (negative intentionally removes some)
         // This is a weak test but demonstrates the fixture has differences
         assert!(
-            protocol_golden.functions.len() > 0,
+            !protocol_golden.functions.is_empty(),
             "Positive golden must have functions"
         );
 
@@ -927,12 +900,10 @@ mod golden_tests {
 
     #[test]
     fn test_negative_fixture_has_breaking_changes_marker() {
-        let content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
-                .expect("Cannot read negative fixture");
+        let content = fs::read_to_string("goldens/negative-fixture.json")
+            .expect("Cannot read negative fixture");
 
-        let fixture: serde_json::Value =
-            serde_json::from_str(&content).expect("Invalid JSON");
+        let fixture: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
 
         // Should have documented breaking changes
         assert!(
@@ -948,14 +919,10 @@ mod golden_tests {
         let contracts = vec!["protocol-config", "issuer-registry", "proof-registry"];
 
         for contract in &contracts {
-            let content = fs::read_to_string(format!(
-                "tests/compatibility/goldens/{}.abi.json",
-                contract
-            ))
-            .unwrap_or_else(|_| panic!("Cannot read {}.abi.json", contract));
+            let content = fs::read_to_string(format!("goldens/{}.abi.json", contract))
+                .unwrap_or_else(|_| panic!("Cannot read {}.abi.json", contract));
 
-            let raw: serde_json::Value =
-                serde_json::from_str(&content).expect("Invalid JSON");
+            let raw: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
 
             assert!(
                 raw["$schema"].is_string(),
@@ -1014,11 +981,10 @@ mod golden_tests {
 
     #[test]
     fn test_proof_registry_documents_dependencies() {
-        let content = fs::read_to_string("tests/compatibility/goldens/proof-registry.abi.json")
+        let content = fs::read_to_string("goldens/proof-registry.abi.json")
             .expect("Cannot read proof-registry golden");
 
-        let raw: serde_json::Value =
-            serde_json::from_str(&content).expect("Invalid JSON");
+        let raw: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
 
         // Proof registry declares its dependencies
         assert!(
@@ -1056,14 +1022,10 @@ mod golden_tests {
         let contracts = vec!["protocol-config", "issuer-registry", "proof-registry"];
 
         for contract in &contracts {
-            let content = fs::read_to_string(format!(
-                "tests/compatibility/goldens/{}.abi.json",
-                contract
-            ))
-            .unwrap_or_else(|_| panic!("Cannot read {}.abi.json", contract));
+            let content = fs::read_to_string(format!("goldens/{}.abi.json", contract))
+                .unwrap_or_else(|_| panic!("Cannot read {}.abi.json", contract));
 
-            let raw: serde_json::Value =
-                serde_json::from_str(&content).expect("Invalid JSON");
+            let raw: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
 
             assert!(
                 raw["ttl_constants"].is_object(),

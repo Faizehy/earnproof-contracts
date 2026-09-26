@@ -177,7 +177,8 @@ fn a_stale_issuer_address_fails_closed_after_rotation() {
         &rotated_to,
         &APPROVED_SCHEMA,
         &deployment.expiry(),
-     &None,);
+        &None,
+    );
 }
 
 #[test]

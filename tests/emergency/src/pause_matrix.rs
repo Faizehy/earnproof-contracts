@@ -301,7 +301,8 @@ fn matrix() -> std::vec::Vec<Case> {
                     &d.issuer,
                     &APPROVED_SCHEMA,
                     &(d.env.ledger().timestamp() + 100_000),
-                 &None,))
+                    &None,
+                ))
             },
         },
         // Revocation is a containment operation and stays available by design.
@@ -426,7 +427,8 @@ fn containment_survives_repeated_pause_calls() {
                 &deployment.issuer,
                 &APPROVED_SCHEMA,
                 &(deployment.env.ledger().timestamp() + 100_000),
-             &None,)
+                &None,
+            )
             .is_err(),
         "repeated pause must keep registration contained"
     );

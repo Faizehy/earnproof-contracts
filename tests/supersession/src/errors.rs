@@ -1,8 +1,8 @@
 use crate::harness::Deployment;
 use earnproof_shared::ProofError;
-use soroban_sdk::testutils::BytesN as _;
-use soroban_sdk::{BytesN, Address};
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::BytesN as _;
+use soroban_sdk::{Address, BytesN};
 
 /// Helper: deterministic 32-byte value.
 fn hash(env: &soroban_sdk::Env, discriminator: u8) -> BytesN<32> {
@@ -67,12 +67,9 @@ fn cross_issuer_supersession() {
     // Setup second issuer
     let issuer2 = Address::generate(env);
     let issuer2_id = hash(env, 0x02);
-    deployment.issuers.register_issuer(
-        &issuer2_id,
-        &issuer2,
-        &hash(env, 0xBB),
-        &hash(env, 0x88),
-    );
+    deployment
+        .issuers
+        .register_issuer(&issuer2_id, &issuer2, &hash(env, 0xBB), &hash(env, 0x88));
 
     let p2 = BytesN::random(env);
     let commitment = hash(env, 0xCC);
@@ -88,7 +85,10 @@ fn cross_issuer_supersession() {
         &Some(p1),
     );
 
-    assert_eq!(res.unwrap_err().unwrap(), ProofError::CrossIssuerSupersession);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        ProofError::CrossIssuerSupersession
+    );
 }
 
 #[test]

@@ -111,7 +111,8 @@ fn a_restored_proof_id_cannot_be_re_registered() {
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
-     &None,);
+        &None,
+    );
 
     assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
     assert_eq!(
@@ -171,7 +172,8 @@ fn a_long_idle_deployment_recovers_every_contract_on_the_next_call() {
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
-     &None,);
+        &None,
+    );
 
     assert!(deployment.proofs.is_valid_proof(&second_proof));
     assert!(deployment.proofs.is_valid_proof(&proof_id));

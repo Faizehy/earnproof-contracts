@@ -159,7 +159,8 @@ fn register_with_root_auth_only(deployment: &Deployment, proof_id: &BytesN<32>) 
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
-         &None,)
+            &None,
+        )
     })
 }
 
@@ -257,7 +258,8 @@ fn a_successful_pause_read_gates_the_registration_correctly() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
-         &None,)
+            &None,
+        )
     });
 
     assert_eq!(
@@ -313,7 +315,8 @@ fn a_successful_schema_read_gates_the_registration_correctly() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
-         &None,)
+            &None,
+        )
     });
 
     assert_eq!(
@@ -390,7 +393,8 @@ fn a_successful_issuer_read_gates_the_registration_correctly() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
-         &None,)
+            &None,
+        )
     });
 
     assert_eq!(
@@ -450,7 +454,8 @@ fn a_duplicate_proof_id_is_rejected_before_writing() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
-         &None,)
+            &None,
+        )
     });
 
     assert_eq!(
@@ -532,7 +537,8 @@ fn an_invalid_protocol_config_address_aborts_the_registration() {
             &issuer,
             &APPROVED_SCHEMA,
             &(env.ledger().timestamp() + 100_000),
-         &None,)
+            &None,
+        )
     });
 
     assert_eq!(
@@ -574,7 +580,8 @@ fn an_invalid_issuer_registry_address_aborts_the_registration() {
             &issuer,
             &APPROVED_SCHEMA,
             &(env.ledger().timestamp() + 100_000),
-         &None,)
+            &None,
+        )
     });
 
     assert_eq!(
