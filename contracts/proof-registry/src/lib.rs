@@ -352,6 +352,8 @@ impl ProofRegistryContract {
             Self::extend_proof_key_ttl(env, &key);
         }
         successors
+    }
+
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
         let admin = Self::get_admin(env.clone())?;

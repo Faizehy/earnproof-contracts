@@ -724,9 +724,11 @@ mod golden_tests {
 
     #[test]
     fn test_storage_key_removal_would_be_detected_as_breaking() {
-        let golden_storage = ["DataKey::Admin",
+        let golden_storage = [
+            "DataKey::Admin",
             "DataKey::Paused",
-            "DataKey::ConfigVersion"];
+            "DataKey::ConfigVersion",
+        ];
 
         let current_storage = vec![
             "DataKey::Admin",

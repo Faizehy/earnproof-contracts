@@ -393,13 +393,9 @@ fn matrix() -> std::vec::Vec<Case> {
                 let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
                 let args: soroban_sdk::Vec<Val> = (&d.issuer_id, &reason).into_val(&d.env);
                 match identity {
-                    Identity::Missing => d
-                        .issuers
-                        .try_suspend_issuer(
-                            &d.issuer_id,
-                            &reason,
-                        )
-                        .is_ok(),
+                    Identity::Missing => {
+                        d.issuers.try_suspend_issuer(&d.issuer_id, &reason).is_ok()
+                    }
                     Identity::Wrong => {
                         authorize(
                             &d.env,
@@ -408,21 +404,11 @@ fn matrix() -> std::vec::Vec<Case> {
                             "suspend_issuer",
                             args.clone(),
                         );
-                        d.issuers
-                            .try_suspend_issuer(
-                                &d.issuer_id,
-                                &reason,
-                            )
-                            .is_ok()
+                        d.issuers.try_suspend_issuer(&d.issuer_id, &reason).is_ok()
                     }
                     Identity::Authorized => {
                         authorize(&d.env, &d.admin, &d.issuers_address, "suspend_issuer", args);
-                        d.issuers
-                            .try_suspend_issuer(
-                                &d.issuer_id,
-                                &reason,
-                            )
-                            .is_ok()
+                        d.issuers.try_suspend_issuer(&d.issuer_id, &reason).is_ok()
                     }
                 }
             },
@@ -439,10 +425,7 @@ fn matrix() -> std::vec::Vec<Case> {
                 match identity {
                     Identity::Missing => d
                         .issuers
-                        .try_reactivate_issuer(
-                            &d.issuer_id,
-                            &reason,
-                        )
+                        .try_reactivate_issuer(&d.issuer_id, &reason)
                         .is_ok(),
                     Identity::Wrong => {
                         authorize(
@@ -453,10 +436,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             args.clone(),
                         );
                         d.issuers
-                            .try_reactivate_issuer(
-                                &d.issuer_id,
-                                &reason,
-                            )
+                            .try_reactivate_issuer(&d.issuer_id, &reason)
                             .is_ok()
                     }
                     Identity::Authorized => {
@@ -468,10 +448,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             args,
                         );
                         d.issuers
-                            .try_reactivate_issuer(
-                                &d.issuer_id,
-                                &reason,
-                            )
+                            .try_reactivate_issuer(&d.issuer_id, &reason)
                             .is_ok()
                     }
                 }
@@ -485,13 +462,7 @@ fn matrix() -> std::vec::Vec<Case> {
                 let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
                 let args: soroban_sdk::Vec<Val> = (&d.issuer_id, &reason).into_val(&d.env);
                 match identity {
-                    Identity::Missing => d
-                        .issuers
-                        .try_revoke_issuer(
-                            &d.issuer_id,
-                            &reason,
-                        )
-                        .is_ok(),
+                    Identity::Missing => d.issuers.try_revoke_issuer(&d.issuer_id, &reason).is_ok(),
                     Identity::Wrong => {
                         authorize(
                             &d.env,
@@ -500,21 +471,11 @@ fn matrix() -> std::vec::Vec<Case> {
                             "revoke_issuer",
                             args.clone(),
                         );
-                        d.issuers
-                            .try_revoke_issuer(
-                                &d.issuer_id,
-                                &reason,
-                            )
-                            .is_ok()
+                        d.issuers.try_revoke_issuer(&d.issuer_id, &reason).is_ok()
                     }
                     Identity::Authorized => {
                         authorize(&d.env, &d.admin, &d.issuers_address, "revoke_issuer", args);
-                        d.issuers
-                            .try_revoke_issuer(
-                                &d.issuer_id,
-                                &reason,
-                            )
-                            .is_ok()
+                        d.issuers.try_revoke_issuer(&d.issuer_id, &reason).is_ok()
                     }
                 }
             },
