@@ -319,7 +319,10 @@ mod tests {
         client.register_issuer(&issuer_id, &issuer_address, &metadata_hash, &metadata_hash);
         env.cost_estimate().budget().reset_unlimited();
 
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         assert_budget(
             &env,
@@ -344,7 +347,10 @@ mod tests {
         client.register_issuer(&issuer_id, &issuer_address, &metadata_hash, &metadata_hash);
         env.cost_estimate().budget().reset_unlimited();
 
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         assert_budget(
             &env,

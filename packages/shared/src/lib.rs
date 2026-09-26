@@ -331,6 +331,7 @@ pub struct IssuerRecord {
     pub status: IssuerStatus,
     pub created_at: u64,
     pub updated_at: u64,
+    pub reason_commitment: Option<BytesN<32>>,
 }
 
 #[contracttype]

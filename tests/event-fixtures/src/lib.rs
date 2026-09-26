@@ -86,7 +86,9 @@ fn read_contract_version(contract: &str) -> String {
 
 const PROTOCOL_CONFIG_EVENTS: &[&str] = &[
     "initialized",
-    "admin-changed",
+    "admin-transfer-nominated",
+    "admin-transfer-accepted",
+    "admin-transfer-cancelled",
     "paused",
     "unpaused",
     "schema-approved",

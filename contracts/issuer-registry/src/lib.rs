@@ -26,9 +26,27 @@ enum DataKey {
     ContractVersion,
     Successor,
     Decommissioned,
+    PendingAdmin,
     LatestUpgradeReceipt,
     /// Upgrade approval with temporal metadata (timelock and expiry).
     UpgradeApproval,
+}
+
+#[contractevent]
+pub struct AdminTransferNominated {
+    pub pending_admin: Address,
+    pub nominated_by: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferAccepted {
+    pub new_admin: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferCancelled {
+    pub pending_admin: Address,
+    pub cancelled_by: Address,
 }
 
 // ── upgrade events ────────────────────────────────────────────────────────────
@@ -84,6 +102,7 @@ pub struct IssuerMetadataUpdated {
 #[contractevent]
 pub struct IssuerSuspended {
     pub issuer_id_hash: BytesN<32>,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
 }
 
@@ -91,6 +110,7 @@ pub struct IssuerSuspended {
 #[contractevent]
 pub struct IssuerReactivated {
     pub issuer_id_hash: BytesN<32>,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
 }
 
@@ -98,6 +118,7 @@ pub struct IssuerReactivated {
 #[contractevent]
 pub struct IssuerRevoked {
     pub issuer_id_hash: BytesN<32>,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
 }
 
@@ -158,6 +179,64 @@ impl IssuerRegistryContract {
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
         Self::extend_instance_ttl(env);
+        Ok(())
+    }
+
+    pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_admin(&new_admin)?;
+        Self::require_auth(&admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminTransferNominated {
+            pending_admin: new_admin.clone(),
+            nominated_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        Self::require_auth(&pending_admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferAccepted {
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferCancelled {
+            pending_admin,
+            cancelled_by: admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -276,6 +355,7 @@ impl IssuerRegistryContract {
             status: IssuerStatus::Active,
             created_at: now,
             updated_at: now,
+            reason_commitment: None,
         };
 
         env.storage().persistent().set(&key, &record);
@@ -339,16 +419,38 @@ impl IssuerRegistryContract {
         Ok(())
     }
 
-    pub fn suspend_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Suspended)
+    pub fn suspend_issuer(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::set_status(
+            env,
+            issuer_id_hash,
+            IssuerStatus::Suspended,
+            reason_commitment,
+        )
     }
 
-    pub fn reactivate_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Active)
+    pub fn reactivate_issuer(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::set_status(env, issuer_id_hash, IssuerStatus::Active, reason_commitment)
     }
 
-    pub fn revoke_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Revoked)
+    pub fn revoke_issuer(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::set_status(
+            env,
+            issuer_id_hash,
+            IssuerStatus::Revoked,
+            reason_commitment,
+        )
     }
 
     pub fn rotate_issuer_address(
@@ -842,8 +944,12 @@ impl IssuerRegistryContract {
         env: Env,
         issuer_id_hash: BytesN<32>,
         status: IssuerStatus,
+        reason_commitment: BytesN<32>,
     ) -> Result<(), IssuerError> {
         Self::assert_operational(&env);
+        if reason_commitment == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(IssuerError::InvalidAddress);
+        }
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
 
@@ -859,6 +965,7 @@ impl IssuerRegistryContract {
         }
 
         record.status = status.clone();
+        record.reason_commitment = Some(reason_commitment.clone());
         let now = env.ledger().timestamp();
         record.updated_at = now;
         env.storage().persistent().set(&key, &record);
@@ -867,16 +974,19 @@ impl IssuerRegistryContract {
         match status {
             IssuerStatus::Active => IssuerReactivated {
                 issuer_id_hash,
+                reason_commitment,
                 updated_at: now,
             }
             .publish(&env),
             IssuerStatus::Suspended => IssuerSuspended {
                 issuer_id_hash,
+                reason_commitment,
                 updated_at: now,
             }
             .publish(&env),
             IssuerStatus::Revoked => IssuerRevoked {
                 issuer_id_hash,
+                reason_commitment,
                 updated_at: now,
             }
             .publish(&env),
@@ -1033,13 +1143,22 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert!(!client.is_active_issuer(&issuer_id));
 
-        client.reactivate_issuer(&issuer_id);
+        client.reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert!(client.is_active_issuer(&issuer_id));
 
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert!(!client.is_active_issuer(&issuer_id));
     }
 
@@ -1077,9 +1196,15 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
-        let result = client.try_reactivate_issuer(&issuer_id);
+        let result = client.try_reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
     }
 
@@ -1352,7 +1477,10 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.update_issuer(&issuer_id, &bytes(&env, 99));
@@ -1378,7 +1506,10 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         assert_eq!(
             env.events().all().events().len(),
@@ -1400,8 +1531,14 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.suspend_issuer(&issuer_id);
-        client.reactivate_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
+        client.reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         assert_eq!(
             env.events().all().events().len(),
@@ -1423,7 +1560,10 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         assert_eq!(
             env.events().all().events().len(),
@@ -1459,7 +1599,10 @@ mod test {
         let new_address = Address::from_str(&env, ISSUER_TWO);
 
         client.register_issuer(&issuer_id, &old_address, &bytes(&env, 2), &bytes(&env, 99));
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.rotate_issuer_address(&issuer_id, &new_address);
@@ -1496,11 +1639,17 @@ mod test {
         assert_eq!(env.events().all().events().len(), 1);
 
         // suspend
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert_eq!(env.events().all().events().len(), 1);
 
         // reactivate
-        client.reactivate_issuer(&issuer_id);
+        client.reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert_eq!(env.events().all().events().len(), 1);
 
         // rotate address
@@ -1508,7 +1657,10 @@ mod test {
         assert_eq!(env.events().all().events().len(), 1);
 
         // revoke
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert_eq!(env.events().all().events().len(), 1);
     }
 
@@ -1564,7 +1716,10 @@ mod test {
             },
         }]);
 
-        let result = client.try_revoke_issuer(&issuer_id);
+        let result = client.try_revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert!(
             result.is_err(),
             "the issuer's own valid signature must not authorize revoking itself; only the admin's signature may"

@@ -1,0 +1,22 @@
+{
+  "event": "AdminTransferNominated",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["AdminTransferNominated"],
+  "payload": {
+    "pending_admin": {
+      "type": "Address",
+      "description": "Stellar address of the nominated administrator.",
+      "example": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    },
+    "nominated_by": {
+      "type": "Address",
+      "description": "Stellar address of the current administrator who nominated.",
+      "example": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  "emitted_by": "nominate_admin",
+  "description": "Emitted when a new protocol administrator is nominated.",
+  "compatibility": "stable"
+}

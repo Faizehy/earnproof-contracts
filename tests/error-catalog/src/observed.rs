@@ -181,7 +181,10 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &bytes32(env, 21),
         &bytes32(env, 99),
     );
-    initial_dep.issuers.revoke_issuer(&bytes32(env, 20));
+    initial_dep.issuers.revoke_issuer(
+        &bytes32(env, 20),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
     observed.record(
         "issuer-registry update revoked issuer",
         code(
@@ -192,7 +195,10 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     observed.record(
         "issuer-registry reactivate revoked issuer",
-        code(initial_dep.issuers.try_reactivate_issuer(&bytes32(env, 20))),
+        code(initial_dep.issuers.try_reactivate_issuer(
+            &bytes32(env, 20),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        )),
     );
 
     // --- proof-registry --------------------------------------------------
@@ -294,7 +300,10 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     // 308: IssuerInactive — suspend the issuer then attempt registration.
     let deployment3 = deployment();
     let env3 = &deployment3.env;
-    deployment3.issuers.suspend_issuer(&bytes32(env3, 1));
+    deployment3.issuers.suspend_issuer(
+        &bytes32(env3, 1),
+        &soroban_sdk::BytesN::from_array(env3, &[1u8; 32]),
+    );
     observed.record(
         "proof-registry issuer inactive",
         code(deployment3.proofs.try_register_proof(
@@ -397,7 +406,10 @@ fn a_suspended_issuer_is_reported_as_issuer_inactive() {
         &bytes32(env, 41),
         &bytes32(env, 99),
     );
-    deployment.issuers.suspend_issuer(&bytes32(env, 40));
+    deployment.issuers.suspend_issuer(
+        &bytes32(env, 40),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
 
     let result = deployment.proofs.try_register_proof(
         &bytes32(env, 42),
