@@ -77,7 +77,8 @@ fn pause_authority_follows_rotation_and_does_not_stay_with_the_former_admin() {
     let new_admin = Address::generate(&deployment.env);
 
     deployment.config.pause();
-    deployment.config.set_admin(&new_admin);
+    deployment.config.nominate_admin(&new_admin);
+    deployment.config.accept_admin();
     assert_eq!(deployment.config.get_admin(), new_admin);
 
     // The contract must now demand the new administrator's signature. If the
@@ -105,7 +106,8 @@ fn rotation_does_not_clear_the_pause_flag() {
     let new_admin = Address::generate(&deployment.env);
 
     deployment.config.pause();
-    deployment.config.set_admin(&new_admin);
+    deployment.config.nominate_admin(&new_admin);
+    deployment.config.accept_admin();
 
     assert!(
         deployment.config.is_paused(),
@@ -121,13 +123,16 @@ fn a_former_admin_cannot_reclaim_authority_by_calling_set_admin() {
     let new_admin = Address::generate(&deployment.env);
 
     deployment.config.pause();
-    deployment.config.set_admin(&new_admin);
+    deployment.config.nominate_admin(&new_admin);
+    deployment.config.accept_admin();
 
     // The former admin attempts to rotate authority back to themselves. Under
     // `mock_all_auths` the call is not rejected, so the assertion is on who the
     // contract required: it must be the *current* admin, never the caller.
-    deployment.config.set_admin(&former_admin);
-    assert_authorized_by(&deployment, &new_admin, &config_address, "set_admin");
+    deployment.config.nominate_admin(&former_admin);
+    assert_authorized_by(&deployment, &new_admin, &config_address, "nominate_admin");
+    deployment.config.accept_admin();
+    assert_authorized_by(&deployment, &former_admin, &config_address, "accept_admin");
 }
 
 #[test]
@@ -140,7 +145,8 @@ fn every_rotation_is_observable_through_the_config_version() {
 
     for _ in 0..3 {
         let next_admin = Address::generate(&deployment.env);
-        deployment.config.set_admin(&next_admin);
+        deployment.config.nominate_admin(&next_admin);
+        deployment.config.accept_admin();
 
         let current = deployment.config.get_config_version();
         assert!(
@@ -160,7 +166,8 @@ fn rotation_to_the_incumbent_is_accepted_without_changing_authority() {
     let admin = deployment.admin.clone();
 
     deployment.config.pause();
-    deployment.config.set_admin(&admin);
+    deployment.config.nominate_admin(&admin);
+    deployment.config.accept_admin();
 
     assert_eq!(deployment.config.get_admin(), admin);
     assert!(deployment.config.is_paused());
@@ -180,7 +187,8 @@ fn registry_admins_are_independent_of_the_config_admin() {
     let original = deployment.admin.clone();
     let new_admin = Address::generate(&deployment.env);
 
-    deployment.config.set_admin(&new_admin);
+    deployment.config.nominate_admin(&new_admin);
+    deployment.config.accept_admin();
 
     assert_eq!(deployment.config.get_admin(), new_admin);
     assert_eq!(
@@ -203,7 +211,8 @@ fn admin_revocation_authority_follows_the_proof_registry_admin_only() {
     let config_admin = Address::generate(&deployment.env);
 
     // Move the config admin, then confirm proof-registry still demands its own.
-    deployment.config.set_admin(&config_admin);
+    deployment.config.nominate_admin(&config_admin);
+    deployment.config.accept_admin();
     deployment.config.pause();
 
     deployment.proofs.admin_revoke_proof(&proof_id);
@@ -222,7 +231,10 @@ fn issuer_containment_requires_the_issuer_registry_admin() {
     let issuer_id = crate::harness::issuer_id_hash(&deployment.env, 1);
 
     deployment.config.pause();
-    deployment.issuers.suspend_issuer(&issuer_id);
+    deployment.issuers.suspend_issuer(
+        &issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
 
     assert_authorized_by(
         &deployment,
@@ -262,13 +274,19 @@ fn a_revoked_issuer_cannot_be_reactivated_after_the_incident() {
     let issuer_id = crate::harness::issuer_id_hash(&deployment.env, 1);
 
     deployment.config.pause();
-    deployment.issuers.revoke_issuer(&issuer_id);
+    deployment.issuers.revoke_issuer(
+        &issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     deployment.config.unpause();
 
     assert!(
         deployment
             .issuers
-            .try_reactivate_issuer(&issuer_id)
+            .try_reactivate_issuer(
+                &issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
+            )
             .is_err(),
         "revocation must survive the end of the pause"
     );
@@ -284,7 +302,10 @@ fn a_revoked_issuer_cannot_register_new_proofs_after_unpause() {
     let issuer_id = crate::harness::issuer_id_hash(&deployment.env, 1);
 
     deployment.config.pause();
-    deployment.issuers.revoke_issuer(&issuer_id);
+    deployment.issuers.revoke_issuer(
+        &issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     deployment.config.unpause();
 
     assert!(

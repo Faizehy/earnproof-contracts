@@ -94,12 +94,15 @@ fn unpause_emits_unpaused_once_and_matches_state() {
 fn set_admin_emits_admin_changed_once_and_matches_state() {
     let deployment = Deployment::new();
     let successor = Address::generate(&deployment.env);
-    let events = deployment.capture(|| deployment.config.set_admin(&successor));
-    let event = expect_single(&deployment.env, &events, "admin_changed");
+    let events = deployment.capture(|| {
+        deployment.config.nominate_admin(&successor);
+        deployment.config.accept_admin()
+    });
+    let event = expect_single(&deployment.env, &events, "admin_transfer_accepted");
 
     let announced: Address = event
         .field(&deployment.env, "new_admin")
-        .expect("admin_changed event must carry a new_admin field");
+        .expect("admin_transfer_accepted event must carry a new_admin field");
 
     assert_eq!(announced, successor);
     assert_eq!(announced, deployment.config.get_admin());
@@ -186,7 +189,12 @@ fn update_issuer_emits_issuer_metadata_updated_once_and_matches_storage() {
 #[test]
 fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
     let deployment = Deployment::new();
-    let events = deployment.capture(|| deployment.issuers.suspend_issuer(&deployment.issuer_id));
+    let events = deployment.capture(|| {
+        deployment.issuers.suspend_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    });
     let event = expect_single(&deployment.env, &events, "issuer_suspended");
 
     let record = deployment.issuers.get_issuer(&deployment.issuer_id);
@@ -199,8 +207,16 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
 #[test]
 fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
     let deployment = Deployment::new();
-    deployment.issuers.suspend_issuer(&deployment.issuer_id);
-    let events = deployment.capture(|| deployment.issuers.reactivate_issuer(&deployment.issuer_id));
+    deployment.issuers.suspend_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
+    let events = deployment.capture(|| {
+        deployment.issuers.reactivate_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    });
     let event = expect_single(&deployment.env, &events, "issuer_reactivated");
 
     let record = deployment.issuers.get_issuer(&deployment.issuer_id);
@@ -213,7 +229,12 @@ fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
 #[test]
 fn revoke_issuer_emits_issuer_revoked_once_and_matches_storage() {
     let deployment = Deployment::new();
-    let events = deployment.capture(|| deployment.issuers.revoke_issuer(&deployment.issuer_id));
+    let events = deployment.capture(|| {
+        deployment.issuers.revoke_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    });
     let event = expect_single(&deployment.env, &events, "issuer_revoked");
 
     let record = deployment.issuers.get_issuer(&deployment.issuer_id);

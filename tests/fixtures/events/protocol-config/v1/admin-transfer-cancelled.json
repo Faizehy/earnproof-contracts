@@ -1,0 +1,22 @@
+{
+  "event": "AdminTransferCancelled",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["AdminTransferCancelled"],
+  "payload": {
+    "pending_admin": {
+      "type": "Address",
+      "description": "Stellar address of the cancelled nominated administrator.",
+      "example": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    },
+    "cancelled_by": {
+      "type": "Address",
+      "description": "Stellar address of the current administrator who cancelled.",
+      "example": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  "emitted_by": "cancel_admin_transfer",
+  "description": "Emitted when a pending protocol administrator transfer is cancelled.",
+  "compatibility": "stable"
+}

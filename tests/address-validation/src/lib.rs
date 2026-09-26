@@ -36,7 +36,13 @@ mod tests {
 
         client.initialize(&Address::generate(&env));
         let replacement = Address::from_str(&env, ZERO_ADDR);
-        let result = client.try_set_admin(&replacement);
+        let result = {
+            let r = client.try_nominate_admin(&replacement);
+            if r.is_ok() {
+                let _ = client.try_accept_admin();
+            }
+            r
+        };
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 

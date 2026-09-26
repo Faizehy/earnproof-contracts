@@ -238,7 +238,8 @@ pub fn exercised_deployment() -> Deployment {
     config.deprecate_schema_version(&2);
     config.pause();
     config.unpause();
-    config.set_admin(&rotated_admin);
+    config.nominate_admin(&rotated_admin);
+    config.accept_admin();
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -252,15 +253,24 @@ pub fn exercised_deployment() -> Deployment {
         &bytes32(&env, 11),
         &bytes32(&env, 99),
     );
-    issuers.suspend_issuer(&bytes32(&env, 10));
-    issuers.reactivate_issuer(&bytes32(&env, 10));
+    issuers.suspend_issuer(
+        &bytes32(&env, 10),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
+    issuers.reactivate_issuer(
+        &bytes32(&env, 10),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
     issuers.register_issuer(
         &bytes32(&env, 20),
         &revoked_issuer,
         &bytes32(&env, 21),
         &bytes32(&env, 99),
     );
-    issuers.revoke_issuer(&bytes32(&env, 20));
+    issuers.revoke_issuer(
+        &bytes32(&env, 20),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
 
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);

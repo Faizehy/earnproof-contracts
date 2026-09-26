@@ -217,10 +217,18 @@ impl Deployment<'_> {
             &self.env,
             &self.admin,
             &self.config_address,
-            "set_admin",
+            "nominate_admin",
             (new_admin,).into_val(&self.env),
         );
-        self.config.set_admin(new_admin);
+        self.config.nominate_admin(new_admin);
+        authorize(
+            &self.env,
+            new_admin,
+            &self.config_address,
+            "accept_admin",
+            ().into_val(&self.env),
+        );
+        self.config.accept_admin();
     }
 
     pub fn suspend_issuer(&self, issuer_id: &BytesN<32>) {
@@ -229,9 +237,12 @@ impl Deployment<'_> {
             &self.admin,
             &self.issuers_address,
             "suspend_issuer",
-            (issuer_id,).into_val(&self.env),
+            (issuer_id, &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32])).into_val(&self.env),
         );
-        self.issuers.suspend_issuer(issuer_id);
+        self.issuers.suspend_issuer(
+            issuer_id,
+            &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
+        );
     }
 
     pub fn rotate_issuer_address(&self, issuer_id: &BytesN<32>, new_address: &Address) {

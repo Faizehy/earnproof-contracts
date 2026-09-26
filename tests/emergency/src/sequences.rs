@@ -140,11 +140,35 @@ fn apply_to_contracts(deployment: &Deployment, op: Op, step: usize) -> bool {
         Unpause => deployment.config.try_unpause().is_ok(),
         RotateAdmin => {
             let next = Address::generate(&deployment.env);
-            deployment.config.try_set_admin(&next).is_ok()
+            {
+                let r = deployment.config.try_nominate_admin(&next);
+                if r.is_ok() {
+                    let _ = deployment.config.try_accept_admin();
+                }
+                r.is_ok()
+            }
         }
-        SuspendIssuer => deployment.issuers.try_suspend_issuer(&issuer_id).is_ok(),
-        ReactivateIssuer => deployment.issuers.try_reactivate_issuer(&issuer_id).is_ok(),
-        RevokeIssuer => deployment.issuers.try_revoke_issuer(&issuer_id).is_ok(),
+        SuspendIssuer => deployment
+            .issuers
+            .try_suspend_issuer(
+                &issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+            )
+            .is_ok(),
+        ReactivateIssuer => deployment
+            .issuers
+            .try_reactivate_issuer(
+                &issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+            )
+            .is_ok(),
+        RevokeIssuer => deployment
+            .issuers
+            .try_revoke_issuer(
+                &issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+            )
+            .is_ok(),
         RevokeProof => deployment
             .proofs
             .try_admin_revoke_proof(&fixture_proof)
@@ -276,7 +300,8 @@ fn a_paused_protocol_cannot_be_left_without_an_administrator() {
     let mut current = deployment.admin.clone();
     for _ in 0..5 {
         let next = Address::generate(&deployment.env);
-        deployment.config.set_admin(&next);
+        deployment.config.nominate_admin(&next);
+        deployment.config.accept_admin();
 
         let observed = deployment.config.get_admin();
         assert_eq!(observed, next, "rotation must name the intended successor");
@@ -362,7 +387,10 @@ fn cross_contract_disagreement_resolves_in_favour_of_containment() {
         let issuer_id = issuer_id_hash(&deployment.env, 1);
 
         if revoke_issuer {
-            deployment.issuers.revoke_issuer(&issuer_id);
+            deployment.issuers.revoke_issuer(
+                &issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+            );
         }
         if paused {
             deployment.config.pause();
@@ -396,9 +424,10 @@ fn rejected_operations_leave_no_partial_state() {
     // revoked (blocking suspend/reactivate) and the fixture proof is revoked
     // (blocking a second revocation).
     deployment.config.pause();
-    deployment
-        .issuers
-        .revoke_issuer(&issuer_id_hash(&deployment.env, 1));
+    deployment.issuers.revoke_issuer(
+        &issuer_id_hash(&deployment.env, 1),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     deployment
         .proofs
         .admin_revoke_proof(&hash(&deployment.env, FIXTURE_PROOF));

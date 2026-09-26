@@ -85,6 +85,7 @@ fuzz_target!(|data: &[u8]| {
         status,
         created_at,
         updated_at,
+        reason_commitment: None,
     };
 
     // Verify invariants

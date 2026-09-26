@@ -146,7 +146,12 @@ pub fn build(name: &str) -> Scenario {
         // --- revoked: both terminal states reached -------------------------
         "revoked" => {
             recorder.after(&env, || proofs.revoke_proof(&bytes32(&env, PROOF_ID)));
-            recorder.after(&env, || issuers.revoke_issuer(&bytes32(&env, ISSUER_ID)));
+            recorder.after(&env, || {
+                issuers.revoke_issuer(
+                    &bytes32(&env, ISSUER_ID),
+                    &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+                )
+            });
         }
         // --- expired: ledger time past the proof expiration ----------------
         //

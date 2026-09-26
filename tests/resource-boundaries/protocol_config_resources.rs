@@ -116,7 +116,8 @@ mod protocol_config_resource_tests {
         let new_admin = Address::from_str(&env, "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN");
 
         env.budget().reset_default();
-        client.set_admin(&new_admin);
+        client.nominate_admin(&new_admin);
+        client.accept_admin();
         assert_eq!(client.get_admin(), new_admin);
 
         let cpu_count = env.budget().cpu_instruction_count();
@@ -255,7 +256,8 @@ mod protocol_config_resource_tests {
         // Operation 3: set_admin
         env.budget().reset_default();
         let new_admin = Address::from_str(&env, "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN");
-        client.set_admin(&new_admin);
+        client.nominate_admin(&new_admin);
+        client.accept_admin();
         println!("  - set_admin(): cpu={}", env.budget().cpu_instruction_count());
 
         // Operation 4: is_paused

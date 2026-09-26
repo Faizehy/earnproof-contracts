@@ -119,7 +119,8 @@
 //!     assert_eq!(client.get_admin(), admin_1);
 //!
 //!     // Transfer admin to admin_2
-//!     client.set_admin(&admin_2);
+//!     client.nominate_admin(&admin_2);
+        client.accept_admin();
 //!     assert_eq!(client.get_admin(), admin_2);
 //! }
 //! ```
