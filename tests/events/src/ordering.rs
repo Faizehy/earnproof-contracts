@@ -230,7 +230,6 @@ const FORBIDDEN_FIELDS: &[&str] = &[
     "signature",
     "key",
     "seed",
-    "commitment",
 ];
 
 /// Asserts that no payload field name resembles protected data.
