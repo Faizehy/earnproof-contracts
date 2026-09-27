@@ -1,6 +1,6 @@
 # scenario: revoked
-# revision: 7
-# reason: Added approve_proof_type
+# revision: 8
+# reason: Added proof type to proof registry
 # body-digest: 01a1d6e8c471a9d00c47c11e42be05759ea2306a904f74c4b8d1237a98cd87ff
 
 [ledger]

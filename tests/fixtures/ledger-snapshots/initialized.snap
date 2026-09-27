@@ -1,6 +1,6 @@
 # scenario: initialized
-# revision: 7
-# reason: Added approve_proof_type
+# revision: 8
+# reason: Added proof type to proof registry
 # body-digest: f57f83c376a01deba0b1b41c039a04b0024097e249ddfeb6c092cc8c2a13e66e
 
 [ledger]

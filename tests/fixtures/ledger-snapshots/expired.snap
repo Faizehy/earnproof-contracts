@@ -1,6 +1,6 @@
 # scenario: expired
-# revision: 7
-# reason: Added approve_proof_type
+# revision: 8
+# reason: Added proof type to proof registry
 # body-digest: 62d91c7600e28e5895a3faf1f6227c6e5ead5b4a5671871e7d34bceedb979323
 
 [ledger]

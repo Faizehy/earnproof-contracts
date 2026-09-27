@@ -112,7 +112,7 @@ struct GoldenAbi {
 
 fn load_golden(contract_name: &str) -> GoldenAbi {
     let path = format!(
-        "tests/compatibility/goldens/{}.abi.json",
+        "goldens/{}.abi.json",
         contract_name
     );
     let content = fs::read_to_string(&path)
@@ -286,7 +286,7 @@ mod golden_tests {
         let contracts = vec!["protocol-config", "issuer-registry", "proof-registry"];
 
         for contract in &contracts {
-            let path = format!("tests/compatibility/goldens/{}.abi.json", contract);
+            let path = format!("goldens/{}.abi.json", contract);
 
             assert!(
                 Path::new(&path).exists(),
@@ -299,7 +299,7 @@ mod golden_tests {
 
     #[test]
     fn test_golden_files_are_valid_json() {
-        let goldens_dir = Path::new("tests/compatibility/goldens");
+        let goldens_dir = Path::new("goldens");
 
         let entries =
             fs::read_dir(goldens_dir).expect("Cannot read goldens directory");
@@ -481,14 +481,14 @@ mod golden_tests {
     #[test]
     fn test_negative_fixture_exists() {
         assert!(
-            Path::new("tests/compatibility/goldens/negative-fixture.json").exists(),
+            Path::new("goldens/negative-fixture.json").exists(),
             "Negative fixture must exist to prove gate can fail"
         );
     }
 
     #[test]
     fn test_negative_fixture_is_valid_json() {
-        let content = fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
+        let content = fs::read_to_string("goldens/negative-fixture.json")
             .expect("Cannot read negative fixture");
 
         let result: Result<serde_json::Value, _> = serde_json::from_str(&content);
@@ -503,7 +503,7 @@ mod golden_tests {
     #[test]
     fn test_negative_fixture_contains_removed_function() {
         let content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
+            fs::read_to_string("goldens/negative-fixture.json")
                 .expect("Cannot read negative fixture");
 
         let fixture: serde_json::Value =
@@ -528,7 +528,7 @@ mod golden_tests {
     #[test]
     fn test_negative_fixture_contains_removed_storage_key() {
         let content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
+            fs::read_to_string("goldens/negative-fixture.json")
                 .expect("Cannot read negative fixture");
 
         let fixture: serde_json::Value =
@@ -553,7 +553,7 @@ mod golden_tests {
     #[test]
     fn test_negative_fixture_contains_changed_storage_type() {
         let content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
+            fs::read_to_string("goldens/negative-fixture.json")
                 .expect("Cannot read negative fixture");
 
         let fixture: serde_json::Value =
@@ -579,7 +579,7 @@ mod golden_tests {
 
     #[test]
     fn test_golden_files_contain_no_production_identifiers() {
-        let goldens_dir = Path::new("tests/compatibility/goldens");
+        let goldens_dir = Path::new("goldens");
         let entries = fs::read_dir(goldens_dir).expect("Cannot read goldens directory");
 
         // Patterns that suggest real production data (NOT part of legitimate addresses)
@@ -900,7 +900,7 @@ mod golden_tests {
 
         // Load negative fixture
         let negative_content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
+            fs::read_to_string("goldens/negative-fixture.json")
                 .expect("Cannot read negative fixture");
 
         let negative_raw: serde_json::Value =
@@ -928,7 +928,7 @@ mod golden_tests {
     #[test]
     fn test_negative_fixture_has_breaking_changes_marker() {
         let content =
-            fs::read_to_string("tests/compatibility/goldens/negative-fixture.json")
+            fs::read_to_string("goldens/negative-fixture.json")
                 .expect("Cannot read negative fixture");
 
         let fixture: serde_json::Value =
@@ -949,7 +949,7 @@ mod golden_tests {
 
         for contract in &contracts {
             let content = fs::read_to_string(format!(
-                "tests/compatibility/goldens/{}.abi.json",
+                "goldens/{}.abi.json",
                 contract
             ))
             .unwrap_or_else(|_| panic!("Cannot read {}.abi.json", contract));
@@ -1014,7 +1014,7 @@ mod golden_tests {
 
     #[test]
     fn test_proof_registry_documents_dependencies() {
-        let content = fs::read_to_string("tests/compatibility/goldens/proof-registry.abi.json")
+        let content = fs::read_to_string("goldens/proof-registry.abi.json")
             .expect("Cannot read proof-registry golden");
 
         let raw: serde_json::Value =
@@ -1057,7 +1057,7 @@ mod golden_tests {
 
         for contract in &contracts {
             let content = fs::read_to_string(format!(
-                "tests/compatibility/goldens/{}.abi.json",
+                "goldens/{}.abi.json",
                 contract
             ))
             .unwrap_or_else(|_| panic!("Cannot read {}.abi.json", contract));
