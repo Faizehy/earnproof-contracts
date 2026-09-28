@@ -125,16 +125,19 @@ fn function_names(specs: &[FunctionSpec]) -> HashSet<String> {
     specs.iter().map(|f| f.name.clone()).collect()
 }
 
+#[allow(dead_code)]
 fn error_codes(specs: &[ErrorSpec]) -> HashMap<u32, String> {
     specs.iter().map(|e| (e.code, e.name.clone())).collect()
 }
 
+#[allow(dead_code)]
 fn storage_keys(specs: &[StorageSpec]) -> HashSet<String> {
     specs.iter().map(|s| s.key.clone()).collect()
 }
 
 // ── Helper: compute breaking/additive changes ────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct CompatibilityReport {
     added_functions: Vec<String>,
@@ -148,6 +151,7 @@ struct CompatibilityReport {
     breaking_changes: usize,
 }
 
+#[allow(dead_code)]
 impl CompatibilityReport {
     fn new() -> Self {
         CompatibilityReport {
@@ -307,7 +311,7 @@ mod golden_tests {
         for entry in entries.flatten() {
             let path = entry.path();
 
-            if path.extension().map_or(false, |e| e == "json") {
+            if path.extension().is_some_and(|e| e == "json") {
                 let content =
                     fs::read_to_string(&path).unwrap_or_else(|_| panic!("Cannot read: {:?}", path));
 
@@ -512,7 +516,7 @@ mod golden_tests {
 
         let has_removed = functions
             .iter()
-            .any(|f| f["name"].as_str().map_or(false, |n| n.contains("removed")));
+            .any(|f| f["name"].as_str().is_some_and(|n| n.contains("removed")));
 
         assert!(
             has_removed,
@@ -533,7 +537,7 @@ mod golden_tests {
 
         let has_removed_key = storage
             .iter()
-            .any(|s| s["key"].as_str().map_or(false, |k| k.contains("Removed")));
+            .any(|s| s["key"].as_str().is_some_and(|k| k.contains("Removed")));
 
         assert!(
             has_removed_key,
@@ -555,7 +559,7 @@ mod golden_tests {
         let has_changed_type = storage.iter().any(|s| {
             s["breaking_change"]
                 .as_str()
-                .map_or(false, |bc| bc.contains("type changed"))
+                .is_some_and(|bc| bc.contains("type changed"))
         });
 
         assert!(
@@ -583,7 +587,7 @@ mod golden_tests {
         for entry in entries.flatten() {
             let path = entry.path();
 
-            if path.extension().map_or(false, |e| e == "json") {
+            if path.extension().is_some_and(|e| e == "json") {
                 let content = fs::read_to_string(&path).unwrap_or_default();
 
                 for pattern in &forbidden_patterns {
@@ -605,9 +609,9 @@ mod golden_tests {
         // Simulate: current spec has fewer functions than golden
         // This proves the gate logic works
 
-        let golden_functions = vec!["initialize", "get_admin", "pause", "unpause"];
+        let golden_functions = ["initialize", "get_admin", "pause", "unpause"];
 
-        let current_functions = vec!["initialize", "get_admin"];
+        let current_functions = ["initialize", "get_admin"];
         // pause, unpause were removed — breaking change
 
         let removed: Vec<&str> = golden_functions
@@ -631,9 +635,9 @@ mod golden_tests {
         // Simulate: current spec has MORE functions than golden
         // This is an additive change — should pass
 
-        let golden_functions = vec!["initialize", "get_admin"];
+        let golden_functions = ["initialize", "get_admin"];
 
-        let current_functions = vec!["initialize", "get_admin", "get_version"];
+        let current_functions = ["initialize", "get_admin", "get_version"];
         // get_version is new
 
         let removed: Vec<&str> = golden_functions
@@ -652,7 +656,7 @@ mod golden_tests {
     fn test_error_code_change_would_be_detected_as_breaking() {
         let golden_errors = vec![("AlreadyInitialized", 1), ("NotInitialized", 2)];
 
-        let current_errors = vec![
+        let current_errors = [
             ("AlreadyInitialized", 1),
             ("NotInitialized", 99), // code changed — breaking
         ];
@@ -672,9 +676,9 @@ mod golden_tests {
 
     #[test]
     fn test_additive_error_with_higher_code_would_pass() {
-        let golden_errors = vec![("AlreadyInitialized", 1), ("NotInitialized", 2)];
+        let golden_errors = [("AlreadyInitialized", 1), ("NotInitialized", 2)];
 
-        let current_errors = vec![
+        let current_errors = [
             ("AlreadyInitialized", 1),
             ("NotInitialized", 2),
             ("InvalidInput", 60), // new error — additive
@@ -699,7 +703,7 @@ mod golden_tests {
             ("DataKey::ConfigVersion", "u32"),
         ];
 
-        let current_storage = vec![
+        let current_storage = [
             ("DataKey::Paused", "String"), // type changed — breaking
             ("DataKey::ConfigVersion", "u32"),
         ];
@@ -722,13 +726,13 @@ mod golden_tests {
 
     #[test]
     fn test_storage_key_removal_would_be_detected_as_breaking() {
-        let golden_storage = vec![
+        let golden_storage = [
             "DataKey::Admin",
             "DataKey::Paused",
             "DataKey::ConfigVersion",
         ];
 
-        let current_storage = vec![
+        let current_storage = [
             "DataKey::Admin",
             "DataKey::ConfigVersion",
             // DataKey::Paused was removed — breaking
@@ -746,9 +750,9 @@ mod golden_tests {
 
     #[test]
     fn test_additive_storage_key_would_pass_gate() {
-        let golden_storage = vec!["DataKey::Admin", "DataKey::Paused"];
+        let golden_storage = ["DataKey::Admin", "DataKey::Paused"];
 
-        let current_storage = vec![
+        let current_storage = [
             "DataKey::Admin",
             "DataKey::Paused",
             "DataKey::NewFeatureFlag", // new key — additive
@@ -887,7 +891,7 @@ mod golden_tests {
         // Positive should have more (negative intentionally removes some)
         // This is a weak test but demonstrates the fixture has differences
         assert!(
-            protocol_golden.functions.len() > 0,
+            !protocol_golden.functions.is_empty(),
             "Positive golden must have functions"
         );
 
