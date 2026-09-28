@@ -1,6 +1,6 @@
 # scenario: initialized
-# revision: 7
-# reason: updating proof record format
+# revision: 8
+# reason: Added reason_commitment and predecessor_id_hash fields
 # body-digest: 2afb4dd02cefed5049b6c79f3245b3aba69fb6980a5d06b22347d271acac8f6d
 
 [ledger]
