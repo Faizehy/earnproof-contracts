@@ -1,0 +1,86 @@
+{
+  "manifestVersion": 1,
+  "network": "stellar-testnet",
+  "deployedAt": "2026-08-11T04:21:00Z",
+  "admin": "GCDPMNCCMADKEL4YJAJNJXTCGZFAGWQCEFXJYBZVLJCFYOI76FTX6HMV",
+  "admins": {
+    "protocolConfig": "GCDPMNCCMADKEL4YJAJNJXTCGZFAGWQCEFXJYBZVLJCFYOI76FTX6HMV",
+    "issuerRegistry": "GCDPMNCCMADKEL4YJAJNJXTCGZFAGWQCEFXJYBZVLJCFYOI76FTX6HMV",
+    "proofRegistry": "GCDPMNCCMADKEL4YJAJNJXTCGZFAGWQCEFXJYBZVLJCFYOI76FTX6HMV"
+  },
+  "source": "earnproof-deployer",
+  "initialIssuer": {
+    "address": "GCDPMNCCMADKEL4YJAJNJXTCGZFAGWQCEFXJYBZVLJCFYOI76FTX6HMV",
+    "issuerIdHash": "d0aaef7dc73ae306d32c58b54829e422737a8a936c41991ce490f5822af294ce",
+    "metadataHash": "75f7b32c6a13e9d7000b52b33ee1a657dd1359a6bd79837af6fdc6a1d393d87b"
+  },
+  "contracts": {
+    "protocolConfig": "CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A",
+    "issuerRegistry": "CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F",
+    "proofRegistry": "CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK"
+  },
+  "wasm": {
+    "protocolConfig": {
+      "path": "target/wasm32v1-none/release/protocol_config.wasm",
+      "sha256": "dd0a2d58bc634f09f94f92b09811714a25f36f4e0bd34c10dbac33238c84d594",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "initial-deployment"
+      }
+    },
+    "issuerRegistry": {
+      "path": "target/wasm32v1-none/release/issuer_registry.wasm",
+      "sha256": "bc57dd87f98da28779870e2494655fa6cbe8f8d5d6d5fbd4eb4f6a0a59070ec5",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "initial-deployment"
+      }
+    },
+    "proofRegistry": {
+      "path": "target/wasm32v1-none/release/proof_registry.wasm",
+      "sha256": "4e2a433a775d7fcb1e002cea53a2a0c36c127d3026723da6b7d01491d4a0340c",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "initial-deployment"
+      }
+    }
+  },
+  "schemaVersions": [1],
+  "transactions": {
+    "protocolConfigUpload": "https://stellar.expert/explorer/testnet/tx/19f005cd6fb500b825f14b3c25ca50a73eb1343b633f03627575a18c1c2ac309",
+    "protocolConfigDeploy": "https://stellar.expert/explorer/testnet/tx/56f8db65eab6b8dbcfd2e24d7b28afcd00528c6ea0ab0566ff942c9c93e2c9cd",
+    "issuerRegistryUpload": "https://stellar.expert/explorer/testnet/tx/b3d0f1d77258f104a7978bd11d142246ffc7df07a061bf3851e3bf11486ff8f6",
+    "issuerRegistryDeploy": "https://stellar.expert/explorer/testnet/tx/3ec146fabe61b62983cfd27aff4be5893df4980af25e58fcef40e1b8a06d24cc",
+    "proofRegistryUpload": "https://stellar.expert/explorer/testnet/tx/c5da9c0d782d4f485b316318055df7a6f1cdac8c8fb9abbb2158540e7d6a9420",
+    "proofRegistryDeploy": "https://stellar.expert/explorer/testnet/tx/bf6101cb6bd5409d6bdc6f16cc6898aa4bdf0ce66ce138d350d061e1eee5fc46",
+    "protocolConfigInitialize": "https://stellar.expert/explorer/testnet/tx/b7f26309f240e1f669b5b2c1be656641758989f92a33d88b76f27e8fcb622b6c",
+    "schemaVersionApprove": "https://stellar.expert/explorer/testnet/tx/47a2173c85998eb591e6f2c30227d1d2de46e4a9fb7131c4cfc8af7ffc860c0",
+    "issuerRegistryInitialize": "https://stellar.expert/explorer/testnet/tx/d11b18f7759d184071e0cd829bbbb86a376f67a0452bfff3385cd4f803a3e0cb",
+    "issuerRegister": "https://stellar.expert/explorer/testnet/tx/708383bb85678dca4c0539e3380952dca16feabb32e6a05adc17917cb7135650",
+    "proofRegistryInitialize": "https://stellar.expert/explorer/testnet/tx/8b297500f82c5439033c6f221a3aa873c889fa0ac64ea0dff87077a785c68785"
+  },
+  "explorer": {
+    "protocolConfig": "https://lab.stellar.org/r/testnet/contract/CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A",
+    "issuerRegistry": "https://lab.stellar.org/r/testnet/contract/CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F",
+    "proofRegistry": "https://lab.stellar.org/r/testnet/contract/CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK"
+  },
+  "commands": [
+    "rustup target add wasm32v1-none",
+    "stellar contract build",
+    "stellar contract deploy --source earnproof-deployer --network testnet --wasm <wasm>",
+    "stellar contract invoke --source earnproof-deployer --network testnet --auth-mode root --auto-sign --id <contract> -- <function>"
+  ],
+  "notes": "Contract state was verified after initialization with read-only calls. The deployment script now retries transient Stellar RPC transport errors before failing. Admin rotation is supported for all contracts; see docs/admin-operations.md for the coordination runbook."
+}
