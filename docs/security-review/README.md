@@ -449,7 +449,7 @@ Test inventory at this commit:
 | Storage keys | `tests/storage-keys/src/lib.rs` | 21 |
 | TTL | `tests/ttl/src/lib.rs` | 62 |
 | Compatibility | `tests/compatibility/tests/compatibility.rs` | 33 |
-| **Total** | | **486** |
+| **Total** | | **286** |
 
 Manifest verification (PowerShell, no credentials required):
 

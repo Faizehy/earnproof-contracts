@@ -1,1 +1,1 @@
-{"contract":"protocol-config","wasmHash":"92900052c4b73e89ffef5cfdaf70c37b040e3d52417be5f3bc12152992a273ba","path":"target/wasm32v1-none/release/protocol_config.wasm"}
+{"contract":"protocol-config","wasmHash":"86b39826a4912e3ee4d7c9fa233aec66ef5fc2e0319d0761dc36e03172f0e7e9","path":"target/wasm32v1-none/release/protocol_config.wasm"}
