@@ -448,7 +448,7 @@ Test inventory at this commit:
 | Resource budgets | `tests/budgets/src/lib.rs` | 17 |
 | Storage keys | `tests/storage-keys/src/lib.rs` | 21 |
 | TTL | `tests/ttl/src/lib.rs` | 62 |
-| **Total** | | **429** |
+| **Total** | | **492** |
 
 Manifest verification (PowerShell, no credentials required):
 
