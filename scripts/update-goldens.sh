@@ -57,6 +57,9 @@ if ! cargo build \
   --target wasm32v1-none \
   --release \
   --quiet \
+  --package protocol-config \
+  --package issuer-registry \
+  --package proof-registry \
   2>&1 | grep -E "(error|warning:)" || true; then
   :
 fi

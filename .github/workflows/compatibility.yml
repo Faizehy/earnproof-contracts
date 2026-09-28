@@ -39,7 +39,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       
       - name: Build contracts (wasm32)
-        run: cargo build --target wasm32v1-none --release --quiet
+        run: cargo build --target wasm32v1-none --release --quiet --package protocol-config --package issuer-registry --package proof-registry
       
       - name: Run unit tests
         run: cargo test --workspace --lib
