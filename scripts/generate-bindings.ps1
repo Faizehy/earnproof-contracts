@@ -250,8 +250,6 @@ foreach ($contractName in $contractNames) {
     # Write placeholder spec (actual extraction requires stellar-cli setup)
     $spec = [ordered]@{
       contract = $contractName
-      wasmHash = $wasmHashes[$contractName]
-      path = $wasmPath
     } | ConvertTo-Json -Compress
 
     Set-Utf8NoBomContent -Path $specPath -Value $spec

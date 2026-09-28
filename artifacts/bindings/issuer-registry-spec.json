@@ -1,1 +1,1 @@
-{"contract":"issuer-registry","wasmHash":"aec9734fe46759de3c2184a37230a28b454cf0f411c347f547dfa8aa82e54703","path":"target/wasm32v1-none/release/issuer_registry.wasm"}
+{"contract":"issuer-registry"}
