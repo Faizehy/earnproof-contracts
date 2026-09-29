@@ -1,7 +1,7 @@
 # scenario: paused
-# revision: 4
-# reason: contract version keys are now persisted in initialized ledgers
-# body-digest: 01db9c6fd2c371f4e82f9335d4f4b82ae10de9b172fff39240eb74da684c9862
+# revision: 5
+# reason: proof records now persist revoked_ledger and revocation emits proof_revoked
+# body-digest: 06004f06a4f3860931e50e9d3508d0c69c0cccfccc4e8094fe03f796d562efa3
 
 [ledger]
 sequence = 1000
@@ -16,7 +16,7 @@ proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
-proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
+proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:revoked_ledger: u32:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
 protocol-config instance [sym:Admin] = addr:admin
 protocol-config instance [sym:ConfigVersion] = u32:3
 protocol-config instance [sym:ContractVersion] = u32:1

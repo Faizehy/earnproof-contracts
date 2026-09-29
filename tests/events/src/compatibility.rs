@@ -26,6 +26,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     ("unpaused", &["paused"]),
     ("schema_approved", &["version"]),
     ("schema_deprecated", &["version"]),
+    ("schema_predecessor_set", &["version", "predecessor"]),
     // issuer-registry
     (
         "issuer_registered",
@@ -46,6 +47,11 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     (
         "issuer_address_rotated",
         &["issuer_id_hash", "old_address", "new_address", "updated_at"],
+    ),
+    // proof-registry
+    (
+        "proof_revoked",
+        &["proof_id_hash", "revoked_at", "revoked_ledger", "by_admin"],
     ),
 ];
 
@@ -119,6 +125,11 @@ fn protocol_config_events_match_their_fixtures() {
     for event in deployment.capture(|| deployment.config.deprecate_schema_version(&4)) {
         assert_matches_fixture(&deployment.env, &event);
     }
+    // Approve a successor of the schema registered by Deployment::new; this
+    // publishes both schema_predecessor_set and schema_approved.
+    for event in deployment.capture(|| deployment.config.approve_schema_with_predecessor(&9, &1)) {
+        assert_matches_fixture(&deployment.env, &event);
+    }
     for event in deployment.capture(|| deployment.config.set_admin(&successor)) {
         assert_matches_fixture(&deployment.env, &event);
     }
@@ -185,6 +196,21 @@ fn issuer_registry_events_match_their_fixtures() {
 }
 
 #[test]
+fn proof_registry_events_match_their_fixtures() {
+    let deployment = Deployment::new();
+
+    let issuer_revoked = deployment.register_proof(0x21);
+    for event in deployment.capture(|| deployment.proofs.revoke_proof(&issuer_revoked)) {
+        assert_matches_fixture(&deployment.env, &event);
+    }
+
+    let admin_revoked = deployment.register_proof(0x22);
+    for event in deployment.capture(|| deployment.proofs.admin_revoke_proof(&admin_revoked)) {
+        assert_matches_fixture(&deployment.env, &event);
+    }
+}
+
+#[test]
 fn the_declared_event_set_has_no_duplicates() {
     // Two entries for one topic would make `declared_fields` return whichever
     // came first, silently weakening every assertion that depends on it.
@@ -214,18 +240,21 @@ fn every_declared_event_names_at_least_one_payload_field() {
 }
 
 #[test]
-fn proof_registry_declares_no_events() {
-    // The fixture at tests/fixtures/events/proof-registry/v1/events.json records
-    // an empty event list. Adding an event to this contract must therefore fail
-    // here first, forcing the fixture and docs/events.md to be updated with it.
-    let emitted_by_proof_registry = DECLARED_EVENTS
+fn proof_registry_declares_the_revocation_event() {
+    // proof-registry announces exactly one event: proof_revoked. Its fixture at
+    // tests/fixtures/events/proof-registry/v1/proof-revoked.json and docs/events.md
+    // must stay in step with this declaration.
+    let proof_events: std::vec::Vec<&str> = DECLARED_EVENTS
         .iter()
-        .any(|(name, _)| name.starts_with("proof_"));
+        .map(|(name, _)| *name)
+        .filter(|name| name.starts_with("proof_"))
+        .collect();
 
-    assert!(
-        !emitted_by_proof_registry,
-        "proof-registry is documented as emitting no events; \
-         update tests/fixtures/events/proof-registry/v1/events.json and \
-         docs/events.md before declaring one here"
+    assert_eq!(
+        proof_events,
+        std::vec!["proof_revoked"],
+        "proof-registry declares only proof_revoked; \
+         update tests/fixtures/events/proof-registry/v1/ and docs/events.md \
+         before declaring another"
     );
 }

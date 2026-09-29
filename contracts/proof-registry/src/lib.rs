@@ -1,7 +1,7 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, ProofError, ProofRecord, ProofStatus, TTL_EXTEND_TO_LEDGERS,
+    ContractError, ProofError, ProofRecord, ProofStatus, ProofValidity, TTL_EXTEND_TO_LEDGERS,
     TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
@@ -59,6 +59,17 @@ pub struct ContractUpgraded {
     pub old_contract_version: u32,
     pub new_contract_version: u32,
     pub upgraded_by: Address,
+}
+
+/// Emitted when a proof is revoked, carrying the effective revocation timing so
+/// off-chain verifiers learn when the proof became invalid without a follow-up
+/// query.
+#[contractevent]
+pub struct ProofRevoked {
+    pub proof_id_hash: BytesN<32>,
+    pub revoked_at: u64,
+    pub revoked_ledger: u32,
+    pub by_admin: bool,
 }
 
 #[contractimpl]
@@ -152,6 +163,7 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            revoked_ledger: 0,
         };
 
         env.storage().persistent().set(&key, &record);
@@ -193,6 +205,41 @@ impl ProofRegistryContract {
             Ok(record) => record.status == ProofStatus::Revoked,
             Err(_) => false,
         }
+    }
+
+    /// Returns a structured validity answer for a proof, including the effective
+    /// revocation timing when the proof has been revoked.
+    ///
+    /// # Revocation timing
+    /// `revocation` is `Some` only when the proof's status is `Revoked`; an
+    /// active proof reports `None` and therefore never exposes a fabricated
+    /// revocation time. A legacy record revoked before the ledger sequence was
+    /// recorded reports its timestamp with a `revoked_ledger` of `0`.
+    ///
+    /// Like [`Self::get_proof`], this reads the record and extends its TTL.
+    pub fn get_proof_validity(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<ProofValidity, ProofError> {
+        let record = Self::get_proof(env.clone(), proof_id_hash)?;
+        let is_valid =
+            record.status == ProofStatus::Active && env.ledger().timestamp() <= record.expires_at;
+        let revoked = record.status == ProofStatus::Revoked;
+        // Timing is reported only for a revoked proof, so an active proof never
+        // exposes a fabricated revocation time.
+        let (revoked_at, revoked_ledger) = if revoked {
+            (record.revoked_at, record.revoked_ledger)
+        } else {
+            (0, 0)
+        };
+        Ok(ProofValidity {
+            status: record.status,
+            is_valid,
+            expires_at: record.expires_at,
+            revoked,
+            revoked_at,
+            revoked_ledger,
+        })
     }
 
     pub fn get_admin(env: Env) -> Result<Address, ContractError> {
@@ -373,14 +420,29 @@ impl ProofRegistryContract {
             Self::require_auth(&record.issuer_address);
         }
 
+        // Repeated revocation is rejected, so the timing captured by the first
+        // successful revocation is never overwritten.
         if record.status == ProofStatus::Revoked {
             return Err(ProofError::ProofAlreadyRevoked);
         }
 
+        // State and timing are written together in a single persistent set, so a
+        // revoked proof can never be observed without its effective timing.
+        let revoked_at = env.ledger().timestamp();
+        let revoked_ledger = env.ledger().sequence();
         record.status = ProofStatus::Revoked;
-        record.revoked_at = env.ledger().timestamp();
+        record.revoked_at = revoked_at;
+        record.revoked_ledger = revoked_ledger;
         env.storage().persistent().set(&key, &record);
-        Self::extend_proof_key_ttl(env, &key);
+        Self::extend_proof_key_ttl(env.clone(), &key);
+
+        ProofRevoked {
+            proof_id_hash,
+            revoked_at,
+            revoked_ledger,
+            by_admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -406,10 +468,14 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProofRegistryContract, ProofRegistryContractClient};
-    use earnproof_shared::{ProofError, ProofStatus, TTL_THRESHOLD_LEDGERS};
+    use earnproof_shared::{ProofError, ProofRecord, ProofStatus, TTL_THRESHOLD_LEDGERS};
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
-    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
+    use soroban_sdk::{
+        testutils::{storage::Persistent as _, Events, Ledger as _},
+        xdr::ContractEventBody,
+        Address, BytesN, Env, Map, Symbol, TryFromVal, Val,
+    };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const ISSUER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -1542,5 +1608,213 @@ mod test {
         assert!(pc_client.is_paused());
         pc_client.unpause();
         assert!(!pc_client.is_paused());
+    }
+
+    // ── proof revocation effective ledger metadata tests ───────────────────────
+
+    #[test]
+    fn active_proof_validity_exposes_no_revocation_time() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let proof_id = bytes(&env, 1);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &Address::from_str(&env, ISSUER),
+            &1,
+            &2_000,
+        );
+
+        let record = client.get_proof(&proof_id);
+        assert_eq!(record.revoked_at, 0);
+        assert_eq!(record.revoked_ledger, 0);
+
+        let validity = client.get_proof_validity(&proof_id);
+        assert_eq!(validity.status, ProofStatus::Active);
+        assert!(validity.is_valid);
+        assert_eq!(validity.expires_at, 2_000);
+        // No fabricated revocation time for an active proof.
+        assert!(!validity.revoked);
+        assert_eq!(validity.revoked_at, 0);
+        assert_eq!(validity.revoked_ledger, 0);
+    }
+
+    #[test]
+    fn issuer_revocation_records_ledger_and_timestamp_atomically() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        env.ledger().set_timestamp(1_500);
+        env.ledger().set_sequence_number(4_242);
+
+        let proof_id = bytes(&env, 1);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &Address::from_str(&env, ISSUER),
+            &1,
+            &9_000,
+        );
+        client.revoke_proof(&proof_id);
+
+        // The stored record carries both dimensions of timing, written together.
+        let record = client.get_proof(&proof_id);
+        assert_eq!(record.status, ProofStatus::Revoked);
+        assert_eq!(record.revoked_at, 1_500);
+        assert_eq!(record.revoked_ledger, 4_242);
+
+        let validity = client.get_proof_validity(&proof_id);
+        assert_eq!(validity.status, ProofStatus::Revoked);
+        assert!(!validity.is_valid);
+        assert!(validity.revoked);
+        assert_eq!(validity.revoked_at, 1_500);
+        assert_eq!(validity.revoked_ledger, 4_242);
+    }
+
+    #[test]
+    fn admin_revocation_records_ledger_and_timestamp() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        env.ledger().set_timestamp(7_000);
+        env.ledger().set_sequence_number(88);
+
+        let proof_id = bytes(&env, 3);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 4),
+            &Address::from_str(&env, ISSUER),
+            &1,
+            &10_000,
+        );
+        client.admin_revoke_proof(&proof_id);
+
+        let validity = client.get_proof_validity(&proof_id);
+        assert!(validity.revoked);
+        assert_eq!(validity.revoked_at, 7_000);
+        assert_eq!(validity.revoked_ledger, 88);
+    }
+
+    #[test]
+    fn revocation_event_carries_effective_timing() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        env.ledger().set_timestamp(2_500);
+        env.ledger().set_sequence_number(321);
+
+        let proof_id = bytes(&env, 5);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 6),
+            &Address::from_str(&env, ISSUER),
+            &1,
+            &9_000,
+        );
+        client.revoke_proof(&proof_id);
+
+        let captured = env.events().all();
+        let event = captured
+            .events()
+            .iter()
+            .last()
+            .expect("revocation publishes an event");
+        let ContractEventBody::V0(body) = &event.body;
+        let data = Val::try_from_val(&env, &body.data).expect("event data decodes to a value");
+        let payload: Map<Symbol, Val> =
+            Map::try_from_val(&env, &data).expect("event payload is a map");
+        let revoked_at: u64 = payload
+            .get(Symbol::new(&env, "revoked_at"))
+            .and_then(|value| u64::try_from_val(&env, &value).ok())
+            .expect("event carries revoked_at");
+        let revoked_ledger: u32 = payload
+            .get(Symbol::new(&env, "revoked_ledger"))
+            .and_then(|value| u32::try_from_val(&env, &value).ok())
+            .expect("event carries revoked_ledger");
+        assert_eq!(revoked_at, 2_500);
+        assert_eq!(revoked_ledger, 321);
+    }
+
+    #[test]
+    fn repeated_revocation_preserves_original_timing() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        env.ledger().set_timestamp(1_000);
+        env.ledger().set_sequence_number(10);
+
+        let proof_id = bytes(&env, 7);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 8),
+            &Address::from_str(&env, ISSUER),
+            &1,
+            &50_000,
+        );
+        client.revoke_proof(&proof_id);
+
+        // Move the ledger forward and attempt to revoke again.
+        env.ledger().set_timestamp(2_000);
+        env.ledger().set_sequence_number(20);
+        let result = client.try_revoke_proof(&proof_id);
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRevoked)));
+
+        // Original timing is intact; the second attempt overwrote nothing.
+        let validity = client.get_proof_validity(&proof_id);
+        assert!(validity.revoked);
+        assert_eq!(validity.revoked_at, 1_000);
+        assert_eq!(validity.revoked_ledger, 10);
+    }
+
+    #[test]
+    fn legacy_revoked_record_reports_timestamp_without_ledger() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let proof_id = bytes(&env, 9);
+
+        // Simulate a record revoked before the ledger sequence was recorded:
+        // status Revoked, a timestamp, but revoked_ledger left at 0.
+        let legacy = ProofRecord {
+            proof_id_hash: proof_id.clone(),
+            commitment_hash: bytes(&env, 10),
+            issuer_address: Address::from_str(&env, ISSUER),
+            status: ProofStatus::Revoked,
+            schema_version: 1,
+            expires_at: 9_000,
+            created_at: 100,
+            revoked_at: 500,
+            revoked_ledger: 0,
+        };
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Proof(proof_id.clone()), &legacy);
+        });
+
+        let validity = client.get_proof_validity(&proof_id);
+        assert_eq!(validity.status, ProofStatus::Revoked);
+        assert!(!validity.is_valid);
+        assert!(validity.revoked);
+        assert_eq!(validity.revoked_at, 500);
+        assert_eq!(validity.revoked_ledger, 0);
+    }
+
+    #[test]
+    fn expired_but_unrevoked_proof_reports_no_revocation() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        env.ledger().set_timestamp(1_000);
+        let proof_id = bytes(&env, 11);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 12),
+            &Address::from_str(&env, ISSUER),
+            &1,
+            &2_000,
+        );
+
+        // At exactly expiry the proof is still valid (inclusive boundary).
+        env.ledger().set_timestamp(2_000);
+        let at_boundary = client.get_proof_validity(&proof_id);
+        assert!(at_boundary.is_valid);
+        assert!(!at_boundary.revoked);
+
+        // Past expiry it is invalid, but expiry is not revocation: no timing.
+        env.ledger().set_timestamp(2_001);
+        let expired = client.get_proof_validity(&proof_id);
+        assert_eq!(expired.status, ProofStatus::Active);
+        assert!(!expired.is_valid);
+        assert!(!expired.revoked);
+        assert_eq!(expired.revoked_at, 0);
+        assert_eq!(expired.revoked_ledger, 0);
     }
 }

@@ -1,0 +1,32 @@
+{
+  "event": "ProofRevoked",
+  "contract": "proof-registry",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["ProofRevoked"],
+  "payload": {
+    "proof_id_hash": {
+      "type": "BytesN<32>",
+      "description": "Identifier hash of the proof that was revoked.",
+      "example": "0x1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "revoked_at": {
+      "type": "U64",
+      "description": "Ledger timestamp at which the proof became invalid on-chain.",
+      "example": 1500
+    },
+    "revoked_ledger": {
+      "type": "U32",
+      "description": "Ledger sequence at which the proof became invalid on-chain.",
+      "example": 4242
+    },
+    "by_admin": {
+      "type": "Bool",
+      "description": "True when the registry admin revoked the proof, false when the issuing party did.",
+      "example": false
+    }
+  },
+  "emitted_by": "revoke_proof, admin_revoke_proof",
+  "description": "Emitted when a proof is revoked, carrying the effective revocation timing so off-chain verifiers learn when the proof became invalid without a follow-up query.",
+  "compatibility": "additive"
+}

@@ -99,6 +99,10 @@ pub enum ContractError {
 
     // Protocol state errors (80-99)
     ProtocolPaused = 80,
+
+    // Batch query errors (62, in the input-validation range)
+    /// A batch query supplied more items than the documented maximum.
+    BatchTooLarge = 62,
 }
 
 /// Issuer-specific errors (200-299).
@@ -114,6 +118,8 @@ pub enum IssuerError {
     IssuerInactive = 205,
     InvalidTransition = 206,
     InvalidAddress = 207,
+    /// A batch query supplied more identifiers than [`MAX_ISSUER_STATUS_BATCH`].
+    BatchTooLarge = 208,
 }
 
 /// Proof-specific errors (300-399).
@@ -145,6 +151,36 @@ pub enum ProofStatus {
     Revoked,
 }
 
+/// Upper bound on the number of identifiers a single bounded batch issuer
+/// status query may carry. The limit is enforced before any storage access so
+/// an oversized request cannot force unbounded host work.
+pub const MAX_ISSUER_STATUS_BATCH: u32 = 50;
+
+/// Status of a single issuer as reported by a bounded batch status query.
+///
+/// Unlike [`IssuerStatus`], this carries an explicit `NotFound` so an unknown
+/// identifier is unambiguous rather than being conflated with any live state.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssuerQueryStatus {
+    Active,
+    Suspended,
+    Revoked,
+    NotFound,
+}
+
+/// One entry in a bounded batch issuer status response.
+///
+/// The identifier is echoed back next to its status so callers can correlate
+/// results by value; combined with preserved input ordering this makes
+/// duplicate identifiers in the request unambiguous in the response.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerStatusResult {
+    pub issuer_id_hash: BytesN<32>,
+    pub status: IssuerQueryStatus,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IssuerRecord {
@@ -166,8 +202,74 @@ pub struct ProofRecord {
     pub schema_version: u32,
     pub expires_at: u64,
     pub created_at: u64,
+    /// Ledger timestamp at which the proof was revoked. `0` while the proof is
+    /// active.
     pub revoked_at: u64,
+    /// Ledger sequence at which the proof was revoked. `0` while the proof is
+    /// active, and `0` for a legacy record revoked before the sequence was
+    /// recorded — the timestamp remains authoritative in that case.
+    pub revoked_ledger: u32,
 }
+
+/// Structured validity answer for a single proof, delivering the effective
+/// revocation timing alongside the validity verdict.
+///
+/// The `revoked` flag is the guard for the timing fields: when it is `false`
+/// (any proof that is not revoked) `revoked_at` and `revoked_ledger` are `0` and
+/// carry no meaning, so an active proof never exposes a fabricated revocation
+/// time. When it is `true`, `revoked_at` and `revoked_ledger` are the timing
+/// captured atomically at revocation; `revoked_ledger` is `0` for a legacy
+/// record revoked before the sequence was recorded, where the timestamp remains
+/// authoritative.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofValidity {
+    pub status: ProofStatus,
+    pub is_valid: bool,
+    pub expires_at: u64,
+    pub revoked: bool,
+    pub revoked_at: u64,
+    pub revoked_ledger: u32,
+}
+
+/// Upper bound on the number of versions a single bounded batch schema status
+/// query may carry. The limit is enforced before any storage access so an
+/// oversized request cannot force unbounded host work.
+pub const MAX_SCHEMA_STATUS_BATCH: u32 = 50;
+
+/// Lifecycle state of a schema version, as reported by a bounded batch status
+/// query.
+///
+/// The three states are mutually exclusive and cover the whole lifecycle:
+/// `Unknown` is a version that was never approved (no stored record), `Approved`
+/// is one that is currently active, and `Deprecated` is one that was approved
+/// and later withdrawn. Keeping `Deprecated` distinct from `Unknown` lets a
+/// caller tell "never seen" apart from "withdrawn".
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchemaVersionState {
+    Unknown,
+    Approved,
+    Deprecated,
+}
+
+/// One entry in a bounded batch schema status response.
+///
+/// The version is echoed back next to its state so callers can correlate
+/// results by value; combined with preserved input ordering this makes
+/// duplicate versions in the request unambiguous in the response.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaStatusResult {
+    pub version: u32,
+    pub state: SchemaVersionState,
+}
+
+/// Maximum length of a schema lineage chain the contract will walk when
+/// validating a predecessor or answering a lineage query. It bounds the storage
+/// reads a single call can trigger and, together with the self-predecessor and
+/// cycle checks, keeps lineage traversal terminating.
+pub const MAX_SCHEMA_LINEAGE_DEPTH: u32 = 32;
 
 // ── Shared Test Utilities ──────────────────────────────────────────────────────
 // These utilities provide common patterns for initialization adversarial testing

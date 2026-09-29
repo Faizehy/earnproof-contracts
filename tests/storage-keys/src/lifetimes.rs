@@ -113,11 +113,12 @@ fn per_record_namespaces_hold_one_entry_per_record() {
         2
     );
 
-    // Two schema versions, one approved and one deprecated. Deprecation keeps
-    // the key so that "never seen" stays distinguishable from "withdrawn".
+    // Three schema versions (v1 approved, v2 deprecated, v3 approved with a
+    // predecessor) plus one SchemaPredecessor link for v3. Deprecation keeps the
+    // schema key so that "never seen" stays distinguishable from "withdrawn".
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        2
+        4
     );
 }
 

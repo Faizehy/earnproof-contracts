@@ -1,7 +1,0 @@
-{
-  "contract": "proof-registry",
-  "contract_version": "0.1.0",
-  "schema_version": 1,
-  "events": [],
-  "description": "The proof-registry contract currently emits no events. State changes (proof registration, revocation) are stored on-chain but not announced via typed events. Future versions are expected to add events for: ProofRegistered, ProofRevoked."
-}

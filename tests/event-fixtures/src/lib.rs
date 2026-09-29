@@ -91,6 +91,7 @@ const PROTOCOL_CONFIG_EVENTS: &[&str] = &[
     "unpaused",
     "schema-approved",
     "schema-deprecated",
+    "schema-predecessor-set",
 ];
 
 #[test]
@@ -211,32 +212,79 @@ fn issuer_registry_fixture_matches_contract_version() {
 }
 
 // ---------------------------------------------------------------------------
-// Proof-registry: no events currently
+// Proof-registry: 1 event fixture
 // ---------------------------------------------------------------------------
 
+const PROOF_REGISTRY_EVENTS: &[&str] = &["proof-revoked"];
+
 #[test]
-fn proof_registry_no_events_fixture_exists() {
+fn proof_registry_all_event_fixtures_exist() {
     let base = fixtures_dir();
-    let path = format!("{base}/proof-registry/v1/events.json");
-    assert!(Path::new(&path).exists(), "missing fixture: {path}");
+    let dir = format!("{base}/proof-registry/v1");
+    for name in PROOF_REGISTRY_EVENTS {
+        let path = format!("{dir}/{name}.json");
+        assert!(Path::new(&path).exists(), "missing fixture: {path}");
+    }
 }
 
 #[test]
-fn proof_registry_no_events_fixture_valid() {
-    let base = fixtures_dir();
-    let path = format!("{base}/proof-registry/v1/events.json");
-    let fixture = load_no_events_fixture(&path);
-    assert_eq!(fixture.contract, "proof-registry");
-    assert!(fixture.events.is_empty());
-}
-
-#[test]
-fn proof_registry_fixture_matches_contract_version() {
+fn proof_registry_fixtures_match_contract_version() {
     let version = read_contract_version("proof-registry");
     let base = fixtures_dir();
-    let path = format!("{base}/proof-registry/v1/events.json");
-    let fixture = load_no_events_fixture(&path);
-    assert_eq!(fixture.contract_version, version);
+    let dir = format!("{base}/proof-registry/v1");
+    for name in PROOF_REGISTRY_EVENTS {
+        let path = format!("{dir}/{name}.json");
+        let fixture = load_fixture(&path);
+        assert_eq!(
+            fixture.contract_version, version,
+            "{name}.json contract_version mismatch"
+        );
+        assert_eq!(fixture.contract, "proof-registry");
+        assert_eq!(fixture.schema_version, 1);
+    }
+}
+
+#[test]
+fn proof_registry_fixtures_have_required_fields() {
+    let base = fixtures_dir();
+    let dir = format!("{base}/proof-registry/v1");
+    for name in PROOF_REGISTRY_EVENTS {
+        let path = format!("{dir}/{name}.json");
+        let fixture = load_fixture(&path);
+        assert!(
+            !fixture.topics.is_empty(),
+            "{name}.json must have at least one topic"
+        );
+        assert!(
+            !fixture.emitted_by.is_empty(),
+            "{name}.json must specify emitted_by"
+        );
+        assert!(
+            !fixture.description.is_empty(),
+            "{name}.json must have a description"
+        );
+        assert!(
+            fixture.compatibility == "stable"
+                || fixture.compatibility == "additive"
+                || fixture.compatibility == "breaking",
+            "{name}.json has invalid compatibility: {}",
+            fixture.compatibility
+        );
+    }
+}
+
+#[test]
+fn proof_registry_event_names_match_topics() {
+    let base = fixtures_dir();
+    let dir = format!("{base}/proof-registry/v1");
+    for name in PROOF_REGISTRY_EVENTS {
+        let path = format!("{dir}/{name}.json");
+        let fixture = load_fixture(&path);
+        assert_eq!(
+            fixture.topics[0], fixture.event,
+            "{name}.json: first topic must equal event name"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

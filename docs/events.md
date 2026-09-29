@@ -40,6 +40,13 @@ Each is asserted in [`tests/events/`](../tests/events/); the mapping is in
 | `unpaused` | `unpause` | `paused` (always `false`) |
 | `schema_approved` | `approve_schema_version` | `version` |
 | `schema_deprecated` | `deprecate_schema_version` | `version` |
+| `schema_predecessor_set` | `approve_schema_with_predecessor` | `version`, `predecessor` |
+
+`approve_schema_with_predecessor` approves a schema version and records the
+prior version it succeeds. It publishes `schema_predecessor_set` with the
+lineage link and `schema_approved` for the approval itself. A predecessor-less
+(root) approval publishes only `schema_approved`, exactly as
+`approve_schema_version` does.
 
 ### `issuer-registry`
 
@@ -58,18 +65,22 @@ address→issuer mapping without scanning storage. An indexer that ignores
 
 ### `proof-registry`
 
-**This contract emits no events.**
+| Topic | Emitted by | Payload |
+|---|---|---|
+| `proof_revoked` | `revoke_proof`, `admin_revoke_proof` | `proof_id_hash`, `revoked_at`, `revoked_ledger`, `by_admin` |
 
-Proof registration and revocation change on-chain state without announcing it.
-An indexer waiting for a `proof_registered` event will wait forever; proof state
-must be read with `get_proof`, `is_valid_proof`, and `is_revoked`.
+`proof_revoked` carries the effective revocation timing — both the ledger
+timestamp (`revoked_at`) and the ledger sequence (`revoked_ledger`) — so a
+verifier learns *when* a proof became invalid on-chain without a follow-up
+`get_proof_validity` query. `by_admin` distinguishes an admin revocation from an
+issuer revocation. For a legacy record revoked before the ledger sequence was
+recorded, `revoked_ledger` is `0` and the timestamp remains authoritative.
 
-This is a **known gap**, recorded in
-[`tests/fixtures/events/proof-registry/v1/events.json`](../tests/fixtures/events/proof-registry/v1/events.json)
-and tracked as
-[#3](https://github.com/veridatum-labs/earnproof-contracts/issues/3). It is
-asserted rather than assumed — `proof_registry_emits_no_events_as_documented`
-fails if an event is ever added without updating the fixture and this document.
+Proof **registration** remains a silent state change: an indexer waiting for a
+`proof_registered` event will wait forever, and proof state must be read with
+`get_proof`, `is_valid_proof`, `is_revoked`, and `get_proof_validity`. This is
+asserted rather than assumed — `proof_registry_registration_is_silent` fails if
+registration ever starts emitting.
 
 ### Silent entry points
 
@@ -79,7 +90,7 @@ Not every mutation emits. These do not, and the omission is deliberate:
 |---|---|---|
 | `issuer-registry` | `initialize` | Only `protocol-config` announces initialization. An indexer keying deployment off an event should watch that contract. |
 | `proof-registry` | `initialize` | As above. |
-| `proof-registry` | `register_proof`, `revoke_proof`, `admin_revoke_proof` | See the known gap above. |
+| `proof-registry` | `register_proof` | Registration is a silent state change; only revocation is announced, via `proof_revoked`. |
 
 ## Topic naming
 

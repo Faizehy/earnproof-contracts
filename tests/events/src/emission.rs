@@ -251,16 +251,13 @@ fn rotate_issuer_address_emits_both_old_and_new_address() {
 // ─── proof-registry ─────────────────────────────────────────────────────────
 
 #[test]
-fn proof_registry_emits_no_events_as_documented() {
-    // `tests/fixtures/events/proof-registry/v1/events.json` records that this
-    // contract publishes nothing. That is the "unless explicitly documented
-    // otherwise" case, and it is asserted rather than assumed: an indexer that
-    // waited for a ProofRegistered event would wait forever, and this test is
-    // what makes that a deliberate, visible decision.
+fn proof_registry_registration_is_silent() {
+    // Proof registration remains a silent state change: only revocation is
+    // announced. An indexer waiting for a `proof_registered` event would wait
+    // forever, and this test keeps that a deliberate, visible decision.
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
-        let proof_id = deployment.register_proof(0x11);
-        deployment.proofs.admin_revoke_proof(&proof_id);
+        deployment.register_proof(0x11);
     });
     let from_proof_registry: std::vec::Vec<_> = events
         .iter()
@@ -269,8 +266,33 @@ fn proof_registry_emits_no_events_as_documented() {
 
     assert!(
         from_proof_registry.is_empty(),
-        "proof-registry is documented as emitting no events; \
-         adding one requires updating tests/fixtures/events/proof-registry/ \
+        "proof-registry registration is documented as silent; \
+         adding an event requires updating tests/fixtures/events/proof-registry/ \
          and docs/events.md"
+    );
+}
+
+#[test]
+fn proof_registry_revocation_emits_proof_revoked() {
+    // Revocation is the one proof-registry event: it carries the effective
+    // revocation timing so verifiers learn when a proof became invalid.
+    let deployment = Deployment::new();
+    let proof_id = deployment.register_proof(0x11);
+    let events = deployment.capture(|| {
+        deployment.proofs.admin_revoke_proof(&proof_id);
+    });
+    let from_proof_registry: std::vec::Vec<_> = events
+        .iter()
+        .filter(|event| event.contract == deployment.proofs.address)
+        .collect();
+
+    assert_eq!(
+        from_proof_registry.len(),
+        1,
+        "revocation must publish exactly one proof-registry event"
+    );
+    assert!(
+        from_proof_registry[0].is(&deployment.env, "proof_revoked"),
+        "the revocation event is published under the topic proof_revoked"
     );
 }
