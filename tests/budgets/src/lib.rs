@@ -58,6 +58,8 @@ mod tests {
     const ISSUER_UPDATE_MEM_MAX: u64 = 150_000;
     const ISSUER_SUSPEND_CPU_MAX: u64 = 400_000;
     const ISSUER_SUSPEND_MEM_MAX: u64 = 150_000;
+    const ISSUER_BULK_SUSPEND_CPU_MAX: u64 = 10_000_000;
+    const ISSUER_BULK_SUSPEND_MEM_MAX: u64 = 1_600_000;
     const ISSUER_REVOKE_CPU_MAX: u64 = 400_000;
     const ISSUER_REVOKE_MEM_MAX: u64 = 150_000;
     const ISSUER_ROTATE_CPU_MAX: u64 = 500_000;
@@ -330,6 +332,45 @@ mod tests {
             ISSUER_SUSPEND_CPU_MAX,
             ISSUER_SUSPEND_MEM_MAX,
         );
+    }
+
+    #[test]
+    fn issuer_registry_max_bulk_suspend_budget() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+
+        let mut issuer_ids = soroban_sdk::Vec::new(&env);
+        for index in 0..20 {
+            client.register_issuer(
+                &bytes(&env, index + 1),
+                &Address::generate(&env),
+                &bytes(&env, index + 21),
+                &bytes(&env, 99),
+            );
+            issuer_ids.push_back(bytes(&env, index + 1));
+        }
+
+        env.cost_estimate().budget().reset_unlimited();
+        client.suspend_issuers(&issuer_ids, &bytes(&env, 0xaa));
+
+        assert_budget(
+            &env,
+            "issuer_registry.suspend_issuers(20)",
+            ISSUER_BULK_SUSPEND_CPU_MAX,
+            ISSUER_BULK_SUSPEND_MEM_MAX,
+        );
+        for index in 0..issuer_ids.len() {
+            assert_eq!(
+                client.get_issuer(&issuer_ids.get(index).unwrap()).status,
+                earnproof_shared::IssuerStatus::Suspended
+            );
+        }
     }
 
     #[test]

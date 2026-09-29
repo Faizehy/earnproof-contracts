@@ -268,6 +268,12 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    /// The proof registry has reached its configured capacity.
+    ProofCapacityReached = 311,
+    /// Proof-count accounting must be reconciled before registration can proceed.
+    ProofAccountingUnavailable = 312,
+    /// A proof-count counter cannot be incremented without overflowing.
+    ProofCountOverflow = 313,
 }
 
 #[contracttype]
@@ -363,6 +369,22 @@ pub struct UpgradeReceipt {
     pub new_version: u32,
     pub upgraded_at: u64,
     pub upgraded_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeCompatibilityAttestation {
+    pub version: u32,
+    pub abi_commitment: BytesN<32>,
+    pub storage_commitment: BytesN<32>,
+    pub review_commitment: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestedUpgradeReceipt {
+    pub receipt: UpgradeReceipt,
+    pub attestation: UpgradeCompatibilityAttestation,
 }
 // ── Upgrade Approval Metadata ──────────────────────────────────────────────────
 // Metadata for an upgrade approval, exposed for off-chain verification.
