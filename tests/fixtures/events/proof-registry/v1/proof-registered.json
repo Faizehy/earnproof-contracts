@@ -1,0 +1,22 @@
+{
+  "event": "proof_registered",
+  "contract": "proof-registry",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["proof_registered"],
+  "payload": {
+    "proof_id_hash": {
+      "type": "BytesN<32>",
+      "description": "Identifier hash of the proof that was registered.",
+      "example": "0x0101010101010101010101010101010101010101010101010101010101010101"
+    },
+    "epoch": {
+      "type": "u32",
+      "description": "Registry epoch after this registration committed. A cache or indexer may invalidate on this value alone instead of diffing individual records.",
+      "example": 1
+    }
+  },
+  "emitted_by": "register_proof",
+  "description": "Published once a proof registration commits. Carries only the identifier hash and the registry epoch — never the commitment, issuer, schema, or expiration, which must be read back with get_proof.",
+  "compatibility": "additive"
+}

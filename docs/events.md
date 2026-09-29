@@ -45,31 +45,43 @@ Each is asserted in [`tests/events/`](../tests/events/); the mapping is in
 
 | Topic | Emitted by | Payload |
 |---|---|---|
-| `issuer_registered` | `register_issuer` | `issuer_id_hash`, `issuer_address`, `metadata_hash`, `created_at` |
-| `issuer_metadata_updated` | `update_issuer` | `issuer_id_hash`, `metadata_hash`, `updated_at` |
-| `issuer_suspended` | `suspend_issuer` | `issuer_id_hash`, `updated_at` |
-| `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `updated_at` |
-| `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `updated_at` |
+| `issuer_registered` | `register_issuer` | `issuer_id_hash`, `issuer_address`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `created_at` |
+| `issuer_metadata_updated` | `update_issuer`, `set_issuer_metadata_commitment` | `issuer_id_hash`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `updated_at` |
+| `issuer_suspended` | `suspend_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
+| `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
+| `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
 | `issuer_address_rotated` | `rotate_issuer_address` | `issuer_id_hash`, `old_address`, `new_address`, `updated_at` |
 
 `issuer_address_rotated` carries both addresses so an indexer can update its
 address→issuer mapping without scanning storage. An indexer that ignores
 `old_address` will keep routing to a rotated-out key.
 
+`issuer_registered` and `issuer_metadata_updated` carry **both** metadata
+commitments. `metadata_hash` commits to the canonical metadata document
+(content); `metadata_uri_hash` commits to the canonical document URI (location),
+so an off-chain resolver can distinguish a change of location from a change of
+content. At registration `metadata_uri_hash` is the all-zero "no URI commitment
+recorded" sentinel until `set_issuer_metadata_commitment` sets it.
+`metadata_revision` starts at `1` and increments on every accepted metadata
+update. See [`metadata-commitment.md`](./metadata-commitment.md) for the
+canonical-byte and domain-separation rules.
+
+The status lifecycle events carry `effective_ledger` and `effective_timestamp`:
+the ledger sequence and timestamp at which the suspension, reactivation, or
+revocation became effective. Legacy records predating these fields carry the
+documented `0` sentinel.
+
 ### `proof-registry`
 
-**This contract emits no events.**
+| Topic | Emitted by | Payload |
+|---|---|---|
+| `proof_registered` | `register_proof` | `proof_id_hash`, `issuer_address`, `schema_version`, `created_ledger`, `created_at`, `expires_at` |
 
-Proof registration and revocation change on-chain state without announcing it.
-An indexer waiting for a `proof_registered` event will wait forever; proof state
-must be read with `get_proof`, `is_valid_proof`, and `is_revoked`.
-
-This is a **known gap**, recorded in
-[`tests/fixtures/events/proof-registry/v1/events.json`](../tests/fixtures/events/proof-registry/v1/events.json)
-and tracked as
-[#3](https://github.com/veridatum-labs/earnproof-contracts/issues/3). It is
-asserted rather than assumed — `proof_registry_emits_no_events_as_documented`
-fails if an event is ever added without updating the fixture and this document.
+`proof_registered` carries the on-chain creation timing (`created_ledger` and
+`created_at`), both sourced only from the host ledger environment, so an indexer
+can record deterministic audit timestamps without a follow-up `get_proof`.
+Revocation (`revoke_proof`, `admin_revoke_proof`) remains silent; proof state is
+read with `get_proof`, `is_valid_proof`, `proof_validity`, and `is_revoked`.
 
 ### Silent entry points
 
@@ -79,7 +91,7 @@ Not every mutation emits. These do not, and the omission is deliberate:
 |---|---|---|
 | `issuer-registry` | `initialize` | Only `protocol-config` announces initialization. An indexer keying deployment off an event should watch that contract. |
 | `proof-registry` | `initialize` | As above. |
-| `proof-registry` | `register_proof`, `revoke_proof`, `admin_revoke_proof` | See the known gap above. |
+| `proof-registry` | `revoke_proof`, `admin_revoke_proof` | Revocation stores state without announcing it; read it with `is_revoked` / `proof_validity`. |
 
 ## Topic naming
 

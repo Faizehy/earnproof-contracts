@@ -99,6 +99,13 @@ fuzz_target!(|data: &[u8]| {
         0
     };
 
+    // Parse created_ledger (u32, bytes 93-97, big-endian) when available.
+    let created_ledger = if data.len() > 96 {
+        u32::from_be_bytes([data[93], data[94], data[95], data[96]])
+    } else {
+        1
+    };
+
     // Construct the ProofRecord - this should never panic or cause undefined behavior
     let _proof = ProofRecord {
         proof_id_hash,
@@ -110,6 +117,7 @@ fuzz_target!(|data: &[u8]| {
         expires_at,
         created_at,
         revoked_at,
+        created_ledger,
     };
 
     // Verify invariants (test should not reach here if invariants are violated)

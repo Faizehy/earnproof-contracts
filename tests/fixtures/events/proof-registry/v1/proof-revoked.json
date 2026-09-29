@@ -1,0 +1,27 @@
+{
+  "event": "proof_revoked",
+  "contract": "proof-registry",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["proof_revoked"],
+  "payload": {
+    "proof_id_hash": {
+      "type": "BytesN<32>",
+      "description": "Identifier hash of the proof that was revoked.",
+      "example": "0x0101010101010101010101010101010101010101010101010101010101010101"
+    },
+    "by_admin": {
+      "type": "bool",
+      "description": "True when the admin revoked the proof via admin_revoke_proof; false when the issuer revoked it via revoke_proof.",
+      "example": false
+    },
+    "epoch": {
+      "type": "u32",
+      "description": "Registry epoch after this revocation committed.",
+      "example": 2
+    }
+  },
+  "emitted_by": "revoke_proof, admin_revoke_proof",
+  "description": "Published once a revocation commits, whether initiated by the issuer or the admin. A repeated revocation attempt fails before this point and publishes nothing.",
+  "compatibility": "additive"
+}

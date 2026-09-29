@@ -17,6 +17,21 @@ pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 /// Target ledgers for extended TTL after triggering a preemptive extension.
 pub const TTL_EXTEND_TO_LEDGERS: u32 = 500_000;
 
+/// Sentinel written into ledger-sequence metadata fields for records that were
+/// created before those fields existed (legacy records). A live ledger
+/// sequence is always >= 1, so `0` is an unambiguous "unknown / not recorded"
+/// marker that consumers can detect and treat as legacy.
+pub const LEDGER_SEQUENCE_UNSET: u32 = 0;
+
+/// Sentinel written into ledger-timestamp metadata fields for legacy records.
+/// A live ledger timestamp is always > 0, so `0` unambiguously marks
+/// "unknown / not recorded".
+pub const LEDGER_TIMESTAMP_UNSET: u64 = 0;
+
+/// Initial metadata revision assigned to an issuer at registration. Each
+/// accepted metadata update increments the revision by one.
+pub const METADATA_REVISION_INITIAL: u32 = 1;
+
 /// Minimum ledgers between approval and execution (timelock).
 /// Prevents immediate execution of just-approved upgrades.
 /// ~1 day at 5s/ledger = 17,280 ledgers
@@ -45,6 +60,61 @@ pub struct MigrationStatus {
 
 /// Canonical configuration digest payload version.
 pub const CONFIG_DIGEST_VERSION: u32 = 1;
+
+/// Version tag mixed into every computed genesis identifier so a future
+/// change to the derivation scheme is distinguishable from a collision.
+pub const GENESIS_ID_VERSION: u32 = 1;
+
+/// Fallback maximum auxiliary payload size (in bytes) applied to a schema
+/// version that has no explicit override configured in protocol-config.
+pub const DEFAULT_SCHEMA_PAYLOAD_LIMIT: u32 = 4096;
+
+/// Computes a deterministic, domain-separated genesis identifier for a
+/// contract instance.
+///
+/// The identifier is derived from a version tag, a role-specific domain
+/// symbol (e.g. `"earnproof_proof_registry"`), the network passphrase
+/// digest, and this contract's own address. Because the domain differs per
+/// contract role and the network id differs per network, two instances can
+/// never share an identity by accident, even if deployed from the same WASM
+/// to the same address space on different networks.
+///
+/// The result is immutable by construction: every input is fixed at the
+/// moment `initialize` runs and never changes afterwards.
+pub fn compute_genesis_id(env: &Env, domain: &str) -> BytesN<32> {
+    let payload = (
+        GENESIS_ID_VERSION,
+        Symbol::new(env, domain),
+        env.ledger().network_id(),
+        env.current_contract_address(),
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
+/// Immutable deployment identity, written once during `initialize` and
+/// carried unchanged across upgrades and storage migrations.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenesisRecord {
+    /// Domain-separated identifier computed by [`compute_genesis_id`].
+    pub genesis_id: BytesN<32>,
+    /// Ledger sequence at which `initialize` committed this record.
+    pub initialized_at_ledger: u32,
+}
+
+/// Bounded record of an auxiliary proof payload accepted alongside a
+/// registration. Only the length and a commitment hash are kept on-chain;
+/// the raw payload itself is never stored, so resource use stays bounded
+/// regardless of the configured schema limit.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofPayloadRecord {
+    /// Length in bytes of the auxiliary payload supplied at registration.
+    pub payload_len: u32,
+    /// SHA-256 hash of the auxiliary payload.
+    pub payload_hash: BytesN<32>,
+}
 
 pub fn protocol_config_digest(
     env: &Env,
@@ -165,6 +235,60 @@ pub fn is_zero_or_sentinel_address(address: &Address) -> bool {
     &bytes == ZERO_PAYLOAD_STRKEY
 }
 
+// ---------------------------------------------------------------------------
+// Dependency interface versioning
+//
+// Cross-contract dependencies expose a machine-readable interface version so
+// that a consumer (e.g. proof-registry) can refuse to bind to a dependency
+// whose interface it does not understand.
+//
+// The version follows a semver-style major/minor/patch tuple:
+//   - A `major` bump is a breaking change: the consumer must match it exactly.
+//   - `minor`/`patch` are backward compatible within the same `major`: a
+//     dependency may advance them freely and remain acceptable, but it must be
+//     at least the minimum the consumer requires.
+//
+// Compatibility rule (see `is_interface_compatible`):
+//   actual.major == required.major
+//     && (actual.minor, actual.patch) >= (required.minor, required.patch)
+// ---------------------------------------------------------------------------
+
+/// A machine-readable interface version exposed by a cross-contract dependency.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct InterfaceVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl InterfaceVersion {
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+        InterfaceVersion {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+/// The interface version implemented by `issuer-registry`.
+pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+
+/// The interface version implemented by `protocol-config`.
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+
+/// Returns true when `actual` is compatible with the `required` minimum.
+///
+/// The `major` component must match exactly (a breaking-change boundary); the
+/// `minor`/`patch` components of `actual` must be greater than or equal to the
+/// required minimum, compared lexicographically. Newer compatible dependencies
+/// (higher minor/patch, same major) are therefore accepted.
+pub fn is_interface_compatible(required: &InterfaceVersion, actual: &InterfaceVersion) -> bool {
+    actual.major == required.major
+        && (actual.minor, actual.patch) >= (required.minor, required.patch)
+}
+
 pub fn is_valid_principal_address(address: &Address) -> bool {
     let value = address.to_string();
     if value.is_empty() || value.len() as usize != STRKEY_ADDRESS_LEN {
@@ -212,6 +336,9 @@ pub enum ContractError {
     // Input validation errors (60-79)
     InvalidInput = 60,
     InvalidAddress = 61,
+    /// A cross-contract dependency reported an interface version outside the
+    /// range the consumer accepts.
+    IncompatibleInterfaceVersion = 62,
 
     // Protocol state errors (80-99)
     ProtocolPaused = 80,
@@ -237,6 +364,15 @@ pub enum IssuerError {
     IssuerInactive = 205,
     InvalidTransition = 206,
     InvalidAddress = 207,
+    InvalidMetadataCommitment = 208,
+    /// Registering or reactivating this issuer would exceed the governed
+    /// maximum active-issuer capacity.
+    IssuerCapacityExceeded = 208,
+    /// A requested capacity limit is below the current active-issuer usage and
+    /// no explicit override was supplied.
+    MaxBelowActiveUsage = 209,
+    /// The suspended issuer's reactivation cooldown has not yet elapsed.
+    ReactivationCooldownActive = 210,
 }
 
 /// Proof-specific errors (300-399).
@@ -274,6 +410,48 @@ pub enum ProofError {
     TooManySuccessors = 314,
 }
 
+/// Fixed capacity of the protocol-config change-history ring. Once this many
+/// entries have been recorded, the oldest entry is overwritten by the next
+/// append — rollover is deterministic rather than unbounded growth.
+pub const CONFIG_HISTORY_CAPACITY: u32 = 32;
+
+/// Maximum number of entries a single `get_config_history` call may return,
+/// regardless of the requested limit, so a query cannot be used to force an
+/// unbounded read.
+pub const MAX_CONFIG_HISTORY_PAGE: u32 = 20;
+
+/// Category of a recorded protocol-config change. Distinct from the raw
+/// parameter value: history entries carry only this tag, a commitment to the
+/// changed value, and version/ledger metadata — never the sensitive value
+/// itself.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ConfigChangeCategory {
+    AdminRotation,
+    PauseToggle,
+    ScopedPause,
+    SchemaApproval,
+    SchemaDeprecation,
+    SchemaPayloadLimit,
+}
+
+/// One bounded, on-chain summary of a governance change, as stored in the
+/// change-history ring.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigChangeSummary {
+    /// What kind of change this was.
+    pub category: ConfigChangeCategory,
+    /// Commitment to the changed value(s); never the raw value.
+    pub proposal_commitment: BytesN<32>,
+    /// Configuration version in effect immediately after this change.
+    pub config_version: u32,
+    /// Ledger sequence at which the change committed.
+    pub ledger: u32,
+    /// Ledger timestamp at which the change committed.
+    pub timestamp: u64,
+}
+
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PauseScope {
@@ -299,6 +477,32 @@ pub enum ProofStatus {
     Revoked,
 }
 
+/// Structured proof validity outcome.
+///
+/// A single boolean (`is_valid_proof`) cannot distinguish why a proof is
+/// invalid. `ProofValidity` maps every invalid state to exactly one primary
+/// reason, evaluated in a documented, deterministic order (see
+/// `ProofRegistryContract::proof_validity`):
+///
+/// 1. `Unknown`         — no record exists for the given id.
+/// 2. `Revoked`         — the record's status is `Revoked`.
+/// 3. `Expired`         — the record's `expires_at` is at or before now.
+/// 4. `IssuerInactive`  — the issuing address is no longer active.
+/// 5. `SchemaDeprecated`— the record's schema version is no longer approved.
+/// 6. `Valid`           — none of the above; the proof is currently valid.
+///
+/// When several invalid conditions hold at once, the earliest one in this
+/// order is the primary reason. The variants are ordered so the canonical
+/// precedence is also the declaration order.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProofValidity {
+    Valid,
+    Unknown,
+    Revoked,
+    Expired,
+    IssuerInactive,
+    SchemaDeprecated,
 /// Stores temporal metadata for an upgrade approval.
 ///
 /// # Timing invariants
@@ -328,11 +532,30 @@ pub struct UpgradeApproval {
 pub struct IssuerRecord {
     pub issuer_id_hash: BytesN<32>,
     pub issuer_address: Address,
+    /// Hash commitment over the canonical issuer metadata document (content
+    /// hash). See the `metadata-commitment` docs for the domain-separation
+    /// and canonical-byte rules a backend must follow to reproduce it.
     pub metadata_hash: BytesN<32>,
+    /// Hash commitment over the canonical metadata document URI (location
+    /// hash), stored separately from `metadata_hash` so off-chain resolvers
+    /// can distinguish a change of location from a change of content. A value
+    /// of all-zero bytes is the documented "no URI commitment recorded"
+    /// sentinel (used for records registered before a URI commitment was set).
+    pub metadata_uri_hash: BytesN<32>,
+    /// Monotonically increasing revision, starting at
+    /// [`METADATA_REVISION_INITIAL`]. Each accepted metadata update increments
+    /// it by one.
+    pub metadata_revision: u32,
     pub provenance_commitment: BytesN<32>,
     pub status: IssuerStatus,
     pub created_at: u64,
     pub updated_at: u64,
+    /// Ledger sequence at which the current `status` became effective.
+    /// [`LEDGER_SEQUENCE_UNSET`] marks a legacy record predating this field.
+    pub status_effective_ledger: u32,
+    /// Ledger timestamp at which the current `status` became effective.
+    /// [`LEDGER_TIMESTAMP_UNSET`] marks a legacy record predating this field.
+    pub status_effective_timestamp: u64,
     pub reason_commitment: Option<BytesN<32>>,
 }
 
@@ -348,6 +571,9 @@ pub struct ProofRecord {
     pub created_at: u64,
     pub revoked_at: u64,
     pub predecessor_id_hash: Option<BytesN<32>>,
+    /// Ledger sequence at which this proof was created (registered).
+    /// [`LEDGER_SEQUENCE_UNSET`] marks a legacy record predating this field.
+    pub created_ledger: u32,
 }
 
 #[contracttype]
@@ -450,6 +676,58 @@ pub enum ApprovalQuery {
 // guards, invalid dependencies, and state/event immutability on failure.
 
 pub const MAX_SUCCESSORS: u32 = 5;
+
+#[cfg(test)]
+mod interface_version_tests {
+    use super::*;
+
+    const BASE: InterfaceVersion = InterfaceVersion::new(1, 2, 3);
+
+    #[test]
+    fn exact_match_is_compatible() {
+        assert!(is_interface_compatible(&BASE, &BASE));
+    }
+
+    #[test]
+    fn newer_patch_and_minor_within_major_are_compatible() {
+        assert!(is_interface_compatible(
+            &BASE,
+            &InterfaceVersion::new(1, 2, 4)
+        ));
+        assert!(is_interface_compatible(
+            &BASE,
+            &InterfaceVersion::new(1, 3, 0)
+        ));
+        assert!(is_interface_compatible(
+            &BASE,
+            &InterfaceVersion::new(1, 9, 9)
+        ));
+    }
+
+    #[test]
+    fn older_minor_or_patch_is_incompatible() {
+        assert!(!is_interface_compatible(
+            &BASE,
+            &InterfaceVersion::new(1, 2, 2)
+        ));
+        assert!(!is_interface_compatible(
+            &BASE,
+            &InterfaceVersion::new(1, 1, 9)
+        ));
+    }
+
+    #[test]
+    fn a_different_major_is_incompatible_in_both_directions() {
+        assert!(!is_interface_compatible(
+            &BASE,
+            &InterfaceVersion::new(2, 0, 0)
+        ));
+        assert!(!is_interface_compatible(
+            &BASE,
+            &InterfaceVersion::new(0, 9, 9)
+        ));
+    }
+}
 
 #[cfg(test)]
 pub mod test_utils {

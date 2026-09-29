@@ -1,10 +1,13 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, MigrationStatus, PauseScope, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, MigrationStatus,
+    PauseScope, CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT, MAX_CONFIG_HISTORY_PAGE,
+    MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
+use soroban_sdk::{
+    contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Vec,
+};
 
 #[contract]
 pub struct ProtocolConfigContract;
@@ -26,6 +29,14 @@ enum DataKey {
     ContractVersion,
     Successor,
     Decommissioned,
+    /// Immutable deployment identity, written once at `initialize`.
+    Genesis,
+    /// Governed per-schema-version auxiliary payload size bound (bytes).
+    SchemaPayloadLimit(u32),
+    /// Ring-buffer slot holding one bounded change-history summary.
+    ConfigHistoryRing(u32),
+    /// Monotonic count of change-history entries ever appended.
+    ConfigHistoryTotal,
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -98,6 +109,14 @@ pub struct ContractDecommissioned {
     pub activated_by: Address,
 }
 
+/// Emitted when the admin sets or updates the maximum auxiliary payload size
+/// accepted for a schema version.
+#[contractevent]
+pub struct SchemaPayloadLimitSet {
+    pub version: u32,
+    pub max_size: u32,
+}
+
 // ── upgrade events ───────────────────────────────────────────────────────────
 
 /// Emitted when the admin adds a WASM hash to the upgrade allowlist.
@@ -157,9 +176,23 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
+        let genesis = GenesisRecord {
+            genesis_id: earnproof_shared::compute_genesis_id(&env, "earnproof_protocol_config"),
+            initialized_at_ledger: env.ledger().sequence(),
+        };
+        env.storage().instance().set(&DataKey::Genesis, &genesis);
         Self::extend_instance_ttl(env.clone());
         Initialized { admin }.publish(&env);
         Ok(())
+    }
+
+    /// Returns the immutable genesis identity recorded at `initialize`.
+    /// Unchanged across upgrades and storage migrations.
+    pub fn get_genesis(env: Env) -> Result<GenesisRecord, ContractError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Genesis)
+            .ok_or(ContractError::NotInitialized)
     }
 
     pub fn get_admin(env: Env) -> Result<Address, ContractError> {
@@ -169,6 +202,12 @@ impl ProtocolConfigContract {
             .ok_or(ContractError::NotInitialized)
     }
 
+    /// Machine-readable interface version this contract exposes to consumers.
+    pub fn interface_version(_env: Env) -> InterfaceVersion {
+        PROTOCOL_CONFIG_INTERFACE_VERSION
+    }
+
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
@@ -201,6 +240,12 @@ impl ProtocolConfigContract {
         env.storage().instance().remove(&DataKey::PendingAdmin);
 
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::AdminRotation,
+            Self::commit(&env, new_admin.clone()),
+        );
+        AdminChanged { new_admin }.publish(&env);
 
         AdminTransferAccepted {
             new_admin: pending_admin,
@@ -242,6 +287,11 @@ impl ProtocolConfigContract {
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &true);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::PauseToggle,
+            Self::commit(&env, true),
+        );
         Paused { paused: true }.publish(&env);
         Ok(())
     }
@@ -252,6 +302,11 @@ impl ProtocolConfigContract {
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &false);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::PauseToggle,
+            Self::commit(&env, false),
+        );
         Unpaused { paused: false }.publish(&env);
         Ok(())
     }
@@ -268,6 +323,11 @@ impl ProtocolConfigContract {
             .persistent()
             .set(&DataKey::ScopedPause(scope), &paused);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::ScopedPause,
+            Self::commit(&env, (scope, paused)),
+        );
         ScopedPauseChanged { scope, paused }.publish(&env);
         Ok(())
     }
@@ -368,6 +428,11 @@ impl ProtocolConfigContract {
             .set(&DataKey::SchemaVersion(version), &true);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaApproval,
+            Self::commit(&env, version),
+        );
         SchemaApproved { version }.publish(&env);
         Ok(())
     }
@@ -382,6 +447,11 @@ impl ProtocolConfigContract {
             .set(&DataKey::SchemaVersion(version), &false);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaDeprecation,
+            Self::commit(&env, version),
+        );
         SchemaDeprecated { version }.publish(&env);
         Ok(())
     }
@@ -407,6 +477,102 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .get(&DataKey::ConfigVersion)
+            .unwrap_or(0)
+    }
+
+    // ── schema payload size limits ───────────────────────────────────────────
+
+    /// Admin-only: set the maximum auxiliary payload size (in bytes) a proof
+    /// registered under `version` may carry. Applies going forward only —
+    /// proofs already registered are never re-validated against a changed
+    /// limit.
+    pub fn set_schema_payload_limit(
+        env: Env,
+        version: u32,
+        max_size: u32,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaPayloadLimit(version), &max_size);
+        Self::extend_schema_payload_limit_ttl(env.clone(), version);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaPayloadLimit,
+            Self::commit(&env, (version, max_size)),
+        );
+        SchemaPayloadLimitSet { version, max_size }.publish(&env);
+        Ok(())
+    }
+
+    /// Returns the active payload-size bound for `version`: the governed
+    /// override if one was set, otherwise the shared default. Version `0`
+    /// always returns the default, since it can never be approved.
+    pub fn get_schema_payload_limit(env: Env, version: u32) -> u32 {
+        if version == 0 {
+            return DEFAULT_SCHEMA_PAYLOAD_LIMIT;
+        }
+        let key = DataKey::SchemaPayloadLimit(version);
+        let limit = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(DEFAULT_SCHEMA_PAYLOAD_LIMIT);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        limit
+    }
+
+    // ── bounded configuration change history ─────────────────────────────────
+
+    /// Returns up to `limit` change-history entries starting at `cursor`
+    /// (an absolute, monotonically increasing sequence number; `0` is the
+    /// very first change ever recorded).
+    ///
+    /// If `cursor` refers to an entry the ring has already evicted, the read
+    /// starts at the oldest entry still available rather than erroring — a
+    /// stale cursor is clamped forward, deterministically, instead of
+    /// panicking. `limit` is capped at `MAX_CONFIG_HISTORY_PAGE` regardless of
+    /// the requested value.
+    pub fn get_config_history(env: Env, cursor: u32, limit: u32) -> Vec<ConfigChangeSummary> {
+        let total = Self::get_config_history_cursor(env.clone());
+        let oldest_available = total.saturating_sub(CONFIG_HISTORY_CAPACITY);
+        let start = cursor.max(oldest_available);
+        let capped_limit = limit.min(MAX_CONFIG_HISTORY_PAGE);
+        let end = start.saturating_add(capped_limit).min(total);
+
+        let mut page = Vec::new(&env);
+        let mut index = start;
+        while index < end {
+            let slot = index % CONFIG_HISTORY_CAPACITY;
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<_, ConfigChangeSummary>(&DataKey::ConfigHistoryRing(slot))
+            {
+                page.push_back(entry);
+            }
+            index += 1;
+        }
+        page
+    }
+
+    /// Total number of change-history entries ever appended. Also the cursor
+    /// value a caller should pass to `get_config_history` to read only
+    /// entries recorded after the most recent page it consumed.
+    pub fn get_config_history_cursor(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ConfigHistoryTotal)
             .unwrap_or(0)
     }
 
@@ -582,6 +748,56 @@ impl ProtocolConfigContract {
         );
     }
 
+    fn extend_schema_payload_limit_ttl(env: Env, version: u32) {
+        env.storage().persistent().extend_ttl(
+            &DataKey::SchemaPayloadLimit(version),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+    }
+
+    /// SHA-256 commitment to an arbitrary XDR-encodable value. Used so
+    /// change-history entries carry proof of what changed without carrying
+    /// the value itself.
+    fn commit<T: ToXdr>(env: &Env, value: T) -> BytesN<32> {
+        env.crypto().sha256(&value.to_xdr(env)).to_bytes()
+    }
+
+    /// Appends one bounded change-history entry, overwriting the oldest slot
+    /// once the ring is full. Only called from a success path, after the
+    /// state it summarizes has already been committed, so a failed mutation
+    /// never appends.
+    fn append_config_history(
+        env: Env,
+        category: ConfigChangeCategory,
+        proposal_commitment: BytesN<32>,
+    ) {
+        let total = Self::get_config_history_cursor(env.clone());
+        let slot = total % CONFIG_HISTORY_CAPACITY;
+        let summary = ConfigChangeSummary {
+            category,
+            proposal_commitment,
+            config_version: Self::get_config_version(env.clone()),
+            ledger: env.ledger().sequence(),
+            timestamp: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ConfigHistoryRing(slot), &summary);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ConfigHistoryRing(slot),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        let next_total = total
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("config history overflow: reached maximum"));
+        env.storage()
+            .instance()
+            .set(&DataKey::ConfigHistoryTotal, &next_total);
+        Self::extend_instance_ttl(env);
+    }
+
     pub fn get_migration_status(env: Env) -> Option<MigrationStatus> {
         env.storage().instance().get(&DataKey::MigrationStatus)
     }
@@ -667,7 +883,7 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
-    use earnproof_shared::TTL_THRESHOLD_LEDGERS;
+    use earnproof_shared::{ConfigChangeCategory, TTL_THRESHOLD_LEDGERS};
     use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
@@ -688,6 +904,14 @@ mod test {
     }
 
     // ── existing tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn exposes_a_stable_interface_version() {
+        let (_env, client, _admin) = setup();
+        let version = client.interface_version();
+        assert_eq!(version, earnproof_shared::PROTOCOL_CONFIG_INTERFACE_VERSION);
+        assert_eq!(version.major, 1);
+    }
 
     #[test]
     fn initializes_config_defaults() {
@@ -1470,5 +1694,253 @@ mod test {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    // ── genesis identity (issue #192) ────────────────────────────────────────
+
+    #[test]
+    fn genesis_is_recorded_at_initialization() {
+        let (env, client, _admin) = setup();
+        let genesis = client.get_genesis();
+        assert_ne!(genesis.genesis_id, BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(genesis.initialized_at_ledger, env.ledger().sequence());
+    }
+
+    #[test]
+    fn genesis_id_is_deterministic_for_the_same_inputs() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::from_str(&env, ADMIN);
+
+        let one = env.register(ProtocolConfigContract, ());
+        let one = ProtocolConfigContractClient::new(&env, &one);
+        one.initialize(&admin);
+
+        // Recomputing from the same env/contract address/domain must be
+        // stable, since the identifier is a pure function of those inputs.
+        let recomputed = env.as_contract(&one.address, || {
+            earnproof_shared::compute_genesis_id(&env, "earnproof_protocol_config")
+        });
+        assert_eq!(one.get_genesis().genesis_id, recomputed);
+    }
+
+    #[test]
+    fn genesis_id_differs_across_contract_instances() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::from_str(&env, ADMIN);
+
+        let a = env.register(ProtocolConfigContract, ());
+        let a = ProtocolConfigContractClient::new(&env, &a);
+        a.initialize(&admin);
+
+        let b = env.register(ProtocolConfigContract, ());
+        let b = ProtocolConfigContractClient::new(&env, &b);
+        b.initialize(&admin);
+
+        // Different contract addresses (different instances) must never share
+        // an identity, even with the same admin and the same domain.
+        assert_ne!(a.get_genesis().genesis_id, b.get_genesis().genesis_id);
+    }
+
+    #[test]
+    fn genesis_is_unchanged_across_an_upgrade() {
+        let (env, client, _admin) = setup();
+        let genesis_before = client.get_genesis();
+
+        let hash = bytes(&env, 0x55);
+        client.approve_upgrade(&hash, &2);
+        client.upgrade_contract(&hash);
+
+        assert_eq!(client.get_genesis(), genesis_before);
+    }
+
+    #[test]
+    fn get_genesis_fails_before_initialization() {
+        let env = Env::default();
+        let contract_id = env.register(ProtocolConfigContract, ());
+        let client = ProtocolConfigContractClient::new(&env, &contract_id);
+        use earnproof_shared::ContractError;
+
+        let result = client.try_get_genesis();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    // ── schema payload size limits (issue #190) ──────────────────────────────
+
+    #[test]
+    fn unset_schema_gets_the_default_payload_limit() {
+        let (_env, client, _admin) = setup();
+        assert_eq!(
+            client.get_schema_payload_limit(&1),
+            earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT
+        );
+        // Version 0 can never be approved, and always reads as the default.
+        assert_eq!(
+            client.get_schema_payload_limit(&0),
+            earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT
+        );
+    }
+
+    #[test]
+    fn schema_payload_limit_can_be_set_and_read_back() {
+        let (_env, client, _admin) = setup();
+        client.set_schema_payload_limit(&1, &1_024);
+        assert_eq!(client.get_schema_payload_limit(&1), 1_024);
+        // Other schema versions are unaffected.
+        assert_eq!(
+            client.get_schema_payload_limit(&2),
+            earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT
+        );
+    }
+
+    #[test]
+    fn schema_payload_limit_of_zero_is_a_deterministic_valid_policy() {
+        // A limit of zero is a legitimate governance choice (no auxiliary
+        // payload permitted for that schema at all), not an error.
+        let (_env, client, _admin) = setup();
+        client.set_schema_payload_limit(&1, &0);
+        assert_eq!(client.get_schema_payload_limit(&1), 0);
+    }
+
+    #[test]
+    fn schema_payload_limit_rejects_zero_version() {
+        let (_env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
+        let result = client.try_set_schema_payload_limit(&0, &1_024);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+    }
+
+    #[test]
+    fn schema_payload_limit_survives_deprecation() {
+        // Deprecating a schema version does not clear its configured limit;
+        // the policy and the approval flag are independent.
+        let (_env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        client.set_schema_payload_limit(&1, &1_024);
+        client.deprecate_schema_version(&1);
+        assert_eq!(client.get_schema_payload_limit(&1), 1_024);
+    }
+
+    #[test]
+    fn schema_payload_limit_update_does_not_retroactively_invalidate() {
+        // Changing the limit is a forward-looking policy change: nothing here
+        // reaches into proof-registry to revalidate proofs already written
+        // under the old limit, and there is no mechanism by which it could.
+        let (_env, client, _admin) = setup();
+        client.set_schema_payload_limit(&1, &2_048);
+        client.set_schema_payload_limit(&1, &16);
+        assert_eq!(client.get_schema_payload_limit(&1), 16);
+    }
+
+    // ── bounded configuration change history (issue #193) ────────────────────
+
+    #[test]
+    fn change_history_starts_empty() {
+        let (_env, client, _admin) = setup();
+        assert_eq!(client.get_config_history_cursor(), 0);
+        assert_eq!(client.get_config_history(&0, &10).len(), 0);
+    }
+
+    #[test]
+    fn change_history_records_ordering_and_category() {
+        let (_env, client, _admin) = setup();
+        client.pause();
+        client.unpause();
+        client.approve_schema_version(&9);
+
+        assert_eq!(client.get_config_history_cursor(), 3);
+        let page = client.get_config_history(&0, &10);
+        assert_eq!(page.len(), 3);
+        assert_eq!(
+            page.get(0).unwrap().category,
+            ConfigChangeCategory::PauseToggle
+        );
+        assert_eq!(
+            page.get(1).unwrap().category,
+            ConfigChangeCategory::PauseToggle
+        );
+        assert_eq!(
+            page.get(2).unwrap().category,
+            ConfigChangeCategory::SchemaApproval
+        );
+        // Each entry records the config version in effect right after it.
+        assert_eq!(
+            page.get(2).unwrap().config_version,
+            client.get_config_version()
+        );
+    }
+
+    #[test]
+    fn failed_changes_do_not_append_history() {
+        let (_env, client, _admin) = setup();
+        client.pause();
+        let cursor_before = client.get_config_history_cursor();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.approve_schema_version(&0);
+        }));
+        assert!(result.is_err());
+
+        assert_eq!(client.get_config_history_cursor(), cursor_before);
+    }
+
+    #[test]
+    fn change_history_ring_rolls_over_deterministically() {
+        let (_env, client, _admin) = setup();
+        let capacity = earnproof_shared::CONFIG_HISTORY_CAPACITY;
+
+        // Overrun the ring by a handful of entries.
+        for version in 1..=(capacity + 3) {
+            client.approve_schema_version(&version);
+        }
+        let total = client.get_config_history_cursor();
+        assert_eq!(total, capacity + 3);
+
+        // A cursor before the oldest still-available entry is clamped forward
+        // deterministically rather than erroring. The page length is bounded
+        // by MAX_CONFIG_HISTORY_PAGE, independent of the ring capacity.
+        let page = client.get_config_history(&0, &capacity);
+        assert_eq!(page.len(), earnproof_shared::MAX_CONFIG_HISTORY_PAGE);
+        // The oldest surviving entry is the one that pushed the first three
+        // out of the ring.
+        let oldest_surviving_version = 4u32;
+        assert_eq!(
+            page.get(0).unwrap().proposal_commitment,
+            ProtocolConfigContract::commit_for_test(&_env, oldest_surviving_version)
+        );
+    }
+
+    #[test]
+    fn change_history_page_size_is_capped() {
+        let (_env, client, _admin) = setup();
+        for version in 1..=(earnproof_shared::MAX_CONFIG_HISTORY_PAGE + 5) {
+            client.approve_schema_version(&version);
+        }
+        // Requesting more than the cap returns at most the cap.
+        let page = client.get_config_history(&0, &(earnproof_shared::MAX_CONFIG_HISTORY_PAGE + 5));
+        assert_eq!(page.len(), earnproof_shared::MAX_CONFIG_HISTORY_PAGE);
+    }
+
+    #[test]
+    fn change_history_survives_migration() {
+        let (_env, client, admin) = setup();
+        client.pause();
+        let cursor_before = client.get_config_history_cursor();
+
+        client.begin_migration(&2, &1);
+        client.advance_migration(&0, &1);
+        let _ = admin;
+
+        assert_eq!(client.get_config_history_cursor(), cursor_before);
+        assert_eq!(client.get_config_history(&0, &10).len(), cursor_before);
+    }
+
+    /// Test-only helper mirroring the contract's private `commit` so the
+    /// rollover test can assert on a specific expected commitment.
+    impl ProtocolConfigContract {
+        fn commit_for_test(env: &Env, version: u32) -> BytesN<32> {
+            Self::commit(env, version)
+        }
     }
 }

@@ -11,9 +11,10 @@
 //! there first.
 
 use super::support::{
-    address_issuer_key, address_ttl_key, admin_key, bytes32, config_version_key,
-    contract_version_key, deployment, encoded, encoded_keys_in, instance_live_until_key,
-    issuer_key, issuer_registry_key, issuer_ttl_key, paused_key, proof_key, protocol_config_key,
+    address_issuer_key, address_ttl_key, admin_key, bytes32, config_history_ring_key,
+    config_history_total_key, config_version_key, contract_version_key, deployment, encoded,
+    encoded_keys_in, genesis_key, instance_live_until_key, issuer_key, issuer_registry_key,
+    issuer_ttl_key, paused_key, proof_key, protocol_config_key, registry_epoch_key,
     schema_version_key,
 };
 use earnproof_shared::StorageClass;
@@ -41,13 +42,18 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, paused_key()),
             encoded(env, config_version_key(env)),
             encoded(env, contract_version_key(env)),
+            encoded(env, genesis_key()),
+            encoded(env, config_history_total_key(env)),
         ]),
         "protocol-config instance keys"
     );
 
     assert_eq!(
         encoded_keys_in(env, &deployment.config_id, StorageClass::Persistent),
-        sorted(std::vec![encoded(env, schema_version_key(env, 1)),]),
+        sorted(std::vec![
+            encoded(env, schema_version_key(env, 1)),
+            encoded(env, config_history_ring_key(env, 0)),
+        ]),
         "protocol-config persistent keys"
     );
 
@@ -57,6 +63,7 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, admin_key()),
             encoded(env, contract_version_key(env)),
             encoded(env, instance_live_until_key(env)),
+            encoded(env, genesis_key()),
         ]),
         "issuer-registry instance keys"
     );
@@ -79,6 +86,8 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, contract_version_key(env)),
             encoded(env, issuer_registry_key(env)),
             encoded(env, protocol_config_key(env)),
+            encoded(env, genesis_key()),
+            encoded(env, registry_epoch_key(env)),
         ]),
         "proof-registry instance keys"
     );
@@ -288,7 +297,7 @@ fn identical_namespaces_in_different_contracts_address_different_entries() {
     // another: the issuer registry still holds only its fixed instance keys.
     assert_eq!(
         encoded_keys_in(env, &deployment.issuers_id, StorageClass::Instance).len(),
-        3
+        4
     );
 }
 

@@ -113,6 +113,33 @@ pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
 }
 
+pub fn genesis_key() -> (Symbol,) {
+    (symbol_short!("Genesis"),)
+}
+
+pub fn registry_epoch_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "RegistryEpoch"),)
+}
+
+#[allow(dead_code)]
+pub fn proof_payload_meta_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofPayloadMeta"), id.clone())
+}
+
+#[allow(dead_code)]
+pub fn schema_payload_limit_key(env: &Env, version: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaPayloadLimit"), version)
+}
+
+pub fn config_history_total_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "ConfigHistoryTotal"),)
+}
+
+#[allow(dead_code)]
+pub fn config_history_ring_key(env: &Env, slot: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "ConfigHistoryRing"), slot)
+}
+
 #[allow(dead_code)]
 pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(env, "ProofTtl"), id.clone())
@@ -227,6 +254,7 @@ pub fn exercised_deployment() -> Deployment {
     let rotated_issuer = Address::generate(&env);
     let suspended_issuer = Address::generate(&env);
     let revoked_issuer = Address::generate(&env);
+    let held_suspended_issuer = Address::generate(&env);
     let issuer_id = bytes32(&env, 1);
     let proof_id = bytes32(&env, 5);
 
@@ -236,6 +264,7 @@ pub fn exercised_deployment() -> Deployment {
     config.approve_schema_version(&1);
     config.approve_schema_version(&2);
     config.deprecate_schema_version(&2);
+    config.set_schema_payload_limit(&1, &2_048);
     config.pause();
     config.unpause();
     config.nominate_admin(&rotated_admin);
@@ -292,6 +321,14 @@ pub fn exercised_deployment() -> Deployment {
         &None,
     );
     proofs.revoke_proof(&bytes32(&env, 7));
+    proofs.register_proof_with_payload(
+        &bytes32(&env, 9),
+        &bytes32(&env, 10),
+        &rotated_issuer,
+        &1,
+        &1_000_000,
+        &Bytes::from_array(&env, &[0xAB; 8]),
+    );
     config.pause();
 
     config.begin_migration(&2, &1);
