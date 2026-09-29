@@ -1,6 +1,6 @@
 # Threshold Approval Governance for Critical Protocol Changes
 
-Closes #571dcac5-af51-4c56-bca9-8c18efef7756
+Closes #203
 
 ## Summary
 
