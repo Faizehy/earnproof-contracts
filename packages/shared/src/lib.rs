@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{
+    contracterror, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+};
 
 pub mod storage_namespaces;
 
@@ -413,6 +415,134 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    /// Network passphrase or asset identifier is not in canonical form.
+    InvalidProofContext = 311,
+}
+
+/// Versioned asset identifier accepted by context-aware proof registration.
+/// Issued asset codes are case-sensitive ASCII alphanumeric strings of 1-12
+/// characters; the variant tag keeps native XLM distinct from an issued asset
+/// whose code happens to be `XLM`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProofAssetIdentifier {
+    Native,
+    Issued(String, Address),
+}
+
+/// Public commitments that bind a proof claim to the network and asset policy
+/// used by the backend. The raw network passphrase and asset identifier are
+/// never stored in proof-registry.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofContextCommitments {
+    pub version: u32,
+    pub network_commitment: BytesN<32>,
+    pub asset_commitment: BytesN<32>,
+    pub proof_context_commitment: BytesN<32>,
+}
+
+/// Context options supplied by an issuer during context-aware proof
+/// registration. A payload is optional and follows the existing bounded
+/// payload-storage path.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofRegistrationContext {
+    pub network_passphrase: String,
+    pub asset: ProofAssetIdentifier,
+    pub payload: Option<Bytes>,
+}
+
+/// Computes version-1 network, asset, and claim-context commitments.
+///
+/// Network passphrases must be 1-128 visible ASCII bytes with no leading or
+/// trailing spaces. Issued asset identifiers use the exact case-sensitive
+/// ASCII code and a valid Stellar account address as issuer.
+pub fn compute_proof_context_commitments(
+    env: &Env,
+    claim_commitment: &BytesN<32>,
+    network_passphrase: &String,
+    asset: &ProofAssetIdentifier,
+) -> Option<ProofContextCommitments> {
+    let network_bytes = network_passphrase.to_bytes();
+    let network_len = network_bytes.len();
+    if network_len == 0 || network_len > 128 {
+        return None;
+    }
+    for index in 0..network_len {
+        let byte = network_bytes.get(index)?;
+        if !(0x20..=0x7e).contains(&byte)
+            || (index == 0 || index == network_len - 1) && byte == b' '
+        {
+            return None;
+        }
+    }
+    if env.crypto().sha256(&network_bytes).to_bytes() != env.ledger().network_id() {
+        return None;
+    }
+
+    let mut network_preimage = Bytes::from_slice(env, b"earnproof.network.v1\0");
+    network_preimage.append(&network_bytes);
+    let network_commitment = env.crypto().sha256(&network_preimage).to_bytes();
+
+    let mut asset_preimage = Bytes::from_slice(env, b"earnproof.asset.v1\0");
+    match asset {
+        ProofAssetIdentifier::Native => asset_preimage.append(&Bytes::from_slice(env, b"native")),
+        ProofAssetIdentifier::Issued(code, issuer) => {
+            let code_bytes = code.to_bytes();
+            let code_len = code_bytes.len();
+            if code_len == 0 || code_len > 12 || !is_valid_account_address(issuer) {
+                return None;
+            }
+            for index in 0..code_len {
+                let byte = code_bytes.get(index)?;
+                if !byte.is_ascii_alphanumeric() {
+                    return None;
+                }
+            }
+            asset_preimage.append(&Bytes::from_slice(env, b"issued\0"));
+            asset_preimage.append(&Bytes::from_array(env, &[code_len as u8]));
+            asset_preimage.append(&code_bytes);
+            asset_preimage.append(&issuer.to_string().to_bytes());
+        }
+    };
+    let asset_commitment = env.crypto().sha256(&asset_preimage).to_bytes();
+
+    let mut context_preimage = Bytes::from_slice(env, b"earnproof.proof-context.v1\0");
+    context_preimage.append(&Bytes::from_slice(
+        env,
+        claim_commitment.to_array().as_slice(),
+    ));
+    context_preimage.append(&network_commitment.to_bytes());
+    context_preimage.append(&asset_commitment.to_bytes());
+    let proof_context_commitment = env.crypto().sha256(&context_preimage).to_bytes();
+
+    Some(ProofContextCommitments {
+        version: 1,
+        network_commitment,
+        asset_commitment,
+        proof_context_commitment,
+    })
+}
+
+/// Returns true for a non-zero Stellar account address, excluding contract
+/// addresses that cannot issue a classic Stellar asset.
+pub fn is_valid_account_address(address: &Address) -> bool {
+    is_valid_principal_address(address) && address.to_string().to_bytes().get(0) == Some(b'G')
+}
+
+/// Derives a storage identifier for a context-bound proof record. Reusing the
+/// same caller claim ID with a different network or asset yields a distinct
+/// record key.
+pub fn derive_contextual_proof_id(
+    env: &Env,
+    claim_id: &BytesN<32>,
+    context_commitment: &BytesN<32>,
+) -> BytesN<32> {
+    let mut preimage = Bytes::from_slice(env, b"earnproof.proof-record.v1\0");
+    preimage.append(&claim_id.to_bytes());
+    preimage.append(&context_commitment.to_bytes());
+    env.crypto().sha256(&preimage).to_bytes()
 }
 
 /// Fixed capacity of the protocol-config change-history ring. Once this many
@@ -792,6 +922,221 @@ mod interface_version_tests {
             &BASE,
             &InterfaceVersion::new(0, 9, 9)
         ));
+    }
+}
+
+#[cfg(test)]
+mod proof_context_tests {
+    extern crate std;
+
+    use super::*;
+    use soroban_sdk::{contract, contractimpl, testutils::Ledger as _, Env};
+
+    #[contract]
+    pub struct TestContextContract;
+
+    #[contractimpl]
+    impl TestContextContract {
+        pub fn ping(_env: Env) {}
+    }
+
+    const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+    const ISSUER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
+
+    fn bytes32(env: &Env, hex: &str) -> BytesN<32> {
+        assert_eq!(hex.len(), 64);
+        let mut bytes = [0_u8; 32];
+        for (index, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+            bytes[index] = u8::from_str_radix(core::str::from_utf8(pair).unwrap(), 16).unwrap();
+        }
+        BytesN::from_array(env, &bytes)
+    }
+
+    fn vector_hex(id: &str) -> &'static str {
+        include_str!("../../../tests/fixtures/encoding/vectors.tsv")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .find_map(|line| {
+                let fields: std::vec::Vec<&str> = line.split('\t').collect();
+                (fields[0] == id).then_some(fields[3])
+            })
+            .unwrap_or_else(|| panic!("missing encoding vector {id}"))
+    }
+
+    #[test]
+    fn cross_language_context_vectors_match() {
+        let env = Env::default();
+        let claim = bytes32(
+            &env,
+            "7261c38367d18cd03b133d7011956d1a8a35daf3e379aed2d45cdf33be235f35",
+        );
+        let claim_id = bytes32(
+            &env,
+            "c5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19",
+        );
+        let passphrase = String::from_str(&env, TESTNET_PASSPHRASE);
+        env.ledger()
+            .set_network_id(env.crypto().sha256(&passphrase.to_bytes()).to_array());
+
+        let native = compute_proof_context_commitments(
+            &env,
+            &claim,
+            &passphrase,
+            &ProofAssetIdentifier::Native,
+        )
+        .unwrap();
+        assert_eq!(
+            native.network_commitment,
+            bytes32(&env, vector_hex("network-v1"))
+        );
+        assert_eq!(
+            native.asset_commitment,
+            bytes32(&env, vector_hex("asset-native-v1"))
+        );
+        assert_eq!(
+            native.proof_context_commitment,
+            bytes32(&env, vector_hex("context-native-v1"))
+        );
+        assert_eq!(
+            derive_contextual_proof_id(&env, &claim_id, &native.proof_context_commitment),
+            bytes32(&env, vector_hex("record-native-v1"))
+        );
+
+        let issuer = Address::from_str(&env, ISSUER);
+        let issued = compute_proof_context_commitments(
+            &env,
+            &claim,
+            &passphrase,
+            &ProofAssetIdentifier::Issued(String::from_str(&env, "USDC"), issuer),
+        )
+        .unwrap();
+        assert_eq!(
+            issued.asset_commitment,
+            bytes32(&env, vector_hex("asset-issued-usdc-v1"))
+        );
+        assert_eq!(
+            issued.proof_context_commitment,
+            bytes32(&env, vector_hex("context-issued-usdc-v1"))
+        );
+        assert_eq!(
+            derive_contextual_proof_id(&env, &claim_id, &issued.proof_context_commitment),
+            bytes32(&env, vector_hex("record-issued-usdc-v1"))
+        );
+        assert_ne!(
+            native.proof_context_commitment,
+            issued.proof_context_commitment
+        );
+    }
+
+    #[test]
+    fn malformed_or_wrong_network_context_is_rejected() {
+        let env = Env::default();
+        let claim = BytesN::from_array(&env, &[1; 32]);
+        let passphrase = String::from_str(&env, TESTNET_PASSPHRASE);
+        let bad_code = ProofAssetIdentifier::Issued(
+            String::from_str(&env, "USDC-USD"),
+            Address::from_str(&env, ISSUER),
+        );
+        assert!(compute_proof_context_commitments(&env, &claim, &passphrase, &bad_code).is_none());
+
+        for value in [
+            "",
+            " Test SDF Network ; September 2015",
+            "Test SDF Network ; September 2015 ",
+            "Mainnet",
+        ] {
+            assert!(compute_proof_context_commitments(
+                &env,
+                &claim,
+                &String::from_str(&env, value),
+                &ProofAssetIdentifier::Native,
+            )
+            .is_none());
+        }
+
+        let contract_issuer = env.register(TestContextContract, ());
+        let contract_asset =
+            ProofAssetIdentifier::Issued(String::from_str(&env, "USDC"), contract_issuer);
+        assert!(
+            compute_proof_context_commitments(&env, &claim, &passphrase, &contract_asset).is_none()
+        );
+    }
+
+    #[test]
+    fn same_claim_is_bound_to_distinct_network_ids() {
+        let env = Env::default();
+        let claim = BytesN::from_array(&env, &[7; 32]);
+        let claim_id = BytesN::from_array(&env, &[8; 32]);
+        let testnet = String::from_str(&env, TESTNET_PASSPHRASE);
+        let testnet_id = env.crypto().sha256(&testnet.to_bytes()).to_array();
+        env.ledger().set_network_id(testnet_id);
+        let testnet_context = compute_proof_context_commitments(
+            &env,
+            &claim,
+            &testnet,
+            &ProofAssetIdentifier::Native,
+        )
+        .unwrap();
+
+        let public_passphrase =
+            String::from_str(&env, "Public Global Stellar Network ; September 2015");
+        let public_id = env
+            .crypto()
+            .sha256(&public_passphrase.to_bytes())
+            .to_array();
+        env.ledger().set_network_id(public_id);
+        let public_context = compute_proof_context_commitments(
+            &env,
+            &claim,
+            &public_passphrase,
+            &ProofAssetIdentifier::Native,
+        )
+        .unwrap();
+
+        assert_ne!(
+            testnet_context.network_commitment,
+            public_context.network_commitment
+        );
+        assert_ne!(
+            testnet_context.proof_context_commitment,
+            public_context.proof_context_commitment
+        );
+        assert_ne!(
+            derive_contextual_proof_id(&env, &claim_id, &testnet_context.proof_context_commitment),
+            derive_contextual_proof_id(&env, &claim_id, &public_context.proof_context_commitment)
+        );
+    }
+
+    #[test]
+    fn accepted_asset_code_and_network_length_boundaries() {
+        let env = Env::default();
+        let claim = BytesN::from_array(&env, &[9; 32]);
+        let issuer = Address::from_str(&env, ISSUER);
+        let network_text = "A".repeat(128);
+        let network = String::from_str(&env, &network_text);
+        env.ledger()
+            .set_network_id(env.crypto().sha256(&network.to_bytes()).to_array());
+        for code in ["A", "ABCDEFGHIJKL"] {
+            let asset = ProofAssetIdentifier::Issued(String::from_str(&env, code), issuer.clone());
+            assert!(compute_proof_context_commitments(&env, &claim, &network, &asset).is_some());
+        }
+        let too_long_code =
+            ProofAssetIdentifier::Issued(String::from_str(&env, "ABCDEFGHIJKLM"), issuer);
+        assert!(
+            compute_proof_context_commitments(&env, &claim, &network, &too_long_code).is_none()
+        );
+
+        let too_long_network_text = "A".repeat(129);
+        let too_long_network = String::from_str(&env, &too_long_network_text);
+        env.ledger()
+            .set_network_id(env.crypto().sha256(&too_long_network.to_bytes()).to_array());
+        assert!(compute_proof_context_commitments(
+            &env,
+            &claim,
+            &too_long_network,
+            &ProofAssetIdentifier::Native,
+        )
+        .is_none());
     }
 }
 

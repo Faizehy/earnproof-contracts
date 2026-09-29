@@ -9,5 +9,24 @@
     {"id":"schema-7","kind":"u32-be","source":"7","hex":"00000007"},
     {"id":"expiration-1700000000","kind":"u64-be","source":"1700000000","hex":"000000006553f100"}
   ],
-  "invalid": ["empty string", "malformed hex", "wrong byte length", "signed or little-endian integer", "unpaired UTF-16 surrogate"]
+  "proofContextV1": {
+    "encoding": "SHA-256 over domain tag plus canonical bytes; issued asset = issued NUL + one-byte code length + case-sensitive ASCII code + issuer StrKey",
+    "networkPassphrase": "Test SDF Network ; September 2015",
+    "claimCommitment": "7261c38367d18cd03b133d7011956d1a8a35daf3e379aed2d45cdf33be235f35",
+    "issuer": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+    "native": {
+      "networkCommitment": "2ae86c27166c9cd705171a390e1aa21629c78c25a1c07e54f871d3118f858c23",
+      "assetCommitment": "3940f80ca0d744c8ac0262cfb0745027a75c1518406414214d56bdd6d30b644c",
+      "contextCommitment": "5520a609b05439dcb41fd2cc612064a58eece4c9a535981d265e4dad7cb4bdac",
+      "recordId": "2f06fbe706162acde73d6f257246961032aec6b27c6571ee7a6ab01ce9735f36"
+    },
+    "issuedUSDC": {
+      "assetCode": "USDC",
+      "networkCommitment": "2ae86c27166c9cd705171a390e1aa21629c78c25a1c07e54f871d3118f858c23",
+      "assetCommitment": "dbd1a838d502a8a93a085ae411c9bc6c14582a3e7d4e5e6009fa9c24c0a5aff9",
+      "contextCommitment": "c98e7e0b741716ce9ea2b777c8284e29ea54e592f90e68a1b3321cb13e7f762c",
+      "recordId": "0855b695979ef50e47029a887fdcd7416884fabbde9a578a94359d920a3139ea"
+    }
+  },
+  "invalid": ["empty string", "malformed hex", "wrong byte length", "signed or little-endian integer", "unpaired UTF-16 surrogate", "asset code with punctuation or whitespace", "issued asset with a contract issuer", "network passphrase not matching the current ledger"]
 }

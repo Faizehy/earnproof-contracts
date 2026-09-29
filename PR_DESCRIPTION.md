@@ -1,35 +1,34 @@
-# Threshold Approval Governance for Critical Protocol Changes
+# Commit Network and Asset Identifiers in Proof Records
 
-Closes #203
+Closes #160
 
 ## Summary
 
-Adds optional, contract-local threshold approval for critical schema policy, dependency replacement, and approval-policy changes. Proposal commitments bind the contract instance, action category, canonical parameters, and a monotonic nonce. Proposals snapshot the signer threshold, expire after 518,400 ledgers, support admin cancellation, and are consumed only after successful execution. Emergency pause, unpause, and scoped-pause authority remains immediate.
+Adds context-aware proof registration that binds a claim commitment and caller claim ID to the active Stellar network and a canonical asset policy. Asset choices are explicitly tagged as native XLM or an issued asset with a case-sensitive ASCII code and account issuer. Domain-separated network, asset, context, and contextual record-ID hashes are stored; raw passphrases, asset identifiers, and payment data are not.
 
-## Governed Actions
-
-- `ProtocolConfig`: schema approval/deprecation, schema payload limits, and approval-policy updates.
-- `ProofRegistry`: issuer-registry/protocol-config replacement and approval-policy updates. Existing address and interface compatibility checks still run at execution.
+The serialized `ProofRecord` remains unchanged. Context hashes live in a versioned `ProofContext` sidecar, so pre-existing records remain readable and report `None` for unavailable context. The new registration method returns the derived record ID for subsequent queries. Existing registration APIs remain available for legacy compatibility.
 
 ## Validation
 
 Passed:
 
-- `cargo test -p earnproof-shared --lib` — 4 passed.
+- `cargo test -p earnproof-shared --lib` — 8 passed.
 - `cargo test -p protocol-config --lib` — 59 passed.
 - `cargo check -p proof-registry --lib` — passed.
-- `cargo clippy -p protocol-config --lib -- -D warnings` — passed.
+- `cargo clippy -p earnproof-shared --all-targets --all-features -- -D warnings` — passed.
 - `cargo clippy -p proof-registry --lib -- -D warnings` — passed.
-- `rustfmt --edition 2021 --check packages/shared/src/lib.rs packages/shared/src/error_catalog.rs contracts/protocol-config/src/lib.rs contracts/proof-registry/src/lib.rs` — passed.
+- `rustfmt --edition 2021 --check packages/shared/src/lib.rs packages/shared/src/storage_namespaces.rs contracts/proof-registry/src/lib.rs tests/storage-keys/src/support.rs tests/storage-keys/src/encoding.rs fuzz/fuzz_targets/fuzz_proof_context.rs` — passed.
+- `node --experimental-strip-types tests/fixtures/encoding/example.ts` — passed; TypeScript output matches the seven published context vectors.
+- `node -e 'const fs=require("node:fs"); JSON.parse(fs.readFileSync("tests/fixtures/encoding/vectors.json","utf8")); JSON.parse(fs.readFileSync("tests/compatibility/goldens/proof-registry.abi.json","utf8"));'` — passed.
+- `cargo run -p earnproof-fuzz --bin fuzz_proof_context -- -runs=1000` — 1,000 executions completed without a panic. This direct run lacks coverage instrumentation.
 - `git diff --check` — passed.
 
 Blocked by existing repository issues:
 
-- `cargo fmt --check` — fails on formatting in untouched authorization tests and a parse error in `tests/events/src/compatibility.rs`.
-- `cargo clippy --all-targets --all-features -- -D warnings` — fails because `contracts/issuer-registry/src/lib.rs` has an unclosed delimiter.
-- `cargo test --workspace` — fails on the same issuer-registry parse error. Consequently `cargo test -p proof-registry --lib` and the error-catalog regeneration test are also blocked by issuer-registry compilation errors.
-- No governance-specific fuzz target exists; `cargo fuzz` is not installed.
+- `cargo fmt --check` — fails on an unclosed delimiter in `contracts/issuer-registry/src/lib.rs`, formatting diffs in untouched authorization tests, and a parse error in `tests/events/src/compatibility.rs`.
+- `cargo clippy --all-targets --all-features -- -D warnings` — blocked by the issuer-registry unclosed delimiter and a duplicate `metadata_hash` initializer in the existing `fuzz_issuer_record_decode` target.
+- `cargo test --workspace` — blocked by the issuer-registry unclosed delimiter. This also blocks `cargo test -p proof-registry --lib`, `cargo test -p encoding-vector-tests`, and the storage-key integration test package.
 
 ## Coverage
 
-Adds tests for mixed signers, unauthorized and duplicate signers, action-category/parameter binding, cancellation, expiry, replay, failed execution preservation, policy validation, dependency compatibility, contract-scoped proposals, and immediate emergency pause behavior.
+Adds shared tests for cross-language commitment vectors, distinct networks and assets, malformed asset IDs, account-only issuers, and input length boundaries. Adds proof-registry tests for context-specific IDs, payload compatibility, legacy records, replay rejection, malformed context atomicity, and issuer authorization. Adds a focused libFuzzer target for passphrase and asset-code validation.

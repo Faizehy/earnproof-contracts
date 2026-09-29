@@ -108,6 +108,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 308 | `IssuerInactive` | `ProofError` | proof-registry | returned | after-operator-action | 403 |
 | 309 | `UnsupportedSchema` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 310 | `MalformedInput` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
+| 311 | `InvalidProofContext` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 
 ## Details
 
@@ -429,5 +430,16 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Call get_schema_payload_limit for the schema version and shrink the payload to fit, or use register_proof without a payload if none is required.
 - Suggested HTTP status: 400
 - Client message: "Malformed proof input"
+
+### 311 - `InvalidProofContext`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: The network passphrase or native/issued asset identifier is not in canonical form, or the passphrase does not match the active ledger network.
+- Remediation: Use the exact active Stellar network passphrase and either native XLM or a case-sensitive ASCII alphanumeric asset code with a valid account issuer.
+- Suggested HTTP status: 400
+- Client message: "Invalid proof network or asset context"
 
 <!-- END GENERATED -->

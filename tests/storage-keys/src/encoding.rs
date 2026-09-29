@@ -14,8 +14,8 @@ use super::support::{
     address_issuer_key, address_ttl_key, admin_key, bytes32, config_history_ring_key,
     config_history_total_key, config_version_key, contract_version_key, deployment, encoded,
     encoded_keys_in, genesis_key, instance_live_until_key, issuer_key, issuer_registry_key,
-    issuer_ttl_key, paused_key, proof_key, protocol_config_key, registry_epoch_key,
-    schema_version_key,
+    issuer_ttl_key, paused_key, proof_context_key, proof_key, protocol_config_key,
+    registry_epoch_key, schema_version_key,
 };
 use earnproof_shared::StorageClass;
 use soroban_sdk::testutils::Address as _;
@@ -114,6 +114,13 @@ fn keys_encode_as_a_discriminant_followed_by_the_payload() {
     let discriminant: Symbol = composite.get(0).unwrap().into_val(&env);
     assert_eq!(discriminant, symbol_short!("Proof"));
     let payload: BytesN<32> = composite.get(1).unwrap().into_val(&env);
+    assert_eq!(payload, identifier);
+
+    let context_key: SorobanVec<Val> = proof_context_key(&env, &identifier).into_val(&env);
+    assert_eq!(context_key.len(), 2);
+    let discriminant: Symbol = context_key.get(0).unwrap().into_val(&env);
+    assert_eq!(discriminant, Symbol::new(&env, "ProofContext"));
+    let payload: BytesN<32> = context_key.get(1).unwrap().into_val(&env);
     assert_eq!(payload, identifier);
 }
 

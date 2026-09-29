@@ -2,13 +2,14 @@
 
 #[allow(unused_imports)]
 use earnproof_shared::{
-    is_interface_compatible, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    ProofError, ProofPayloadRecord, ProofRecord, ProofStatus, ProofValidity, TtlStatus,
-    UpgradeApproval, UpgradeReceipt, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS,
-    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS,
-    TTL_THRESHOLD_LEDGERS,
+    compute_proof_context_commitments, derive_contextual_proof_id, is_interface_compatible,
+    ContractError, CriticalAction, CriticalActionPolicy, CriticalActionProposal, GenesisRecord,
+    InterfaceVersion, MigrationStatus, PauseScope, ProofAssetIdentifier, ProofContextCommitments,
+    ProofError, ProofPayloadRecord, ProofRecord, ProofRegistrationContext, ProofStatus,
+    ProofValidity, TtlStatus, UpgradeApproval, UpgradeReceipt,
+    CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, ISSUER_REGISTRY_INTERFACE_VERSION,
+    MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
+    PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contracttype, xdr::ToXdr, Address,
@@ -40,6 +41,16 @@ pub trait IssuerRegistryInterface {
 #[contract]
 pub struct ProofRegistryContract;
 
+struct ProofRegistration {
+    proof_id_hash: BytesN<32>,
+    commitment_hash: BytesN<32>,
+    issuer_address: Address,
+    schema_version: u32,
+    expires_at: u64,
+    payload: Option<Bytes>,
+    context: Option<ProofContextCommitments>,
+}
+
 #[contracttype]
 enum DataKey {
     MigrationStatus,
@@ -61,6 +72,7 @@ enum DataKey {
     /// Bounded auxiliary-payload metadata for a proof registered with a
     /// payload (length and commitment hash only — never the raw bytes).
     ProofPayloadMeta(BytesN<32>),
+    ProofContext(BytesN<32>),
     PendingAdmin,
     CriticalActionPolicy,
     CriticalActionProposal(BytesN<32>),
@@ -329,9 +341,11 @@ impl ProofRegistryContract {
     }
 
     pub fn keepalive_proof(env: Env, proof_id_hash: BytesN<32>) -> bool {
+        let context_id = proof_id_hash.clone();
         let key = DataKey::Proof(proof_id_hash);
         if env.storage().persistent().has(&key) {
-            Self::extend_proof_key_ttl(env, &key);
+            Self::extend_proof_key_ttl(env.clone(), &key);
+            Self::extend_proof_context_ttl(env, &context_id);
             true
         } else {
             false
@@ -346,79 +360,54 @@ impl ProofRegistryContract {
         schema_version: u32,
         expires_at: u64,
     ) -> Result<(), ProofError> {
+        Self::register_proof_inner(
+            env,
+            ProofRegistration {
+                proof_id_hash,
+                commitment_hash,
+                issuer_address,
+                schema_version,
+                expires_at,
+                payload: None,
+                context: None,
+            },
+        )
+    }
+
+    pub fn register_proof_with_context(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        registration_context: ProofRegistrationContext,
+    ) -> Result<BytesN<32>, ProofError> {
         Self::ensure_not_decommissioned(&env)?;
         Self::require_valid_issuer_address(&issuer_address)?;
-        let protocol_config =
-            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
-        let issuer_registry =
-            Self::get_issuer_registry(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
-        if issuer_address == env.current_contract_address()
-            || issuer_address == protocol_config
-            || issuer_address == issuer_registry
-        {
-            return Err(ProofError::InvalidAddress);
-        }
         Self::require_auth(&issuer_address);
-
-        // Input validation (proof-specific data validation — checked before cross-contract calls)
-        if schema_version == 0 {
-            return Err(ProofError::InvalidSchemaVersion);
-        }
-
-        if expires_at <= env.ledger().timestamp() {
-            return Err(ProofError::ProofExpired);
-        }
-
-        // Check 1: Contract paused (highest precedence — most external state)
-        let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
-        if protocol_client.is_paused() {
-            return Err(ProofError::ContractPaused);
-        }
-
-        // Check 2: Issuer active (issuer-specific state)
-        let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry);
-        if !issuer_client.is_active_address(&issuer_address) {
-            return Err(ProofError::IssuerInactive);
-        }
-
-        // Check 3: Schema supported (protocol configuration state)
-        if !protocol_client.is_schema_version_approved(&schema_version) {
-            return Err(ProofError::UnsupportedSchema);
-        }
-
-        // Check 5: Uniqueness constraint (storage precondition)
-        let key = DataKey::Proof(proof_id_hash.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(ProofError::ProofAlreadyRegistered);
-        }
-
-        // Creation timing is sourced only from the host ledger environment so
-        // it is deterministic and non-forgeable by the caller. The proof
-        // record and its timing are written together in a single persistent
-        // `set`, so a proof never exists without its creation metadata.
-        let now = env.ledger().timestamp();
-        let created_ledger = env.ledger().sequence();
-        let record = ProofRecord {
-            proof_id_hash: proof_id_hash.clone(),
-            commitment_hash,
-            issuer_address: issuer_address.clone(),
-            status: ProofStatus::Active,
-            schema_version,
-            expires_at,
-            created_at: now,
-            revoked_at: 0,
-            created_ledger,
-        };
-
-        env.storage().persistent().set(&key, &record);
-        Self::extend_proof_key_ttl(env.clone(), &key);
-        let epoch = Self::bump_registry_epoch(&env);
-        ProofRegistered {
-            proof_id_hash,
-            epoch,
-        }
-        .publish(&env);
-        Ok(())
+        let context = compute_proof_context_commitments(
+            &env,
+            &commitment_hash,
+            &registration_context.network_passphrase,
+            &registration_context.asset,
+        )
+        .ok_or(ProofError::InvalidProofContext)?;
+        let contextual_proof_id =
+            derive_contextual_proof_id(&env, &proof_id_hash, &context.proof_context_commitment);
+        Self::register_proof_inner(
+            env,
+            ProofRegistration {
+                proof_id_hash: contextual_proof_id.clone(),
+                commitment_hash,
+                issuer_address,
+                schema_version,
+                expires_at,
+                payload: registration_context.payload,
+                context: Some(context),
+            },
+        )?;
+        Ok(contextual_proof_id)
     }
 
     /// Registers a proof exactly like [`Self::register_proof`], plus an
@@ -436,6 +425,39 @@ impl ProofRegistryContract {
         expires_at: u64,
         payload: Bytes,
     ) -> Result<(), ProofError> {
+        Self::register_proof_inner(
+            env,
+            ProofRegistration {
+                proof_id_hash,
+                commitment_hash,
+                issuer_address,
+                schema_version,
+                expires_at,
+                payload: Some(payload),
+                context: None,
+            },
+        )
+    }
+
+    pub fn get_proof_context_commitments(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<Option<ProofContextCommitments>, ProofError> {
+        Self::get_proof(env.clone(), proof_id_hash.clone())?;
+        let key = DataKey::ProofContext(proof_id_hash);
+        Ok(env.storage().persistent().get(&key))
+    }
+
+    fn register_proof_inner(env: Env, registration: ProofRegistration) -> Result<(), ProofError> {
+        let ProofRegistration {
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            payload,
+            context,
+        } = registration;
         Self::ensure_not_decommissioned(&env)?;
         Self::require_valid_issuer_address(&issuer_address)?;
         let protocol_config =
@@ -472,14 +494,16 @@ impl ProofRegistryContract {
             return Err(ProofError::UnsupportedSchema);
         }
 
-        // Schema-specific payload size bound, enforced before any state
-        // write — a zero-length payload is always within bounds, and a
-        // payload exactly at the limit is accepted.
-        let max_payload_size = protocol_client.get_schema_payload_limit(&schema_version);
-        let payload_len = payload.len();
-        if payload_len > max_payload_size {
-            return Err(ProofError::MalformedInput);
-        }
+        let payload_len = if let Some(payload) = &payload {
+            let max_payload_size = protocol_client.get_schema_payload_limit(&schema_version);
+            let length = payload.len();
+            if length > max_payload_size {
+                return Err(ProofError::MalformedInput);
+            }
+            Some(length)
+        } else {
+            None
+        };
 
         let key = DataKey::Proof(proof_id_hash.clone());
         if env.storage().persistent().has(&key) {
@@ -502,23 +526,38 @@ impl ProofRegistryContract {
         env.storage().persistent().set(&key, &record);
         Self::extend_proof_key_ttl(env.clone(), &key);
 
-        let payload_hash = env.crypto().sha256(&payload).to_bytes();
-        let payload_key = DataKey::ProofPayloadMeta(proof_id_hash.clone());
-        let payload_meta = ProofPayloadRecord {
-            payload_len,
-            payload_hash: payload_hash.clone(),
-        };
-        env.storage().persistent().set(&payload_key, &payload_meta);
-        Self::extend_payload_key_ttl(env.clone(), &payload_key);
-
-        let epoch = Self::bump_registry_epoch(&env);
-        ProofRegisteredWithPayload {
-            proof_id_hash,
-            payload_len,
-            payload_hash,
-            epoch,
+        if let Some(context) = context {
+            let context_key = DataKey::ProofContext(proof_id_hash.clone());
+            env.storage().persistent().set(&context_key, &context);
+            Self::extend_proof_key_ttl(env.clone(), &context_key);
         }
-        .publish(&env);
+
+        if let (Some(payload), Some(payload_len)) = (payload, payload_len) {
+            let payload_hash = env.crypto().sha256(&payload).to_bytes();
+            let payload_key = DataKey::ProofPayloadMeta(proof_id_hash.clone());
+            let payload_meta = ProofPayloadRecord {
+                payload_len,
+                payload_hash: payload_hash.clone(),
+            };
+            env.storage().persistent().set(&payload_key, &payload_meta);
+            Self::extend_payload_key_ttl(env.clone(), &payload_key);
+
+            let epoch = Self::bump_registry_epoch(&env);
+            ProofRegisteredWithPayload {
+                proof_id_hash,
+                payload_len,
+                payload_hash,
+                epoch,
+            }
+            .publish(&env);
+        } else {
+            let epoch = Self::bump_registry_epoch(&env);
+            ProofRegistered {
+                proof_id_hash,
+                epoch,
+            }
+            .publish(&env);
+        }
 
         Ok(())
     }
@@ -532,13 +571,15 @@ impl ProofRegistryContract {
     }
 
     pub fn get_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<ProofRecord, ProofError> {
+        let context_id = proof_id_hash.clone();
         let key = DataKey::Proof(proof_id_hash);
         let record = env
             .storage()
             .persistent()
             .get(&key)
             .ok_or(ProofError::ProofNotFound)?;
-        Self::extend_proof_key_ttl(env, &key);
+        Self::extend_proof_key_ttl(env.clone(), &key);
+        Self::extend_proof_context_ttl(env, &context_id);
         Ok(record)
     }
 
@@ -1179,6 +1220,7 @@ impl ProofRegistryContract {
         record.revoked_at = env.ledger().timestamp();
         env.storage().persistent().set(&key, &record);
         Self::extend_proof_key_ttl(env.clone(), &key);
+        Self::extend_proof_context_ttl(env.clone(), &proof_id_hash);
         let epoch = Self::bump_registry_epoch(&env);
         ProofRevoked {
             proof_id_hash,
@@ -1199,6 +1241,13 @@ impl ProofRegistryContract {
         env.storage()
             .persistent()
             .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
+    fn extend_proof_context_ttl(env: Env, proof_id_hash: &BytesN<32>) {
+        let key = DataKey::ProofContext(proof_id_hash.clone());
+        if env.storage().persistent().has(&key) {
+            Self::extend_proof_key_ttl(env, &key);
+        }
     }
 
     fn extend_payload_key_ttl(env: Env, key: &DataKey) {
@@ -3255,5 +3304,122 @@ mod test {
             client.try_execute_critical_action(&expiring),
             Err(Ok(ContractError::ApprovalProposalExpired))
         );
+    }
+
+    fn set_testnet_context(env: &Env) -> soroban_sdk::String {
+        let passphrase = soroban_sdk::String::from_str(env, "Test SDF Network ; September 2015");
+        env.ledger()
+            .set_network_id(env.crypto().sha256(&passphrase.to_bytes()).to_array());
+        passphrase
+    }
+
+    #[test]
+    fn context_registration_derives_distinct_ids_and_preserves_legacy_records() {
+        let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        let passphrase = set_testnet_context(&env);
+        let issuer = Address::from_str(&env, ISSUER);
+        let claim_id = bytes(&env, 0x51);
+        let commitment = bytes(&env, 0x52);
+        let native_id = client.register_proof_with_context(
+            &claim_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &earnproof_shared::ProofRegistrationContext {
+                network_passphrase: passphrase.clone(),
+                asset: earnproof_shared::ProofAssetIdentifier::Native,
+                payload: None,
+            },
+        );
+        let issued_id = client.register_proof_with_context(
+            &claim_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &earnproof_shared::ProofRegistrationContext {
+                network_passphrase: passphrase.clone(),
+                asset: earnproof_shared::ProofAssetIdentifier::Issued(
+                    soroban_sdk::String::from_str(&env, "USDC"),
+                    issuer.clone(),
+                ),
+                payload: Some(soroban_sdk::Bytes::from_array(&env, &[0xA1, 0xB2])),
+            },
+        );
+        assert_ne!(native_id, issued_id);
+        assert_eq!(client.get_proof(&native_id).proof_id_hash, native_id);
+        assert_eq!(client.get_proof(&issued_id).proof_id_hash, issued_id);
+        assert!(client.get_proof_context_commitments(&native_id).is_some());
+        assert!(client.get_proof_context_commitments(&issued_id).is_some());
+        assert!(client.try_get_proof_payload(&issued_id).is_ok());
+
+        let legacy_id = bytes(&env, 0x53);
+        client.register_proof(&legacy_id, &commitment, &issuer, &1, &2_000);
+        assert_eq!(client.get_proof_context_commitments(&legacy_id), None);
+        assert_eq!(
+            client.try_register_proof_with_context(
+                &claim_id,
+                &commitment,
+                &issuer,
+                &1,
+                &2_000,
+                &earnproof_shared::ProofRegistrationContext {
+                    network_passphrase: passphrase.clone(),
+                    asset: earnproof_shared::ProofAssetIdentifier::Native,
+                    payload: None,
+                },
+            ),
+            Err(Ok(ProofError::ProofAlreadyRegistered))
+        );
+    }
+
+    #[test]
+    fn context_payload_registration_rejects_malformed_asset_without_writes() {
+        let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        let passphrase = set_testnet_context(&env);
+        let issuer = Address::from_str(&env, ISSUER);
+        let result = client.try_register_proof_with_context(
+            &bytes(&env, 0x61),
+            &bytes(&env, 0x62),
+            &issuer,
+            &1,
+            &2_000,
+            &earnproof_shared::ProofRegistrationContext {
+                network_passphrase: passphrase,
+                asset: earnproof_shared::ProofAssetIdentifier::Issued(
+                    soroban_sdk::String::from_str(&env, "USDC/USD"),
+                    issuer,
+                ),
+                payload: Some(soroban_sdk::Bytes::new(&env)),
+            },
+        );
+        assert_eq!(result, Err(Ok(ProofError::InvalidProofContext)));
+        assert_eq!(client.get_registry_epoch(), 0);
+    }
+
+    #[test]
+    fn context_registration_requires_issuer_authorization() {
+        let (env, client, ..) = setup();
+        let passphrase = set_testnet_context(&env);
+        let issuer = Address::from_str(&env, ISSUER);
+        env.set_auths(&[]);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.register_proof_with_context(
+                &bytes(&env, 0x71),
+                &bytes(&env, 0x72),
+                &issuer,
+                &1,
+                &2_000,
+                &earnproof_shared::ProofRegistrationContext {
+                    network_passphrase: passphrase,
+                    asset: earnproof_shared::ProofAssetIdentifier::Native,
+                    payload: None,
+                },
+            );
+        }));
+        assert!(result.is_err());
+        assert_eq!(client.get_registry_epoch(), 0);
     }
 }

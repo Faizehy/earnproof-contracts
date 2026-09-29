@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 35] = [
+pub const ERROR_CATALOG: [ErrorSpec; 36] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -575,6 +575,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 35] = [
         remediation: "Call get_schema_payload_limit for the schema version and shrink the payload to fit, or use register_proof without a payload if none is required.",
         http_status: 400,
         client_message: "Malformed proof input",
+    },
+    ErrorSpec {
+        code: 311,
+        name: "InvalidProofContext",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The network passphrase or native/issued asset identifier is not canonical, or the passphrase does not match the ledger network.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Use the exact active Stellar network passphrase and either Native or a case-sensitive ASCII alphanumeric asset code with a valid account issuer.",
+        http_status: 400,
+        client_message: "Invalid proof network or asset context",
     },
 ];
 
