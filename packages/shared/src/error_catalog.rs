@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 29] = [
+pub const ERROR_CATALOG: [ErrorSpec; 30] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -503,6 +503,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 29] = [
         remediation: "A predecessor can only have a bounded number of successors.",
         http_status: 400,
         client_message: "Too many successors",
+    },
+    ErrorSpec {
+        code: 315,
+        name: "UnsupportedProofType",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The proof type identifier is not supported by the protocol config.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Call is_proof_type_approved on the protocol config contract to verify the proof type is approved. An operator must approve the proof type before it can be used for proof registration.",
+        http_status: 400,
+        client_message: "Proof type not supported",
     },
 ];
 

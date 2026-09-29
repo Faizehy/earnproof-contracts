@@ -28,6 +28,7 @@ fn predecessor_not_found() {
         &crate::harness::APPROVED_SCHEMA,
         &expires_at,
         &Some(p1),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     );
 
     assert_eq!(res.unwrap_err().unwrap(), ProofError::PredecessorNotFound);
@@ -51,6 +52,7 @@ fn cyclic_supersession() {
         &crate::harness::APPROVED_SCHEMA,
         &expires_at,
         &Some(p1.clone()),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     );
 
     assert_eq!(res.unwrap_err().unwrap(), ProofError::CyclicSupersession);
@@ -83,6 +85,7 @@ fn cross_issuer_supersession() {
         &crate::harness::APPROVED_SCHEMA,
         &expires_at,
         &Some(p1),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     );
 
     assert_eq!(
@@ -115,6 +118,7 @@ fn too_many_successors() {
         &crate::harness::APPROVED_SCHEMA,
         &expires_at,
         &Some(p1),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     );
 
     assert_eq!(res.unwrap_err().unwrap(), ProofError::TooManySuccessors);

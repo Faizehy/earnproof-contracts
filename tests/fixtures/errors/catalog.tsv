@@ -30,3 +30,4 @@
 312	CrossIssuerSupersession	ProofError	proof-registry	returned	never	403
 313	PredecessorNotFound	ProofError	proof-registry	returned	after-caller-change	404
 314	TooManySuccessors	ProofError	proof-registry	returned	never	400
+311	UnsupportedProofType	ProofError	proof-registry	returned	after-operator-action	400

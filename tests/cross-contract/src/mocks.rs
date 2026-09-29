@@ -72,6 +72,10 @@ impl RejectsPauseRead {
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
         true
     }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
+    }
 }
 
 /// Rejects boundary 2, after boundary 1 has already succeeded.
@@ -90,6 +94,10 @@ impl RejectsSchemaRead {
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> Result<bool, MockError> {
         Err(MockError::DependencyRejected)
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> Result<bool, MockError> {
+        Ok(true)
     }
 }
 
@@ -130,6 +138,10 @@ impl MalformedPauseRead {
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
         true
     }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
+    }
 }
 
 /// Returns `u32` from boundary 2.
@@ -144,6 +156,10 @@ impl MalformedSchemaRead {
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> u32 {
         7
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
     }
 }
 
@@ -232,6 +248,10 @@ impl ConfigRequiringAuth {
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
         true
     }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +280,10 @@ impl RecordingConfig {
     }
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
+        true
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
         true
     }
 
@@ -298,6 +322,10 @@ impl SelfPausingConfig {
     }
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
+        true
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
         true
     }
 

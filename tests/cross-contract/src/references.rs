@@ -178,6 +178,7 @@ fn a_stale_issuer_address_fails_closed_after_rotation() {
         &APPROVED_SCHEMA,
         &deployment.expiry(),
         &None,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     );
 }
 
@@ -193,6 +194,7 @@ fn the_referenced_protocol_config_gates_registration_not_a_newer_deployment() {
     let newer = ProtocolConfigContractClient::new(&deployment.env, &newer_id);
     newer.initialize(&deployment.admin);
     newer.approve_schema_version(&APPROVED_SCHEMA);
+    newer.approve_proof_type(&soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]));
 
     deployment.config.pause();
     assert!(!newer.is_paused());

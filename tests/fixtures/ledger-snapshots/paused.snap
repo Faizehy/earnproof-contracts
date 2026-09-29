@@ -2,6 +2,9 @@
 # revision: 8
 # reason: Added reason_commitment and predecessor_id_hash fields
 # body-digest: 3d291b0a4a3e18116304e16ac4db860d78067c5e972a3950a78c99d3dc5e151c
+# revision: 9
+# reason: Added proof_type and reason_commitment
+# body-digest: 28b2ec1a9f313416c3bb1c608565c1a8f7f77371a715c59d53d05c49ba5b8ad7
 
 [ledger]
 sequence = 1000
@@ -20,15 +23,18 @@ proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:predecessor_id_hash: void, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
+proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:proof_type: bytes:0101010101010101010101010101010101010101010101010101010101010101, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
 protocol-config instance [sym:Admin] = addr:admin
-protocol-config instance [sym:ConfigVersion] = u32:3
+protocol-config instance [sym:ConfigVersion] = u32:4
 protocol-config instance [sym:ContractVersion] = u32:1
 protocol-config instance [sym:Paused] = true
+protocol-config persistent [sym:ProofTypeApproved, bytes:0101010101010101010101010101010101010101010101010101010101010101] = true
 protocol-config persistent [sym:SchemaVersion, u32:1] = true
 
 [events]
 protocol-config topics=[sym:initialized] data={sym:admin: addr:admin}
 protocol-config topics=[sym:schema_approved] data={sym:version: u32:1}
+protocol-config topics=[sym:proof_type_approved_event] data={sym:proof_type: bytes:0101010101010101010101010101010101010101010101010101010101010101}
 issuer-registry topics=[sym:issuer_registered] data={sym:created_at: u64:1000, sym:issuer_address: addr:issuer, sym:issuer_id_hash: bytes:1111111111111111111111111111111111111111111111111111111111111111, sym:metadata_hash: bytes:2222222222222222222222222222222222222222222222222222222222222222, sym:provenance_commitment: bytes:6363636363636363636363636363636363636363636363636363636363636363}
 protocol-config topics=[sym:paused] data={sym:paused: true}
 

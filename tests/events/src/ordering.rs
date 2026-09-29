@@ -197,6 +197,7 @@ fn cross_contract_rejection_publishes_nothing_from_either_contract() {
             &APPROVED_SCHEMA,
             &expires,
             &None,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         );
     });
 

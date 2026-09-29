@@ -17,6 +17,7 @@ enum DataKey {
     ScopedPause(PauseScope),
     ConfigVersion,
     SchemaVersion(u32),
+    ProofTypeApproved(BytesN<32>),
     PendingAdmin,
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
@@ -77,6 +78,16 @@ pub struct SchemaApproved {
 #[contractevent]
 pub struct SchemaDeprecated {
     pub version: u32,
+}
+
+#[contractevent]
+pub struct ProofTypeApprovedEvent {
+    pub proof_type: BytesN<32>,
+}
+
+#[contractevent]
+pub struct ProofTypeDeprecatedEvent {
+    pub proof_type: BytesN<32>,
 }
 
 #[contractevent]
@@ -403,6 +414,59 @@ impl ProtocolConfigContract {
         approved
     }
 
+    pub fn keepalive_proof_type(env: Env, proof_type: BytesN<32>) -> bool {
+        let key = DataKey::ProofTypeApproved(proof_type);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn approve_proof_type(env: Env, proof_type: BytesN<32>) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProofTypeApproved(proof_type.clone()), &true);
+        Self::extend_proof_type_ttl(env.clone(), proof_type.clone());
+        Self::bump_config_version(env.clone());
+        ProofTypeApprovedEvent { proof_type }.publish(&env);
+        Ok(())
+    }
+
+    pub fn deprecate_proof_type(env: Env, proof_type: BytesN<32>) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProofTypeApproved(proof_type.clone()), &false);
+        Self::extend_proof_type_ttl(env.clone(), proof_type.clone());
+        Self::bump_config_version(env.clone());
+        ProofTypeDeprecatedEvent { proof_type }.publish(&env);
+        Ok(())
+    }
+
+    pub fn is_proof_type_approved(env: Env, proof_type: BytesN<32>) -> bool {
+        let key = DataKey::ProofTypeApproved(proof_type);
+        let approved = env.storage().persistent().get(&key).unwrap_or(false);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        approved
+    }
+
     pub fn get_config_version(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -577,6 +641,14 @@ impl ProtocolConfigContract {
     fn extend_schema_ttl(env: Env, version: u32) {
         env.storage().persistent().extend_ttl(
             &DataKey::SchemaVersion(version),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+    }
+
+    fn extend_proof_type_ttl(env: Env, proof_type: BytesN<32>) {
+        env.storage().persistent().extend_ttl(
+            &DataKey::ProofTypeApproved(proof_type),
             TTL_THRESHOLD_LEDGERS,
             TTL_EXTEND_TO_LEDGERS,
         );

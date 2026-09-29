@@ -43,6 +43,7 @@ fn deployment() -> Deployment {
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&1);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -224,6 +225,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &1,
         &FAR_FUTURE,
         &None,
+        &soroban_sdk::BytesN::from_array(&initial_dep.env, &[1; 32]),
     );
     observed.record(
         "proof-registry duplicate proof id",
@@ -234,6 +236,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &FAR_FUTURE,
             &None,
+            &soroban_sdk::BytesN::from_array(env, &[1; 32]),
         )),
     );
     observed.record(
@@ -254,6 +257,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &0,
             &None,
+            &soroban_sdk::BytesN::from_array(env, &[1; 32]),
         )),
     );
     observed.record(
@@ -265,6 +269,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &0,
             &FAR_FUTURE,
             &None,
+            &soroban_sdk::BytesN::from_array(env, &[1; 32]),
         )),
     );
     observed.record(
@@ -276,6 +281,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &7,
             &FAR_FUTURE,
             &None,
+            &soroban_sdk::BytesN::from_array(env, &[1; 32]),
         )),
     );
 
@@ -293,6 +299,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &FAR_FUTURE,
             &None,
+            &soroban_sdk::BytesN::from_array(env2, &[1; 32]),
         )),
     );
 
@@ -312,6 +319,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &FAR_FUTURE,
             &None,
+            &soroban_sdk::BytesN::from_array(env3, &[1; 32]),
         )),
     );
 
@@ -327,6 +335,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &7,
             &FAR_FUTURE,
             &None,
+            &soroban_sdk::BytesN::from_array(env4, &[1; 32]),
         )),
     );
 
@@ -342,6 +351,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &FAR_FUTURE,
             &Some(bytes32(env_cyclic, 70)),
+            &soroban_sdk::BytesN::from_array(env_cyclic, &[1; 32]),
         )),
     );
 
@@ -362,6 +372,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &1,
         &FAR_FUTURE,
         &None,
+        &soroban_sdk::BytesN::from_array(env_cross, &[1; 32]),
     );
     observed.record(
         "proof-registry cross issuer supersession",
@@ -372,6 +383,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &FAR_FUTURE,
             &Some(bytes32(env_cross, 83)),
+            &soroban_sdk::BytesN::from_array(env_cross, &[1; 32]),
         )),
     );
 
@@ -387,6 +399,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &FAR_FUTURE,
             &Some(bytes32(env_missing, 92)),
+            &soroban_sdk::BytesN::from_array(env_missing, &[1; 32]),
         )),
     );
 
@@ -400,6 +413,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &1,
         &FAR_FUTURE,
         &None,
+        &soroban_sdk::BytesN::from_array(env_cross, &[1; 32]),
     );
     for i in 1..=5 {
         deployment_many.proofs.register_proof(
@@ -409,6 +423,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &FAR_FUTURE,
             &Some(bytes32(env_many, 100)),
+            &soroban_sdk::BytesN::from_array(env_many, &[1; 32]),
         );
     }
     observed.record(
@@ -420,6 +435,23 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &1,
             &FAR_FUTURE,
             &Some(bytes32(env_many, 100)),
+            &soroban_sdk::BytesN::from_array(env4, &[1; 32]),
+        )),
+    );
+
+    // 311: UnsupportedProofType — use an unapproved proof type.
+    let deployment5 = deployment();
+    let env5 = &deployment5.env;
+    observed.record(
+        "proof-registry unsupported proof type",
+        code(deployment5.proofs.try_register_proof(
+            &bytes32(env5, 70),
+            &bytes32(env5, 71),
+            &deployment5.issuer,
+            &1,
+            &FAR_FUTURE,
+            &None,
+            &soroban_sdk::BytesN::from_array(env5, &[99; 32]),
         )),
     );
 
@@ -462,6 +494,7 @@ fn a_paused_protocol_is_reported_as_contract_paused() {
         &1,
         &FAR_FUTURE,
         &None,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
@@ -495,6 +528,7 @@ fn a_suspended_issuer_is_reported_as_issuer_inactive() {
         &1,
         &FAR_FUTURE,
         &None,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
@@ -520,6 +554,7 @@ fn an_uninitialized_proof_registry_reports_proof_not_found_and_writes_nothing() 
         &1,
         &FAR_FUTURE,
         &None,
+        &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
@@ -542,6 +577,7 @@ fn a_registry_pointed_at_an_empty_config_reports_unsupported_schema() {
         &1,
         &FAR_FUTURE,
         &None,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));

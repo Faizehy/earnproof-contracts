@@ -73,6 +73,7 @@ impl Deployment {
             &APPROVED_SCHEMA,
             &expires_at,
             &predecessor,
+            &soroban_sdk::BytesN::from_array(&self.env, &[1; 32]),
         );
         proof_id.clone()
     }

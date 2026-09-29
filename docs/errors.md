@@ -108,6 +108,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 312 | `CrossIssuerSupersession` | `ProofError` | proof-registry | returned | never | 403 |
 | 313 | `PredecessorNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 314 | `TooManySuccessors` | `ProofError` | proof-registry | returned | never | 400 |
+| 311 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 
 ## Details
 
@@ -387,6 +388,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Client message: "Malformed proof input"
 
 ### 311 - `CyclicSupersession`
+### 311 - `UnsupportedProofType`
 
 - Enum: `ProofError`
 - Domain: proof-registry
@@ -429,5 +431,10 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: A predecessor can only have a bounded number of successors.
 - Suggested HTTP status: 400
 - Client message: "Too many successors"
+- Retry: after-operator-action
+- Cause: The proof type identifier is not supported by the protocol config.
+- Remediation: Call is_proof_type_approved on the protocol config contract to verify the proof type is approved. An operator must approve the proof type before it can be used for proof registration.
+- Suggested HTTP status: 400
+- Client message: "Proof type not supported"
 
 <!-- END GENERATED -->

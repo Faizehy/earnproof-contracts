@@ -7,7 +7,7 @@ publish = false
 
 [[test]]
 name = "compatibility"
-path = "mod.rs"
+path = "tests/compatibility.rs"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

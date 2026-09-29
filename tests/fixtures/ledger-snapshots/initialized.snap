@@ -2,6 +2,9 @@
 # revision: 8
 # reason: Added reason_commitment and predecessor_id_hash fields
 # body-digest: 2afb4dd02cefed5049b6c79f3245b3aba69fb6980a5d06b22347d271acac8f6d
+# revision: 9
+# reason: Added proof_type and reason_commitment
+# body-digest: f57f83c376a01deba0b1b41c039a04b0024097e249ddfeb6c092cc8c2a13e66e
 
 [ledger]
 sequence = 1000
@@ -16,14 +19,16 @@ proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 protocol-config instance [sym:Admin] = addr:admin
-protocol-config instance [sym:ConfigVersion] = u32:2
+protocol-config instance [sym:ConfigVersion] = u32:3
 protocol-config instance [sym:ContractVersion] = u32:1
 protocol-config instance [sym:Paused] = false
+protocol-config persistent [sym:ProofTypeApproved, bytes:0101010101010101010101010101010101010101010101010101010101010101] = true
 protocol-config persistent [sym:SchemaVersion, u32:1] = true
 
 [events]
 protocol-config topics=[sym:initialized] data={sym:admin: addr:admin}
 protocol-config topics=[sym:schema_approved] data={sym:version: u32:1}
+protocol-config topics=[sym:proof_type_approved_event] data={sym:proof_type: bytes:0101010101010101010101010101010101010101010101010101010101010101}
 
 [verdicts]
 protocol-config.is_paused = false

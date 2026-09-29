@@ -272,6 +272,8 @@ pub enum ProofError {
     CrossIssuerSupersession = 312,
     PredecessorNotFound = 313,
     TooManySuccessors = 314,
+    /// The proof type is not supported by the protocol.
+    UnsupportedProofType = 315,
 }
 
 #[contracttype]
@@ -348,6 +350,7 @@ pub struct ProofRecord {
     pub created_at: u64,
     pub revoked_at: u64,
     pub predecessor_id_hash: Option<BytesN<32>>,
+    pub proof_type: Option<BytesN<32>>,
 }
 
 #[contracttype]

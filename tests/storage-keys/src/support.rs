@@ -65,6 +65,10 @@ pub fn schema_version_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaVersion"), version)
 }
 
+pub fn proof_type_approved_key(env: &Env, proof_type: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofTypeApproved"), proof_type.clone())
+}
+
 #[allow(dead_code)]
 pub fn schema_record_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaRecord"), version)
@@ -192,6 +196,7 @@ pub fn deployment() -> Deployment {
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&1);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -201,7 +206,15 @@ pub fn deployment() -> Deployment {
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
     proofs.initialize(&admin, &issuers_id, &config_id);
-    proofs.register_proof(&proof_id, &bytes32(&env, 6), &issuer, &1, &1_000_000, &None);
+    proofs.register_proof(
+        &proof_id,
+        &bytes32(&env, 6),
+        &issuer,
+        &1,
+        &1_000_000,
+        &None,
+        &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+    );
 
     Deployment {
         env,
@@ -234,7 +247,9 @@ pub fn exercised_deployment() -> Deployment {
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&1);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
     config.approve_schema_version(&2);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[2; 32]));
     config.deprecate_schema_version(&2);
     config.pause();
     config.unpause();
@@ -282,6 +297,7 @@ pub fn exercised_deployment() -> Deployment {
         &1,
         &1_000_000,
         &None,
+        &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
     );
     proofs.register_proof(
         &bytes32(&env, 7),
@@ -290,6 +306,7 @@ pub fn exercised_deployment() -> Deployment {
         &1,
         &1_000_000,
         &None,
+        &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
     );
     proofs.revoke_proof(&bytes32(&env, 7));
     config.pause();

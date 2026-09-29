@@ -570,6 +570,7 @@ fn matrix() -> std::vec::Vec<Case> {
                     &APPROVED_SCHEMA,
                     &expires_at,
                     &None::<BytesN<32>>,
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
                 )
                     .into_val(&d.env);
                 match identity {
@@ -582,6 +583,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             &APPROVED_SCHEMA,
                             &expires_at,
                             &None,
+                            &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
                         )
                         .is_ok(),
                     // The realistic "wrong" signer is a *different active
@@ -603,6 +605,7 @@ fn matrix() -> std::vec::Vec<Case> {
                                 &APPROVED_SCHEMA,
                                 &expires_at,
                                 &None,
+                                &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
                             )
                             .is_ok()
                     }
@@ -616,6 +619,7 @@ fn matrix() -> std::vec::Vec<Case> {
                                 &APPROVED_SCHEMA,
                                 &expires_at,
                                 &None,
+                                &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
                             )
                             .is_ok()
                     }

@@ -59,7 +59,15 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     ),
     (
         "issuer_revoked",
-        &["issuer_id_hash", "updated_at", "reason_commitment"],
+        &["issuer_id_hash", "reason_commitment", "updated_at"],
+    ),
+    (
+        "issuer_reactivated",
+        &["issuer_id_hash", "reason_commitment", "updated_at"],
+    ),
+    (
+        "issuer_revoked",
+        &["issuer_id_hash", "reason_commitment", "updated_at"],
     ),
     (
         "issuer_address_rotated",

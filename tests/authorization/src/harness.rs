@@ -101,6 +101,14 @@ impl Deployment<'_> {
             (&APPROVED_SCHEMA,).into_val(&env),
         );
         config.approve_schema_version(&APPROVED_SCHEMA);
+        authorize(
+            &env,
+            &admin,
+            &config_id,
+            "approve_proof_type",
+            (&soroban_sdk::BytesN::from_array(&env, &[1; 32]),).into_val(&env),
+        );
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
 
         // issuer-registry: initialize + register two active issuers.
         let issuer_id = issuer_id_hash(&env, 1);
@@ -278,6 +286,7 @@ impl Deployment<'_> {
                 &APPROVED_SCHEMA,
                 &expires_at,
                 &None::<BytesN<32>>,
+                &soroban_sdk::BytesN::from_array(&self.env, &[1; 32]),
             )
                 .into_val(&self.env),
         );
@@ -288,6 +297,7 @@ impl Deployment<'_> {
             &APPROVED_SCHEMA,
             &expires_at,
             &None,
+            &soroban_sdk::BytesN::from_array(&self.env, &[1; 32]),
         );
         proof_id
     }

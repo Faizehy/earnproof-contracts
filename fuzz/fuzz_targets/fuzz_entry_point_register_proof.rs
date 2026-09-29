@@ -15,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Skip if data is too short
-    if data.len() < 100 {
+    if data.len() < 108 {
         return;
     }
 
@@ -58,6 +58,12 @@ fuzz_target!(|data: &[u8]| {
         ])
     } else {
         env.ledger().timestamp() + 1000
+    };
+
+    // Parse proof_type (BytesN<32>, bytes 76-108)
+    let _proof_type = match BytesN::<32>::try_from(Bytes::from_slice(&env, &data[76..108])) {
+        Ok(h) => h,
+        Err(_) => return,
     };
 
     // The key invariant: this should not panic or crash, only return an error

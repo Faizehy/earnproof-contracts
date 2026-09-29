@@ -114,10 +114,10 @@ fn per_record_namespaces_hold_one_entry_per_record() {
         2
     );
 
-    // Two schema versions plus one scoped pause.
+    // Two schema versions, one scoped pause, two approved proof types.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        3
+        5
     );
 }
 

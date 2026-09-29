@@ -318,6 +318,7 @@ fn a_revoked_issuer_cannot_register_new_proofs_after_unpause() {
                 &crate::harness::APPROVED_SCHEMA,
                 &(deployment.env.ledger().timestamp() + 100_000),
                 &None,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32])
             )
             .is_err(),
         "a revoked issuer must not regain write access when the pause lifts"

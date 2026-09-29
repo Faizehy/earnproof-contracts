@@ -115,6 +115,9 @@ pub fn build(name: &str) -> Scenario {
     // --- initialized: provisioned, holding no records -----------------------
     recorder.after(&env, || config.initialize(&admin));
     recorder.after(&env, || config.approve_schema_version(&SCHEMA_VERSION));
+    recorder.after(&env, || {
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]))
+    });
     recorder.after(&env, || issuers.initialize(&admin));
     recorder.after(&env, || proofs.initialize(&admin, &issuers_id, &config_id));
 
@@ -136,6 +139,7 @@ pub fn build(name: &str) -> Scenario {
                 &SCHEMA_VERSION,
                 &PROOF_EXPIRES_AT,
                 &None,
+                &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
             )
         });
     }

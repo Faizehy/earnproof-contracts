@@ -99,6 +99,13 @@ fuzz_target!(|data: &[u8]| {
         0
     };
 
+    // Parse proof_type (Optional BytesN<32>, bytes 93-125)
+    let proof_type = if data.len() >= 125 {
+        BytesN::<32>::try_from(Bytes::from_slice(&env, &data[93..125])).ok()
+    } else {
+        None
+    };
+
     // Construct the ProofRecord - this should never panic or cause undefined behavior
     let _proof = ProofRecord {
         proof_id_hash,
@@ -110,6 +117,7 @@ fuzz_target!(|data: &[u8]| {
         expires_at,
         created_at,
         revoked_at,
+        proof_type,
     };
 
     // Verify invariants (test should not reach here if invariants are violated)

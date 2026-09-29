@@ -202,6 +202,7 @@ fn a_rotated_out_issuer_address_loses_issuer_status() {
             &APPROVED_SCHEMA,
             &expires_at,
             &None::<BytesN<32>>,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         )
             .into_val(&deployment.env),
     );
@@ -214,7 +215,8 @@ fn a_rotated_out_issuer_address_loses_issuer_status() {
                 &old,
                 &APPROVED_SCHEMA,
                 &expires_at,
-                &None
+                &None,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32])
             )
             .is_err(),
         "a rotated-out issuer address must not register proofs"
@@ -234,6 +236,7 @@ fn a_rotated_out_issuer_address_loses_issuer_status() {
             &APPROVED_SCHEMA,
             &expires_at,
             &None::<BytesN<32>>,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         )
             .into_val(&deployment.env),
     );
@@ -246,7 +249,8 @@ fn a_rotated_out_issuer_address_loses_issuer_status() {
                 &replacement,
                 &APPROVED_SCHEMA,
                 &expires_at,
-                &None
+                &None,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32])
             )
             .is_ok(),
         "the replacement address must be able to register proofs"

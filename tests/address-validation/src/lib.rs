@@ -102,6 +102,7 @@ mod tests {
             &1,
             &1_000,
             &None,
+            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::InvalidAddress)));
 
@@ -112,6 +113,7 @@ mod tests {
             &1,
             &1_000,
             &None,
+            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
         );
         assert_eq!(self_result, Err(Ok(ProofError::InvalidAddress)));
     }

@@ -139,6 +139,7 @@ fn register_with_root_auth_only(deployment: &Deployment, proof_id: &BytesN<32>) 
         APPROVED_SCHEMA,
         expires_at,
         None::<BytesN<32>>,
+        soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
     )
         .into_val(env);
 
@@ -160,6 +161,7 @@ fn register_with_root_auth_only(deployment: &Deployment, proof_id: &BytesN<32>) 
             &APPROVED_SCHEMA,
             &expires_at,
             &None,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         )
     })
 }
@@ -259,6 +261,7 @@ fn a_successful_pause_read_gates_the_registration_correctly() {
             &APPROVED_SCHEMA,
             &deployment.expiry(),
             &None,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         )
     });
 
@@ -316,6 +319,7 @@ fn a_successful_schema_read_gates_the_registration_correctly() {
             &APPROVED_SCHEMA,
             &deployment.expiry(),
             &None,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         )
     });
 
@@ -394,6 +398,7 @@ fn a_successful_issuer_read_gates_the_registration_correctly() {
             &APPROVED_SCHEMA,
             &deployment.expiry(),
             &None,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         )
     });
 
@@ -455,6 +460,7 @@ fn a_duplicate_proof_id_is_rejected_before_writing() {
             &APPROVED_SCHEMA,
             &deployment.expiry(),
             &None,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         )
     });
 
@@ -516,6 +522,7 @@ fn an_invalid_protocol_config_address_aborts_the_registration() {
     let config = protocol_config::ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&APPROVED_SCHEMA);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
 
     let issuers_id = env.register(issuer_registry::IssuerRegistryContract, ());
     let issuers = issuer_registry::IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -538,6 +545,7 @@ fn an_invalid_protocol_config_address_aborts_the_registration() {
             &APPROVED_SCHEMA,
             &(env.ledger().timestamp() + 100_000),
             &None,
+            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
         )
     });
 
@@ -559,6 +567,7 @@ fn an_invalid_issuer_registry_address_aborts_the_registration() {
     let config = protocol_config::ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&APPROVED_SCHEMA);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
 
     let issuers_id = env.register(issuer_registry::IssuerRegistryContract, ());
     let issuers = issuer_registry::IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -581,6 +590,7 @@ fn an_invalid_issuer_registry_address_aborts_the_registration() {
             &APPROVED_SCHEMA,
             &(env.ledger().timestamp() + 100_000),
             &None,
+            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
         )
     });
 

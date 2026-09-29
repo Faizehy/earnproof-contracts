@@ -127,16 +127,19 @@ fn function_names(specs: &[FunctionSpec]) -> HashSet<String> {
     specs.iter().map(|f| f.name.clone()).collect()
 }
 
+#[allow(dead_code)]
 fn error_codes(specs: &[ErrorSpec]) -> HashMap<u32, String> {
     specs.iter().map(|e| (e.code, e.name.clone())).collect()
 }
 
+#[allow(dead_code)]
 fn storage_keys(specs: &[StorageSpec]) -> HashSet<String> {
     specs.iter().map(|s| s.key.clone()).collect()
 }
 
 // ── Helper: compute breaking/additive changes ────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct CompatibilityReport {
     added_functions: Vec<String>,
@@ -150,6 +153,7 @@ struct CompatibilityReport {
     breaking_changes: usize,
 }
 
+#[allow(dead_code)]
 impl CompatibilityReport {
     fn new() -> Self {
         CompatibilityReport {
@@ -654,7 +658,7 @@ mod golden_tests {
     fn test_error_code_change_would_be_detected_as_breaking() {
         let golden_errors = vec![("AlreadyInitialized", 1), ("NotInitialized", 2)];
 
-        let current_errors = vec![
+        let current_errors = [
             ("AlreadyInitialized", 1),
             ("NotInitialized", 99), // code changed — breaking
         ];
@@ -676,7 +680,7 @@ mod golden_tests {
     fn test_additive_error_with_higher_code_would_pass() {
         let golden_errors = [("AlreadyInitialized", 1), ("NotInitialized", 2)];
 
-        let current_errors = vec![
+        let current_errors = [
             ("AlreadyInitialized", 1),
             ("NotInitialized", 2),
             ("InvalidInput", 60), // new error — additive
@@ -701,7 +705,7 @@ mod golden_tests {
             ("DataKey::ConfigVersion", "u32"),
         ];
 
-        let current_storage = vec![
+        let current_storage = [
             ("DataKey::Paused", "String"), // type changed — breaking
             ("DataKey::ConfigVersion", "u32"),
         ];
@@ -730,7 +734,7 @@ mod golden_tests {
             "DataKey::ConfigVersion",
         ];
 
-        let current_storage = vec![
+        let current_storage = [
             "DataKey::Admin",
             "DataKey::ConfigVersion",
             // DataKey::Paused was removed — breaking
@@ -750,7 +754,7 @@ mod golden_tests {
     fn test_additive_storage_key_would_pass_gate() {
         let golden_storage = ["DataKey::Admin", "DataKey::Paused"];
 
-        let current_storage = vec![
+        let current_storage = [
             "DataKey::Admin",
             "DataKey::Paused",
             "DataKey::NewFeatureFlag", // new key — additive

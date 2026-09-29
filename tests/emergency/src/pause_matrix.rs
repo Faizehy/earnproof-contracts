@@ -302,6 +302,7 @@ fn matrix() -> std::vec::Vec<Case> {
                     &APPROVED_SCHEMA,
                     &(d.env.ledger().timestamp() + 100_000),
                     &None,
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
                 ))
             },
         },
@@ -428,6 +429,7 @@ fn containment_survives_repeated_pause_calls() {
                 &APPROVED_SCHEMA,
                 &(deployment.env.ledger().timestamp() + 100_000),
                 &None,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32])
             )
             .is_err(),
         "repeated pause must keep registration contained"
