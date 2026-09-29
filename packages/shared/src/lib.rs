@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol};
+use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol, Vec};
 
 pub mod storage_namespaces;
 
@@ -41,6 +41,10 @@ pub const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
 /// Stale approvals expire and must be re-approved.
 /// ~30 days at 5s/ledger = 518_400 ledgers
 pub const UPGRADE_APPROVAL_EXPIRY_LEDGERS: u32 = 518_400;
+/// Maximum number of distinct signers in a critical-action approval policy.
+pub const MAX_CRITICAL_ACTION_SIGNERS: u32 = 16;
+/// Maximum lifetime of a critical-action proposal, in ledgers.
+pub const CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS: u32 = 518_400;
 /// Storage layout version for the migration checkpoint record.
 pub const MIGRATION_STATUS_VERSION: u32 = 1;
 
@@ -349,6 +353,11 @@ pub enum ContractError {
     UpgradeApprovalExpired = 92,
     WasmHashMismatch = 93,
     InvalidTimingConfig = 94,
+    ThresholdApprovalRequired = 95,
+    ApprovalProposalNotFound = 96,
+    ApprovalProposalExpired = 97,
+    InsufficientApprovals = 98,
+    InvalidApprovalPolicy = 99,
 }
 
 /// Issuer-specific errors (200-299).
@@ -364,7 +373,7 @@ pub enum IssuerError {
     IssuerInactive = 205,
     InvalidTransition = 206,
     InvalidAddress = 207,
-    InvalidMetadataCommitment = 208,
+    InvalidMetadataCommitment = 211,
     /// Registering or reactivating this issuer would exceed the governed
     /// maximum active-issuer capacity.
     IssuerCapacityExceeded = 208,
@@ -429,6 +438,69 @@ pub enum ConfigChangeCategory {
     SchemaApproval,
     SchemaDeprecation,
     SchemaPayloadLimit,
+    ApprovalPolicyUpdate,
+}
+
+/// Critical protocol actions that may be gated by a configured signer
+/// threshold. Emergency pause actions are intentionally not represented.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CriticalActionCategory {
+    SchemaApproval,
+    SchemaDeprecation,
+    SchemaPayloadLimit,
+    IssuerRegistryReplacement,
+    ProtocolConfigReplacement,
+    ApprovalPolicyUpdate,
+}
+
+/// Canonical parameters for a threshold-governed protocol action.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CriticalAction {
+    SchemaApproval(u32),
+    SchemaDeprecation(u32),
+    SchemaPayloadLimit(u32, u32),
+    IssuerRegistryReplacement(Address),
+    ProtocolConfigReplacement(Address),
+    ApprovalPolicyUpdate(CriticalActionPolicy),
+}
+
+impl CriticalAction {
+    pub fn category(&self) -> CriticalActionCategory {
+        match self {
+            Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
+            Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
+            Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
+            Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
+            Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
+            Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
+        }
+    }
+}
+
+/// Optional multi-party approval policy. `enabled == false` preserves the
+/// existing single-admin mutation path for the critical actions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CriticalActionPolicy {
+    pub enabled: bool,
+    pub threshold: u32,
+    pub signers: Vec<Address>,
+}
+
+/// Persisted proposal, including unique signer approvals and its validity
+/// window. The proposal ID commits to the contract, action, and nonce.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CriticalActionProposal {
+    pub action: CriticalAction,
+    pub category: CriticalActionCategory,
+    pub policy: CriticalActionPolicy,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u32,
+    pub expires_at: u32,
 }
 
 /// One bounded, on-chain summary of a governance change, as stored in the
@@ -499,6 +571,7 @@ pub enum ProofValidity {
     Expired,
     IssuerInactive,
     SchemaDeprecated,
+}
 /// Stores temporal metadata for an upgrade approval.
 ///
 /// # Timing invariants

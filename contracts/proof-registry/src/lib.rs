@@ -2,13 +2,17 @@
 
 #[allow(unused_imports)]
 use earnproof_shared::{
-    ContractError, GenesisRecord, MigrationStatus, PauseScope, ProofError, ProofPayloadRecord,
-    ProofRecord, ProofStatus, TtlStatus, UpgradeApproval, UpgradeReceipt, MAX_MIGRATION_BATCH,
-    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    is_interface_compatible, ContractError, CriticalAction, CriticalActionPolicy,
+    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
+    ProofError, ProofPayloadRecord, ProofRecord, ProofStatus, ProofValidity, TtlStatus,
+    UpgradeApproval, UpgradeReceipt, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS,
+    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
+    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
-    contract, contractclient, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
-    Env,
+    contract, contractclient, contractevent, contractimpl, contracttype, xdr::ToXdr, Address,
+    Bytes, BytesN, Env, Symbol, Vec,
 };
 
 /// Minimum `issuer-registry` interface version this contract can bind to.
@@ -58,6 +62,9 @@ enum DataKey {
     /// payload (length and commitment hash only — never the raw bytes).
     ProofPayloadMeta(BytesN<32>),
     PendingAdmin,
+    CriticalActionPolicy,
+    CriticalActionProposal(BytesN<32>),
+    CriticalActionNonce,
 }
 
 #[contractevent]
@@ -104,19 +111,36 @@ pub struct ContractUpgraded {
     pub upgraded_by: Address,
 }
 
-/// Emitted when a proof is registered.
-///
-/// Carries the on-chain creation timing (`created_ledger` and `created_at`)
-/// so indexers can record deterministic audit timestamps without a follow-up
-/// query. Both values are sourced from the host ledger environment.
 #[contractevent]
-pub struct ProofRegistered {
-    pub proof_id_hash: BytesN<32>,
-    pub issuer_address: Address,
-    pub schema_version: u32,
-    pub created_ledger: u32,
-    pub created_at: u64,
-    pub expires_at: u64,
+pub struct CriticalActionProposed {
+    pub proposal_id: BytesN<32>,
+    pub proposer: Address,
+}
+
+#[contractevent]
+pub struct CriticalActionApproved {
+    pub proposal_id: BytesN<32>,
+    pub signer: Address,
+}
+
+#[contractevent]
+pub struct CriticalActionCancelled {
+    pub proposal_id: BytesN<32>,
+    pub cancelled_by: Address,
+}
+
+#[contractevent]
+pub struct CriticalActionExecuted {
+    pub proposal_id: BytesN<32>,
+}
+
+#[contractevent]
+pub struct CriticalActionPolicySet {
+    pub enabled: bool,
+    pub threshold: u32,
+    pub signer_count: u32,
+}
+
 #[contractevent]
 pub struct SuccessorNominated {
     pub successor: Address,
@@ -463,6 +487,7 @@ impl ProofRegistryContract {
         }
 
         let now = env.ledger().timestamp();
+        let created_ledger = env.ledger().sequence();
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
@@ -472,6 +497,7 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            created_ledger,
         };
         env.storage().persistent().set(&key, &record);
         Self::extend_proof_key_ttl(env.clone(), &key);
@@ -491,16 +517,9 @@ impl ProofRegistryContract {
             payload_len,
             payload_hash,
             epoch,
-
-        ProofRegistered {
-            proof_id_hash,
-            issuer_address,
-            schema_version,
-            created_ledger,
-            created_at: now,
-            expires_at,
         }
         .publish(&env);
+
         Ok(())
     }
 
@@ -719,6 +738,7 @@ impl ProofRegistryContract {
     ) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
 
         let protocol_config = Self::get_protocol_config(env.clone())?;
         Self::validate_dependency_addresses(&env, &new_issuer_registry, &protocol_config)?;
@@ -743,6 +763,7 @@ impl ProofRegistryContract {
     ) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
 
         let issuer_registry = Self::get_issuer_registry(env.clone())?;
         Self::validate_dependency_addresses(&env, &issuer_registry, &new_protocol_config)?;
@@ -756,6 +777,192 @@ impl ProofRegistryContract {
             .instance()
             .set(&DataKey::ProtocolConfig, &new_protocol_config);
         Self::extend_instance_ttl(env);
+        Ok(())
+    }
+
+    pub fn get_critical_action_policy(env: Env) -> CriticalActionPolicy {
+        Self::critical_action_policy(&env)
+    }
+
+    /// Bootstrap or replace the critical-action policy. Once enabled, policy
+    /// updates must themselves receive threshold approval.
+    pub fn set_critical_action_policy(
+        env: Env,
+        policy: CriticalActionPolicy,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if Self::critical_action_policy(&env).enabled {
+            return Err(ContractError::ThresholdApprovalRequired);
+        }
+        Self::validate_critical_action_policy(&policy)?;
+        Self::store_critical_action_policy(env, policy);
+        Ok(())
+    }
+
+    pub fn propose_critical_action(
+        env: Env,
+        action: CriticalAction,
+    ) -> Result<BytesN<32>, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let policy = Self::critical_action_policy(&env);
+        if !policy.enabled {
+            return Err(ContractError::InvalidState);
+        }
+        if !matches!(
+            &action,
+            CriticalAction::IssuerRegistryReplacement(_)
+                | CriticalAction::ProtocolConfigReplacement(_)
+                | CriticalAction::ApprovalPolicyUpdate(_)
+        ) {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let nonce = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::CriticalActionNonce)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::InvalidState)?;
+        let proposal_id = Self::critical_action_commitment(&env, &action, nonce);
+        let created_at = env.ledger().sequence();
+        let expires_at = created_at
+            .checked_add(CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS)
+            .ok_or(ContractError::InvalidInput)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::CriticalActionNonce, &nonce);
+        let proposal = CriticalActionProposal {
+            category: action.category(),
+            action,
+            policy,
+            proposer: admin.clone(),
+            approvals: Vec::new(&env),
+            created_at,
+            expires_at,
+        };
+        let key = DataKey::CriticalActionProposal(proposal_id.clone());
+        env.storage().persistent().set(&key, &proposal);
+        env.storage().persistent().extend_ttl(
+            &key,
+            TTL_THRESHOLD_LEDGERS,
+            CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+        );
+        Self::extend_instance_ttl(env.clone());
+        CriticalActionProposed {
+            proposal_id: proposal_id.clone(),
+            proposer: admin,
+        }
+        .publish(&env);
+        Ok(proposal_id)
+    }
+
+    pub fn get_critical_action_proposal(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<CriticalActionProposal> {
+        let key = DataKey::CriticalActionProposal(proposal_id);
+        let proposal = env.storage().persistent().get(&key);
+        if proposal.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+            );
+        }
+        proposal
+    }
+
+    pub fn approve_critical_action(
+        env: Env,
+        proposal_id: BytesN<32>,
+        signer: Address,
+    ) -> Result<(), ContractError> {
+        let mut proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
+            .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::ensure_proposal_live(&env, &proposal)?;
+        Self::require_auth(&signer);
+        if !proposal.policy.signers.contains(&signer) {
+            return Err(ContractError::Unauthorized);
+        }
+        if proposal.approvals.contains(&signer) {
+            return Err(ContractError::AlreadyExists);
+        }
+        proposal.approvals.push_back(signer.clone());
+        env.storage().persistent().set(
+            &DataKey::CriticalActionProposal(proposal_id.clone()),
+            &proposal,
+        );
+        CriticalActionApproved {
+            proposal_id,
+            signer,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_critical_action(env: Env, proposal_id: BytesN<32>) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let key = DataKey::CriticalActionProposal(proposal_id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(ContractError::ApprovalProposalNotFound);
+        }
+        env.storage().persistent().remove(&key);
+        CriticalActionCancelled {
+            proposal_id,
+            cancelled_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn execute_critical_action(env: Env, proposal_id: BytesN<32>) -> Result<(), ContractError> {
+        let proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
+            .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::ensure_proposal_live(&env, &proposal)?;
+        if proposal.approvals.len() < proposal.policy.threshold {
+            return Err(ContractError::InsufficientApprovals);
+        }
+        match proposal.action {
+            CriticalAction::IssuerRegistryReplacement(new_issuer_registry) => {
+                let protocol_config = Self::get_protocol_config(env.clone())?;
+                Self::validate_dependency_addresses(&env, &new_issuer_registry, &protocol_config)?;
+                let actual = IssuerRegistryContractClient::new(&env, &new_issuer_registry)
+                    .interface_version();
+                if !is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &actual) {
+                    return Err(ContractError::IncompatibleInterfaceVersion);
+                }
+                env.storage()
+                    .instance()
+                    .set(&DataKey::IssuerRegistry, &new_issuer_registry);
+                Self::extend_instance_ttl(env.clone());
+            }
+            CriticalAction::ProtocolConfigReplacement(new_protocol_config) => {
+                let issuer_registry = Self::get_issuer_registry(env.clone())?;
+                Self::validate_dependency_addresses(&env, &issuer_registry, &new_protocol_config)?;
+                let actual = ProtocolConfigContractClient::new(&env, &new_protocol_config)
+                    .interface_version();
+                if !is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &actual) {
+                    return Err(ContractError::IncompatibleInterfaceVersion);
+                }
+                env.storage()
+                    .instance()
+                    .set(&DataKey::ProtocolConfig, &new_protocol_config);
+                Self::extend_instance_ttl(env.clone());
+            }
+            CriticalAction::ApprovalPolicyUpdate(policy) => {
+                Self::validate_critical_action_policy(&policy)?;
+                Self::store_critical_action_policy(env.clone(), policy);
+            }
+            _ => return Err(ContractError::InvalidInput),
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CriticalActionProposal(proposal_id.clone()));
+        CriticalActionExecuted { proposal_id }.publish(&env);
         Ok(())
     }
 
@@ -1096,6 +1303,87 @@ impl ProofRegistryContract {
     fn require_auth(address: &Address) {
         address.require_auth();
     }
+
+    fn critical_action_policy(env: &Env) -> CriticalActionPolicy {
+        env.storage()
+            .instance()
+            .get(&DataKey::CriticalActionPolicy)
+            .unwrap_or(CriticalActionPolicy {
+                enabled: false,
+                threshold: 0,
+                signers: Vec::new(env),
+            })
+    }
+
+    fn ensure_critical_action_policy_disabled(env: &Env) -> Result<(), ContractError> {
+        if Self::critical_action_policy(env).enabled {
+            Err(ContractError::ThresholdApprovalRequired)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_critical_action_policy(policy: &CriticalActionPolicy) -> Result<(), ContractError> {
+        if !policy.enabled {
+            return if policy.threshold == 0 && policy.signers.is_empty() {
+                Ok(())
+            } else {
+                Err(ContractError::InvalidApprovalPolicy)
+            };
+        }
+        if policy.signers.is_empty()
+            || policy.signers.len() > MAX_CRITICAL_ACTION_SIGNERS
+            || policy.threshold == 0
+            || policy.threshold > policy.signers.len()
+        {
+            return Err(ContractError::InvalidApprovalPolicy);
+        }
+        for (index, signer) in policy.signers.iter().enumerate() {
+            if !earnproof_shared::is_valid_principal_address(&signer) {
+                return Err(ContractError::InvalidApprovalPolicy);
+            }
+            for earlier in 0..index {
+                if policy.signers.get(earlier as u32).unwrap() == signer {
+                    return Err(ContractError::InvalidApprovalPolicy);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn store_critical_action_policy(env: Env, policy: CriticalActionPolicy) {
+        env.storage()
+            .instance()
+            .set(&DataKey::CriticalActionPolicy, &policy);
+        Self::extend_instance_ttl(env.clone());
+        CriticalActionPolicySet {
+            enabled: policy.enabled,
+            threshold: policy.threshold,
+            signer_count: policy.signers.len(),
+        }
+        .publish(&env);
+    }
+
+    fn ensure_proposal_live(
+        env: &Env,
+        proposal: &CriticalActionProposal,
+    ) -> Result<(), ContractError> {
+        if env.ledger().sequence() >= proposal.expires_at {
+            return Err(ContractError::ApprovalProposalExpired);
+        }
+        Ok(())
+    }
+
+    fn critical_action_commitment(env: &Env, action: &CriticalAction, nonce: u32) -> BytesN<32> {
+        let commitment = (
+            Symbol::new(env, "critical_action_v1"),
+            env.current_contract_address(),
+            action.category(),
+            action.clone(),
+            nonce,
+        );
+        env.crypto().sha256(&commitment.to_xdr(env)).to_bytes()
+    }
 }
 
 #[cfg(test)]
@@ -1103,12 +1391,15 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProofRegistryContract, ProofRegistryContractClient};
-    use earnproof_shared::{ProofError, ProofStatus, TTL_THRESHOLD_LEDGERS};
+    use earnproof_shared::{
+        ContractError, CriticalAction, CriticalActionPolicy, ProofError, ProofStatus,
+        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    };
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
     use soroban_sdk::{
-        testutils::{storage::Persistent as _, Ledger as _},
-        Address, BytesN, Env,
+        testutils::{storage::Persistent as _, Address as _, Ledger as _},
+        Address, BytesN, Env, Vec,
     };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
@@ -2553,6 +2844,7 @@ mod test {
         assert_eq!(client.get_registry_epoch(), 0);
         let payload_result = client.try_get_proof_payload(&proof_id);
         assert_eq!(payload_result, Err(Ok(ProofError::ProofNotFound)));
+    }
     #[test]
     fn configuration_digest_matches_host_helper_and_version_changes() {
         let (env, client, _pc, _ir, ir_id) = setup();
@@ -2653,6 +2945,8 @@ mod test {
         assert_eq!(
             client.proof_validity(&proof_id),
             ProofValidity::IssuerInactive
+        );
+    }
     // ── issue 178: dependency interface version handshake ──────────────────────
 
     use earnproof_shared::InterfaceVersion;
@@ -2797,6 +3091,7 @@ mod test {
         }));
         assert!(result.is_err());
         assert_eq!(env.events().all().events().len(), 0);
+    }
     fn initialization_rejects_incompatible_dependency_before_state_mutation() {
         let env = Env::default();
         env.mock_all_auths();
@@ -2856,6 +3151,109 @@ mod test {
             Err(Ok(
                 earnproof_shared::ContractError::IncompatibleInterfaceVersion
             ))
+        );
+    }
+
+    fn enabled_policy(env: &Env) -> (CriticalActionPolicy, Vec<Address>) {
+        let signers = Vec::from_array(
+            env,
+            [
+                Address::generate(env),
+                Address::generate(env),
+                Address::generate(env),
+            ],
+        );
+        (
+            CriticalActionPolicy {
+                enabled: true,
+                threshold: 2,
+                signers: signers.clone(),
+            },
+            signers,
+        )
+    }
+
+    #[test]
+    fn dependency_replacement_requires_threshold_and_proposal_is_contract_bound() {
+        let (env, client, _protocol_config, _issuer_registry, issuer_registry_id) = setup();
+        let (policy, signers) = enabled_policy(&env);
+        client.set_critical_action_policy(&policy);
+        let newer = env.register(NewerCompatibleDependency, ());
+        let proposal_id = client
+            .propose_critical_action(&CriticalAction::IssuerRegistryReplacement(newer.clone()));
+
+        assert_eq!(
+            client.try_set_issuer_registry(&newer),
+            Err(Ok(ContractError::ThresholdApprovalRequired))
+        );
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::InsufficientApprovals))
+        );
+        client.approve_critical_action(&proposal_id, &signers.get(1).unwrap());
+        client.execute_critical_action(&proposal_id);
+        assert_eq!(client.get_issuer_registry(), newer);
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::ApprovalProposalNotFound))
+        );
+
+        let second_id = env.register(ProofRegistryContract, ());
+        let second = ProofRegistryContractClient::new(&env, &second_id);
+        second.initialize(
+            &client.get_admin(),
+            &issuer_registry_id,
+            &client.get_protocol_config(),
+        );
+        assert_eq!(
+            second.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::ApprovalProposalNotFound))
+        );
+    }
+
+    #[test]
+    fn failed_dependency_execution_preserves_binding_and_approval() {
+        let (env, client, ..) = setup();
+        let (policy, signers) = enabled_policy(&env);
+        client.set_critical_action_policy(&policy);
+        let original = client.get_issuer_registry();
+        let incompatible = env.register(IncompatibleDependency, ());
+        let proposal_id = client
+            .propose_critical_action(&CriticalAction::IssuerRegistryReplacement(incompatible));
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        client.approve_critical_action(&proposal_id, &signers.get(1).unwrap());
+
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::IncompatibleInterfaceVersion))
+        );
+        assert_eq!(client.get_issuer_registry(), original);
+        assert!(client.get_critical_action_proposal(&proposal_id).is_some());
+    }
+
+    #[test]
+    fn dependency_proposal_cancellation_and_expiry_are_terminal() {
+        let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        let (policy, _) = enabled_policy(&env);
+        client.set_critical_action_policy(&policy);
+        let newer = env.register(NewerCompatibleDependency, ());
+        let cancelled = client
+            .propose_critical_action(&CriticalAction::IssuerRegistryReplacement(newer.clone()));
+        client.cancel_critical_action(&cancelled);
+        assert_eq!(
+            client.try_execute_critical_action(&cancelled),
+            Err(Ok(ContractError::ApprovalProposalNotFound))
+        );
+
+        let expiring =
+            client.propose_critical_action(&CriticalAction::IssuerRegistryReplacement(newer));
+        let proposal = client.get_critical_action_proposal(&expiring).unwrap();
+        env.ledger()
+            .set_sequence_number(proposal.created_at + CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS);
+        assert_eq!(
+            client.try_execute_critical_action(&expiring),
+            Err(Ok(ContractError::ApprovalProposalExpired))
         );
     }
 }
