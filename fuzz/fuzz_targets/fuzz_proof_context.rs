@@ -1,6 +1,8 @@
 #![no_main]
 
-use earnproof_shared::{compute_proof_context_commitments, ProofAssetIdentifier};
+use earnproof_shared::{
+    compute_proof_context_commitments, compute_subject_pseudonym_commitment, ProofAssetIdentifier,
+};
 use libfuzzer_sys::fuzz_target;
 use soroban_sdk::{testutils::Ledger as _, Address, BytesN, Env, String};
 
@@ -30,4 +32,10 @@ fuzz_target!(|data: &[u8]| {
     let claim = BytesN::from_array(&env, &[0x5a; 32]);
 
     let _ = compute_proof_context_commitments(&env, &claim, &passphrase, &asset);
+
+    let domain_text = std::string::String::from_utf8_lossy(&data[..split.min(64)]);
+    let domain = String::from_str(&env, &domain_text);
+    let pseudonym = BytesN::from_array(&env, &[data.first().copied().unwrap_or_default(); 32]);
+    let issuer = Address::from_str(&env, ISSUER);
+    let _ = compute_subject_pseudonym_commitment(&env, &issuer, &domain, &pseudonym);
 });

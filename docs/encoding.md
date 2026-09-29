@@ -49,3 +49,33 @@ duplicate-record guard. Golden values are in `proofContextV1` in
 [`vectors.json`](../tests/fixtures/encoding/vectors.json), mirrored in
 [`vectors.tsv`](../tests/fixtures/encoding/vectors.tsv) and independently
 computed in [`example.ts`](../tests/fixtures/encoding/example.ts).
+
+## Subject pseudonym commitment (version 1)
+
+Backends may bind an optional opaque subject pseudonym during context-aware or
+pseudonym-only registration. Compute:
+
+```text
+subject_pseudonym_commitment = SHA256(
+	"earnproof.subject-pseudonym.v1\0" ||
+	domain_length_u8 || domain_ascii ||
+	issuer_account_strkey_ascii ||
+	subject_pseudonym_32
+)
+```
+
+The purpose domain is 1-64 visible ASCII bytes with no whitespace. The issuer
+must be a Stellar account address. Include a new purpose domain when the same
+subject pseudonym is used for a different application; issuer and domain are
+both bound into the commitment, so matching pseudonym bytes cannot be reused
+across issuers or purposes accidentally. The wallet address and subject ID
+are never registration arguments or stored values. Only the resulting
+32-byte commitment is passed to the contract.
+
+An all-zero `BytesN<32>` is the explicit optionality sentinel: it means no
+pseudonym was supplied, and the contract stores no pseudonym sidecar. Legacy
+registration entrypoints likewise create no pseudonym value. The
+`ProofRecord` serialization is unchanged; query the optional commitment
+through `get_proof_pseudonym_commitment`. The known vector and cross-domain /
+cross-issuer outputs are in `subjectPseudonymV1` in
+[`vectors.json`](../tests/fixtures/encoding/vectors.json).

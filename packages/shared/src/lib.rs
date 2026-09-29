@@ -451,6 +451,54 @@ pub struct ProofRegistrationContext {
     pub network_passphrase: String,
     pub asset: ProofAssetIdentifier,
     pub payload: Option<Bytes>,
+    /// Fixed-size opaque commitment. All-zero bytes mean no pseudonym was
+    /// supplied; non-zero values are stored as opaque bytes only.
+    pub subject_pseudonym_commitment: BytesN<32>,
+}
+
+/// Computes a versioned, issuer- and purpose-scoped subject pseudonym
+/// commitment. The raw pseudonym is used only as input to this off-chain
+/// helper and is not part of the proof-registration ABI.
+///
+/// The domain must be 1-64 visible ASCII bytes with no whitespace. Issuer
+/// addresses are encoded as canonical account StrKeys to keep this separate
+/// from wallet identifiers and contract addresses.
+pub fn compute_subject_pseudonym_commitment(
+    env: &Env,
+    issuer_address: &Address,
+    domain: &String,
+    subject_pseudonym: &BytesN<32>,
+) -> Option<BytesN<32>> {
+    if !is_valid_account_address(issuer_address) {
+        return None;
+    }
+    let domain_bytes = domain.to_bytes();
+    let domain_len = domain_bytes.len();
+    if domain_len == 0 || domain_len > 64 {
+        return None;
+    }
+    for index in 0..domain_len {
+        let byte = domain_bytes.get(index)?;
+        if !(0x21..=0x7e).contains(&byte) {
+            return None;
+        }
+    }
+
+    let mut preimage = Bytes::from_slice(env, b"earnproof.subject-pseudonym.v1\0");
+    preimage.append(&Bytes::from_array(env, &[domain_len as u8]));
+    preimage.append(&domain_bytes);
+    preimage.append(&issuer_address.to_string().to_bytes());
+    preimage.append(&subject_pseudonym.to_bytes());
+    Some(env.crypto().sha256(&preimage).to_bytes())
+}
+
+/// Interprets the all-zero commitment sentinel as explicit absence.
+pub fn optional_subject_pseudonym_commitment(commitment: &BytesN<32>) -> Option<BytesN<32>> {
+    if commitment.to_array() == [0; 32] {
+        None
+    } else {
+        Some(commitment.clone())
+    }
 }
 
 /// Computes version-1 network, asset, and claim-context commitments.
@@ -942,6 +990,7 @@ mod proof_context_tests {
 
     const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
     const ISSUER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
+    const OTHER_ISSUER: &str = "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG";
 
     fn bytes32(env: &Env, hex: &str) -> BytesN<32> {
         assert_eq!(hex.len(), 64);
@@ -1135,6 +1184,79 @@ mod proof_context_tests {
             &claim,
             &too_long_network,
             &ProofAssetIdentifier::Native,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn subject_pseudonym_commitment_matches_vector_and_is_issuer_domain_scoped() {
+        let env = Env::default();
+        let pseudonym = bytes32(
+            &env,
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        );
+        let issuer = Address::from_str(&env, ISSUER);
+        let other_issuer = Address::from_str(&env, OTHER_ISSUER);
+        let domain = String::from_str(&env, "credential-verification");
+        let commitment =
+            compute_subject_pseudonym_commitment(&env, &issuer, &domain, &pseudonym).unwrap();
+
+        assert_eq!(
+            commitment,
+            bytes32(&env, vector_hex("subject-pseudonym-v1"))
+        );
+        assert_ne!(
+            commitment,
+            compute_subject_pseudonym_commitment(
+                &env,
+                &issuer,
+                &String::from_str(&env, "analytics"),
+                &pseudonym,
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            commitment,
+            compute_subject_pseudonym_commitment(&env, &other_issuer, &domain, &pseudonym).unwrap()
+        );
+    }
+
+    #[test]
+    fn subject_pseudonym_domain_and_zero_sentinel_boundaries_are_explicit() {
+        let env = Env::default();
+        let issuer = Address::from_str(&env, ISSUER);
+        let pseudonym = BytesN::from_array(&env, &[0x22; 32]);
+        for value in ["", "contains spaces", " bad-edge", "bad-edge "] {
+            assert!(compute_subject_pseudonym_commitment(
+                &env,
+                &issuer,
+                &String::from_str(&env, value),
+                &pseudonym,
+            )
+            .is_none());
+        }
+        let max_domain = String::from_str(&env, &"d".repeat(64));
+        let too_long_domain = String::from_str(&env, &"d".repeat(65));
+        assert!(
+            compute_subject_pseudonym_commitment(&env, &issuer, &max_domain, &pseudonym).is_some()
+        );
+        assert!(
+            compute_subject_pseudonym_commitment(&env, &issuer, &too_long_domain, &pseudonym)
+                .is_none()
+        );
+        assert!(
+            optional_subject_pseudonym_commitment(&BytesN::from_array(&env, &[0; 32])).is_none()
+        );
+        assert_eq!(
+            optional_subject_pseudonym_commitment(&pseudonym),
+            Some(pseudonym)
+        );
+        let contract_issuer = env.register(TestContextContract, ());
+        assert!(compute_subject_pseudonym_commitment(
+            &env,
+            &contract_issuer,
+            &String::from_str(&env, "credential-verification"),
+            &BytesN::from_array(&env, &[0x33; 32]),
         )
         .is_none());
     }

@@ -3,11 +3,11 @@
 #[allow(unused_imports)]
 use earnproof_shared::{
     compute_proof_context_commitments, derive_contextual_proof_id, is_interface_compatible,
-    ContractError, CriticalAction, CriticalActionPolicy, CriticalActionProposal, GenesisRecord,
-    InterfaceVersion, MigrationStatus, PauseScope, ProofAssetIdentifier, ProofContextCommitments,
-    ProofError, ProofPayloadRecord, ProofRecord, ProofRegistrationContext, ProofStatus,
-    ProofValidity, TtlStatus, UpgradeApproval, UpgradeReceipt,
-    CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, ISSUER_REGISTRY_INTERFACE_VERSION,
+    optional_subject_pseudonym_commitment, ContractError, CriticalAction, CriticalActionPolicy,
+    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
+    ProofAssetIdentifier, ProofContextCommitments, ProofError, ProofPayloadRecord, ProofRecord,
+    ProofRegistrationContext, ProofStatus, ProofValidity, TtlStatus, UpgradeApproval,
+    UpgradeReceipt, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, ISSUER_REGISTRY_INTERFACE_VERSION,
     MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
     PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
@@ -49,6 +49,7 @@ struct ProofRegistration {
     expires_at: u64,
     payload: Option<Bytes>,
     context: Option<ProofContextCommitments>,
+    subject_pseudonym_commitment: Option<BytesN<32>>,
 }
 
 #[contracttype]
@@ -73,6 +74,7 @@ enum DataKey {
     /// payload (length and commitment hash only — never the raw bytes).
     ProofPayloadMeta(BytesN<32>),
     ProofContext(BytesN<32>),
+    ProofSubjectPseudonym(BytesN<32>),
     PendingAdmin,
     CriticalActionPolicy,
     CriticalActionProposal(BytesN<32>),
@@ -345,7 +347,7 @@ impl ProofRegistryContract {
         let key = DataKey::Proof(proof_id_hash);
         if env.storage().persistent().has(&key) {
             Self::extend_proof_key_ttl(env.clone(), &key);
-            Self::extend_proof_context_ttl(env, &context_id);
+            Self::extend_proof_sidecars_ttl(env, &context_id);
             true
         } else {
             false
@@ -370,6 +372,38 @@ impl ProofRegistryContract {
                 expires_at,
                 payload: None,
                 context: None,
+                subject_pseudonym_commitment: None,
+            },
+        )
+    }
+
+    /// Register a proof with an opaque subject pseudonym commitment. An
+    /// all-zero commitment explicitly means that no pseudonym is recorded.
+    pub fn register_proof_with_pseudonym(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        subject_pseudonym_commitment: BytesN<32>,
+    ) -> Result<(), ProofError> {
+        Self::ensure_not_decommissioned(&env)?;
+        Self::require_valid_issuer_address(&issuer_address)?;
+        Self::require_auth(&issuer_address);
+        let subject_pseudonym_commitment =
+            optional_subject_pseudonym_commitment(&subject_pseudonym_commitment);
+        Self::register_proof_inner(
+            env,
+            ProofRegistration {
+                proof_id_hash,
+                commitment_hash,
+                issuer_address,
+                schema_version,
+                expires_at,
+                payload: None,
+                context: None,
+                subject_pseudonym_commitment,
             },
         )
     }
@@ -405,6 +439,9 @@ impl ProofRegistryContract {
                 expires_at,
                 payload: registration_context.payload,
                 context: Some(context),
+                subject_pseudonym_commitment: optional_subject_pseudonym_commitment(
+                    &registration_context.subject_pseudonym_commitment,
+                ),
             },
         )?;
         Ok(contextual_proof_id)
@@ -435,6 +472,7 @@ impl ProofRegistryContract {
                 expires_at,
                 payload: Some(payload),
                 context: None,
+                subject_pseudonym_commitment: None,
             },
         )
     }
@@ -448,6 +486,15 @@ impl ProofRegistryContract {
         Ok(env.storage().persistent().get(&key))
     }
 
+    pub fn get_proof_pseudonym_commitment(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<Option<BytesN<32>>, ProofError> {
+        Self::get_proof(env.clone(), proof_id_hash.clone())?;
+        let key = DataKey::ProofSubjectPseudonym(proof_id_hash);
+        Ok(env.storage().persistent().get(&key))
+    }
+
     fn register_proof_inner(env: Env, registration: ProofRegistration) -> Result<(), ProofError> {
         let ProofRegistration {
             proof_id_hash,
@@ -457,6 +504,7 @@ impl ProofRegistryContract {
             expires_at,
             payload,
             context,
+            subject_pseudonym_commitment,
         } = registration;
         Self::ensure_not_decommissioned(&env)?;
         Self::require_valid_issuer_address(&issuer_address)?;
@@ -532,6 +580,12 @@ impl ProofRegistryContract {
             Self::extend_proof_key_ttl(env.clone(), &context_key);
         }
 
+        if let Some(commitment) = subject_pseudonym_commitment {
+            let pseudonym_key = DataKey::ProofSubjectPseudonym(proof_id_hash.clone());
+            env.storage().persistent().set(&pseudonym_key, &commitment);
+            Self::extend_proof_key_ttl(env.clone(), &pseudonym_key);
+        }
+
         if let (Some(payload), Some(payload_len)) = (payload, payload_len) {
             let payload_hash = env.crypto().sha256(&payload).to_bytes();
             let payload_key = DataKey::ProofPayloadMeta(proof_id_hash.clone());
@@ -579,7 +633,7 @@ impl ProofRegistryContract {
             .get(&key)
             .ok_or(ProofError::ProofNotFound)?;
         Self::extend_proof_key_ttl(env.clone(), &key);
-        Self::extend_proof_context_ttl(env, &context_id);
+        Self::extend_proof_sidecars_ttl(env, &context_id);
         Ok(record)
     }
 
@@ -1220,7 +1274,7 @@ impl ProofRegistryContract {
         record.revoked_at = env.ledger().timestamp();
         env.storage().persistent().set(&key, &record);
         Self::extend_proof_key_ttl(env.clone(), &key);
-        Self::extend_proof_context_ttl(env.clone(), &proof_id_hash);
+        Self::extend_proof_sidecars_ttl(env.clone(), &proof_id_hash);
         let epoch = Self::bump_registry_epoch(&env);
         ProofRevoked {
             proof_id_hash,
@@ -1243,10 +1297,14 @@ impl ProofRegistryContract {
             .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
     }
 
-    fn extend_proof_context_ttl(env: Env, proof_id_hash: &BytesN<32>) {
-        let key = DataKey::ProofContext(proof_id_hash.clone());
-        if env.storage().persistent().has(&key) {
-            Self::extend_proof_key_ttl(env, &key);
+    fn extend_proof_sidecars_ttl(env: Env, proof_id_hash: &BytesN<32>) {
+        for key in [
+            DataKey::ProofContext(proof_id_hash.clone()),
+            DataKey::ProofSubjectPseudonym(proof_id_hash.clone()),
+        ] {
+            if env.storage().persistent().has(&key) {
+                Self::extend_proof_key_ttl(env.clone(), &key);
+            }
         }
     }
 
@@ -3320,6 +3378,14 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let claim_id = bytes(&env, 0x51);
         let commitment = bytes(&env, 0x52);
+        let raw_pseudonym = bytes(&env, 0x11);
+        let pseudonym_commitment = earnproof_shared::compute_subject_pseudonym_commitment(
+            &env,
+            &issuer,
+            &soroban_sdk::String::from_str(&env, "credential-verification"),
+            &raw_pseudonym,
+        )
+        .unwrap();
         let native_id = client.register_proof_with_context(
             &claim_id,
             &commitment,
@@ -3330,6 +3396,7 @@ mod test {
                 network_passphrase: passphrase.clone(),
                 asset: earnproof_shared::ProofAssetIdentifier::Native,
                 payload: None,
+                subject_pseudonym_commitment: BytesN::from_array(&env, &[0; 32]),
             },
         );
         let issued_id = client.register_proof_with_context(
@@ -3345,6 +3412,7 @@ mod test {
                     issuer.clone(),
                 ),
                 payload: Some(soroban_sdk::Bytes::from_array(&env, &[0xA1, 0xB2])),
+                subject_pseudonym_commitment: pseudonym_commitment.clone(),
             },
         );
         assert_ne!(native_id, issued_id);
@@ -3352,11 +3420,25 @@ mod test {
         assert_eq!(client.get_proof(&issued_id).proof_id_hash, issued_id);
         assert!(client.get_proof_context_commitments(&native_id).is_some());
         assert!(client.get_proof_context_commitments(&issued_id).is_some());
+        assert_eq!(client.get_proof_pseudonym_commitment(&native_id), None);
+        assert_eq!(
+            client.get_proof_pseudonym_commitment(&issued_id),
+            Some(pseudonym_commitment.clone())
+        );
+        let stored_pseudonym = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get::<_, BytesN<32>>(&DataKey::ProofSubjectPseudonym(issued_id.clone()))
+                .unwrap()
+        });
+        assert_eq!(stored_pseudonym, pseudonym_commitment);
+        assert_ne!(stored_pseudonym, raw_pseudonym);
         assert!(client.try_get_proof_payload(&issued_id).is_ok());
 
         let legacy_id = bytes(&env, 0x53);
         client.register_proof(&legacy_id, &commitment, &issuer, &1, &2_000);
         assert_eq!(client.get_proof_context_commitments(&legacy_id), None);
+        assert_eq!(client.get_proof_pseudonym_commitment(&legacy_id), None);
         assert_eq!(
             client.try_register_proof_with_context(
                 &claim_id,
@@ -3368,6 +3450,7 @@ mod test {
                     network_passphrase: passphrase.clone(),
                     asset: earnproof_shared::ProofAssetIdentifier::Native,
                     payload: None,
+                    subject_pseudonym_commitment: BytesN::from_array(&env, &[0; 32]),
                 },
             ),
             Err(Ok(ProofError::ProofAlreadyRegistered))
@@ -3392,6 +3475,7 @@ mod test {
                     issuer,
                 ),
                 payload: Some(soroban_sdk::Bytes::new(&env)),
+                subject_pseudonym_commitment: BytesN::from_array(&env, &[0; 32]),
             },
         );
         assert_eq!(result, Err(Ok(ProofError::InvalidProofContext)));
@@ -3416,10 +3500,66 @@ mod test {
                     network_passphrase: passphrase,
                     asset: earnproof_shared::ProofAssetIdentifier::Native,
                     payload: None,
+                    subject_pseudonym_commitment: BytesN::from_array(&env, &[0; 32]),
                 },
             );
         }));
         assert!(result.is_err());
         assert_eq!(client.get_registry_epoch(), 0);
+    }
+
+    #[test]
+    fn pseudonym_only_registration_uses_zero_as_absence() {
+        let (env, client, ..) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let zero_id = bytes(&env, 0x81);
+        client.register_proof_with_pseudonym(
+            &zero_id,
+            &bytes(&env, 0x82),
+            &issuer,
+            &1,
+            &2_000,
+            &BytesN::from_array(&env, &[0; 32]),
+        );
+        assert_eq!(client.get_proof_pseudonym_commitment(&zero_id), None);
+
+        let subject_id = bytes(&env, 0x83);
+        let opaque_commitment = bytes(&env, 0x84);
+        client.register_proof_with_pseudonym(
+            &subject_id,
+            &bytes(&env, 0x85),
+            &issuer,
+            &1,
+            &2_000,
+            &opaque_commitment,
+        );
+        assert_eq!(
+            client.get_proof_pseudonym_commitment(&subject_id),
+            Some(opaque_commitment)
+        );
+    }
+
+    #[test]
+    fn pseudonym_only_registration_requires_issuer_authorization() {
+        let (env, client, ..) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        env.set_auths(&[]);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.register_proof_with_pseudonym(
+                &bytes(&env, 0x91),
+                &bytes(&env, 0x92),
+                &issuer,
+                &1,
+                &2_000,
+                &bytes(&env, 0x93),
+            );
+        }));
+        assert!(result.is_err());
+        assert_eq!(client.get_registry_epoch(), 0);
+        assert_eq!(
+            client.try_get_proof_pseudonym_commitment(&bytes(&env, 0x91)),
+            Err(Ok(ProofError::ProofNotFound))
+        );
     }
 }

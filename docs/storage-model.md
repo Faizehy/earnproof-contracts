@@ -119,6 +119,7 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 |-------|---------|-----------------|-------------------|------------|
 | Proof Record | `Proof(hash)` | `get_proof(hash)` reads & extends; `is_valid_proof(hash)` reads & extends | ProofNotFound error | ✓ Yes |
 | Proof Context Commitments | `ProofContext(hash)` | `get_proof_context_commitments(hash)` reads & extends when present | Returns `None` for legacy records; ProofNotFound for an unknown proof | ✓ Yes |
+| Subject Pseudonym Commitment | `ProofSubjectPseudonym(hash)` | `get_proof_pseudonym_commitment(hash)` reads & extends with proof record | Returns `None` when omitted or on legacy records | ✓ Yes |
 
 **Persistent TTL Extension**: Called via `extend_proof_key_ttl(key)` on:
 - `register_proof()`: extends on creation
@@ -131,6 +132,12 @@ not their preimages or private payment data. The serialized `ProofRecord`
 shape is unchanged; records created before context commitments were added
 remain readable, and their context query returns `None` to signal that their
 network/asset policy was not recorded.
+
+`ProofSubjectPseudonym(hash)` is a separate optional sidecar containing only
+the issuer- and purpose-domain-separated 32-byte commitment. An all-zero input
+means absent and creates no sidecar. The raw pseudonym and wallet address are
+never stored; old proofs remain readable and return `None` from the pseudonym
+query.
 
 ---
 

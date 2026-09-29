@@ -28,5 +28,17 @@
       "recordId": "0855b695979ef50e47029a887fdcd7416884fabbde9a578a94359d920a3139ea"
     }
   },
-  "invalid": ["empty string", "malformed hex", "wrong byte length", "signed or little-endian integer", "unpaired UTF-16 surrogate", "asset code with punctuation or whitespace", "issued asset with a contract issuer", "network passphrase not matching the current ledger"]
+  "subjectPseudonymV1": {
+    "encoding": "SHA-256(domain tag NUL || domain-length-u8 || domain ASCII || issuer account StrKey ASCII || pseudonym BytesN<32>)",
+    "issuer": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+    "otherIssuer": "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG",
+    "pseudonym": "1111111111111111111111111111111111111111111111111111111111111111",
+    "domain": "credential-verification",
+    "commitment": "5ecb42daec707c8a896025a5e7c7b32b1f85a2f7ccc95a3afeb4dea1a4ea10bd",
+    "otherDomain": "analytics",
+    "otherDomainCommitment": "41274ef078938676b3daaeac0a5d26ba57bec415b912fce3d56c722b3664ba1b",
+    "otherIssuerCommitment": "f5db487092a3e26ef2d83cb2790649fe2a52bc1db699fb0fae7c7c6f99c0f2a0",
+    "zeroCommitmentPolicy": "all-zero BytesN<32> means no pseudonym; do not store a sidecar"
+  },
+  "invalid": ["empty string", "malformed hex", "wrong byte length", "signed or little-endian integer", "unpaired UTF-16 surrogate", "asset code with punctuation or whitespace", "issued asset with a contract issuer", "network passphrase not matching the current ledger", "empty, whitespace, or non-ASCII pseudonym domain"]
 }
