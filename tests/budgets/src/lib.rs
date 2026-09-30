@@ -783,7 +783,8 @@ mod tests {
                 &bytes(&env, seed.wrapping_add(100)),
                 &issuer,
                 &1,
-                &2_000, &soroban_sdk::BytesN::from_array(&env, &[1u8; 32])
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             );
             batch.push_back(proof_id);
         }
@@ -806,7 +807,14 @@ mod tests {
         let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
 
         let proof_id = bytes(&env, 1);
-        proof_client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
+        proof_client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         env.cost_estimate().budget().reset_unlimited();
 
@@ -826,7 +834,14 @@ mod tests {
         let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
 
         let proof_id = bytes(&env, 1);
-        proof_client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
+        proof_client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         proof_client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
         env.cost_estimate().budget().reset_unlimited();

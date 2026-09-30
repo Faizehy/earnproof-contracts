@@ -420,6 +420,7 @@ pub const ERROR_CATALOG: [ErrorSpec; 38] = [
         http_status: 400,
         client_message: "Request batch is too large",
     },
+    ErrorSpec {
         code: 300,
         name: "ProofAlreadyRegistered",
         enum_name: "ProofError",

@@ -60,21 +60,15 @@ fn apply(deployment: &Deployment, update: Update) {
         Update::Unpause => deployment.config.unpause(),
         Update::DeprecateSchema => deployment.config.deprecate_schema_version(&APPROVED_SCHEMA),
         Update::ApproveSchema => deployment.config.approve_schema_version(&APPROVED_SCHEMA),
-        Update::SuspendIssuer => {
-            deployment
-                .issuers
-                .suspend_issuer(&deployment.issuer_id, &reason)
-        }
-        Update::ReactivateIssuer => {
-            deployment
-                .issuers
-                .reactivate_issuer(&deployment.issuer_id, &reason)
-        }
-        Update::RevokeIssuer => {
-            deployment
-                .issuers
-                .revoke_issuer(&deployment.issuer_id, &reason)
-        }
+        Update::SuspendIssuer => deployment
+            .issuers
+            .suspend_issuer(&deployment.issuer_id, &reason),
+        Update::ReactivateIssuer => deployment
+            .issuers
+            .reactivate_issuer(&deployment.issuer_id, &reason),
+        Update::RevokeIssuer => deployment
+            .issuers
+            .revoke_issuer(&deployment.issuer_id, &reason),
     }
 }
 

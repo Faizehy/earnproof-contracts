@@ -97,6 +97,8 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "BatchTooLarge",
             IssuerError::BatchTooLarge as u32
         ),
+        (
+            "IssuerError",
             "IssuerCapacityExceeded",
             IssuerError::IssuerCapacityExceeded as u32
         ),

@@ -2,11 +2,10 @@
 
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
-    MigrationStatus, PauseScope, SchemaStatusResult, SchemaVersionState, CONFIG_HISTORY_CAPACITY,
-    SchemaRateLimit, DEFAULT_SCHEMA_PAYLOAD_LIMIT, DEFAULT_SCHEMA_RATE_LIMIT,
-    DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
-    MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH,
+    MigrationStatus, PauseScope, SchemaRateLimit, SchemaStatusResult, SchemaVersionState,
+    CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT, DEFAULT_SCHEMA_RATE_LIMIT,
+    DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH,
+    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH, MIGRATION_STATUS_VERSION,
     PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
@@ -1238,8 +1237,8 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
-        ConfigChangeCategory, ContractError, SchemaStatusResult, SchemaVersionState,
-        SchemaRateLimit, MAX_SCHEMA_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
+        ConfigChangeCategory, ContractError, SchemaRateLimit, SchemaStatusResult,
+        SchemaVersionState, MAX_SCHEMA_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Ledger as _},
