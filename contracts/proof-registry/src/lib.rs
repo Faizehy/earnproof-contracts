@@ -3464,6 +3464,7 @@ mod test {
         assert_eq!(env.events().all().events().len(), 0);
     }
 
+    #[test]
     fn initialization_rejects_incompatible_dependency_before_state_mutation() {
         let env = Env::default();
         env.mock_all_auths();

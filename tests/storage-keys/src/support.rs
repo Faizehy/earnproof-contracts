@@ -152,11 +152,6 @@ pub fn config_history_ring_key(env: &Env, slot: u32) -> (Symbol, u32) {
     (Symbol::new(env, "ConfigHistoryRing"), slot)
 }
 
-#[allow(dead_code)]
-pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
-    (Symbol::new(env, "ProofTtl"), id.clone())
-}
-
 // ---------------------------------------------------------------------------
 // Contract-scoped storage scanning
 // ---------------------------------------------------------------------------
