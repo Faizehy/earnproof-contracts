@@ -79,6 +79,7 @@ mod tests {
         let issuer_registry = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
         config.initialize(&admin);
         config.approve_schema_version(&1);
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
         issuer_registry.initialize(&admin);
         issuer_registry.register_issuer(
             &bytes(&env, 1),
@@ -101,6 +102,7 @@ mod tests {
             &Address::from_str(&env, ZERO_ADDR),
             &1,
             &1_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::InvalidAddress)));
 
@@ -110,6 +112,7 @@ mod tests {
             &proof_id,
             &1,
             &1_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(self_result, Err(Ok(ProofError::InvalidAddress)));
     }

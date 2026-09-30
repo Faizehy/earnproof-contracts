@@ -1,12 +1,11 @@
 #![no_std]
 
 use earnproof_shared::{
-    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, IssuerError,
-    IssuerQueryStatus, IssuerRecord, IssuerStatus, IssuerStatusResult, MigrationStatus, TtlStatus,
-    UpgradeApproval, UpgradeReceipt, CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
-    MAX_CONFIG_HISTORY_PAGE, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
-    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
-    UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+    ContractError, GenesisRecord, InterfaceVersion, IssuerError, IssuerQueryStatus, IssuerRecord,
+    IssuerStatus, IssuerStatusResult, MigrationStatus, TtlStatus, UpgradeApproval, UpgradeReceipt,
+    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
+    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
@@ -34,6 +33,16 @@ enum DataKey {
     UpgradeApproval,
     /// Immutable deployment identity, written once at `initialize`.
     Genesis,
+    /// Monotonic epoch advanced after every issuer mutation.
+    IssuerEpoch,
+    /// Count of issuers whose status currently consumes active capacity.
+    ActiveIssuerCount,
+    /// Governed ceiling on active issuers.
+    MaxActiveIssuers,
+    /// Minimum delay before a suspended issuer can be reactivated.
+    ReactivationCooldown,
+    /// Ledger timestamp before which one suspended issuer cannot reactivate.
+    ReactivatableAt(BytesN<32>),
 }
 
 #[contractevent]
@@ -297,6 +306,8 @@ impl IssuerRegistryContract {
             .instance()
             .get(&DataKey::Genesis)
             .ok_or(ContractError::NotInitialized)
+    }
+
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
         let admin = Self::get_admin(env.clone())?;
@@ -555,6 +566,7 @@ impl IssuerRegistryContract {
             metadata_uri_hash,
             metadata_revision,
             updated_at: now,
+            epoch,
         }
         .publish(&env);
         Ok(())
@@ -619,6 +631,7 @@ impl IssuerRegistryContract {
         env.storage().persistent().set(&key, &record);
         Self::extend_issuer_key_ttl(env.clone(), &key);
 
+        let epoch = Self::bump_epoch(&env);
         IssuerMetadataUpdated {
             issuer_id_hash,
             metadata_hash,
@@ -1356,7 +1369,6 @@ impl IssuerRegistryContract {
         // effective are written together in a single persistent `set`, so a
         // status change is never stored without its effective ledger and
         // timestamp. Timing is sourced only from the host ledger environment.
-        let now = env.ledger().timestamp();
         let effective_ledger = env.ledger().sequence();
         record.status = status.clone();
         record.reason_commitment = Some(reason_commitment.clone());
@@ -1758,15 +1770,28 @@ mod test {
             &active,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 10),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
         client.register_issuer(
             &suspended,
             &Address::from_str(&env, ISSUER_TWO),
             &bytes(&env, 11),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
-        client.suspend_issuer(&suspended);
-        client.register_issuer(&revoked, &Address::generate(&env), &bytes(&env, 12));
-        client.revoke_issuer(&revoked);
+        client.suspend_issuer(
+            &suspended,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+        client.register_issuer(
+            &revoked,
+            &Address::generate(&env),
+            &bytes(&env, 12),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+        client.revoke_issuer(
+            &revoked,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
 
         // Deliberately out of registration order to prove request order wins.
         let request = vec![
@@ -1808,6 +1833,7 @@ mod test {
             &issuer_id,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
 
         let request = vec![
@@ -1867,6 +1893,7 @@ mod test {
             &issuer_id,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 8),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
 
         let request = vec![&env, issuer_id.clone()];
@@ -2808,6 +2835,8 @@ mod test {
 
         let result = client.try_get_genesis();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
     // ── issuer metadata URI hash commitments (issue 179) ───────────────────────
 
     #[test]
@@ -2815,7 +2844,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.metadata_hash, bytes(&env, 2));
         // The URI commitment starts at the all-zero "unset" sentinel.
@@ -2828,7 +2862,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
 
         let content = bytes(&env, 0x11);
         let uri = bytes(&env, 0x22);
@@ -2847,7 +2886,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         client.set_issuer_metadata_commitment(&issuer_id, &bytes(&env, 0x11), &bytes(&env, 0x22));
         assert_eq!(env.events().all().events().len(), 1);
     }
@@ -2857,7 +2901,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0),
@@ -2871,7 +2920,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0x11),
@@ -2896,8 +2950,16 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
-        client.revoke_issuer(&issuer_id);
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0x11),
@@ -2911,7 +2973,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         client.update_issuer(&issuer_id, &bytes(&env, 3));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.metadata_hash, bytes(&env, 3));
@@ -2931,7 +2998,12 @@ mod test {
         });
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status_effective_ledger, 100);
         assert_eq!(record.status_effective_timestamp, 555);
@@ -2942,13 +3014,21 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 900;
             li.timestamp = 9_000;
         });
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Suspended);
         assert_eq!(record.status_effective_ledger, 900);
@@ -2960,27 +3040,41 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 10;
             li.timestamp = 100;
         });
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 10);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 20;
             li.timestamp = 200;
         });
-        client.reactivate_issuer(&issuer_id);
+        client.reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 20);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 30;
             li.timestamp = 300;
         });
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Revoked);
         assert_eq!(record.status_effective_ledger, 30);
@@ -2992,12 +3086,20 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         env.ledger().with_mut(|li| {
             li.sequence_number = 40;
             li.timestamp = 400;
         });
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let before = client.get_issuer(&issuer_id);
 
         // A revoked issuer cannot be reactivated; the rejected call must not
@@ -3006,7 +3108,10 @@ mod test {
             li.sequence_number = 50;
             li.timestamp = 500;
         });
-        let result = client.try_reactivate_issuer(&issuer_id);
+        let result = client.try_reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
         let after = client.get_issuer(&issuer_id);
         assert_eq!(

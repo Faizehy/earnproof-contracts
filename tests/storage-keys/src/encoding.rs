@@ -11,11 +11,11 @@
 //! there first.
 
 use super::support::{
-    address_issuer_key, address_ttl_key, admin_key, bytes32, config_version_key,
-    contract_version_key, deployment, encoded, encoded_keys_in, instance_live_until_key,
-    issuer_key, issuer_registry_key, issuer_ttl_key, paused_key, proof_key,
-    proof_type_approved_key, protocol_config_key, schema_predecessor_key, schema_version_key,
-    config_history_ring_key, config_history_total_key, genesis_key, registry_epoch_key,
+    address_issuer_key, address_ttl_key, admin_key, bytes32, config_history_ring_key,
+    config_history_total_key, config_version_key, contract_version_key, deployment, encoded,
+    encoded_keys_in, genesis_key, instance_live_until_key, issuer_key, issuer_registry_key,
+    issuer_ttl_key, paused_key, proof_key, proof_ttl_key, proof_type_approved_key,
+    protocol_config_key, registry_epoch_key, schema_predecessor_key, schema_version_key,
 };
 use earnproof_shared::StorageClass;
 use soroban_sdk::testutils::Address as _;
@@ -93,6 +93,7 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, issuer_registry_key(env)),
             encoded(env, protocol_config_key(env)),
             encoded(env, genesis_key()),
+            encoded(env, instance_live_until_key(env)),
             encoded(env, registry_epoch_key(env)),
         ]),
         "proof-registry instance keys"
@@ -100,7 +101,10 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
 
     assert_eq!(
         encoded_keys_in(env, &deployment.proofs_id, StorageClass::Persistent),
-        sorted(std::vec![encoded(env, proof_key(&deployment.proof_id)),]),
+        sorted(std::vec![
+            encoded(env, proof_key(&deployment.proof_id)),
+            encoded(env, proof_ttl_key(env, &deployment.proof_id)),
+        ]),
         "proof-registry persistent keys"
     );
 }

@@ -1,11 +1,11 @@
 #![no_std]
 
 use earnproof_shared::{
-    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, MigrationStatus,
-    PauseScope, SchemaStatusResult, SchemaVersionState, CONFIG_HISTORY_CAPACITY,
+    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
+    MigrationStatus, PauseScope, SchemaStatusResult, SchemaVersionState, CONFIG_HISTORY_CAPACITY,
     DEFAULT_SCHEMA_PAYLOAD_LIMIT, MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH,
-    MIGRATION_STATUS_VERSION, MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH, MIGRATION_STATUS_VERSION,
+    PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Vec,
@@ -233,6 +233,24 @@ impl ProtocolConfigContract {
     }
 
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_principal(&new_admin)?;
+        Self::require_auth(&admin);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::AdminRotation,
+            Self::commit(&env, new_admin.clone()),
+        );
+        AdminChanged {
+            new_admin: new_admin.clone(),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
@@ -268,9 +286,12 @@ impl ProtocolConfigContract {
         Self::append_config_history(
             env.clone(),
             ConfigChangeCategory::AdminRotation,
-            Self::commit(&env, new_admin.clone()),
+            Self::commit(&env, pending_admin.clone()),
         );
-        AdminChanged { new_admin }.publish(&env);
+        AdminChanged {
+            new_admin: pending_admin.clone(),
+        }
+        .publish(&env);
 
         AdminTransferAccepted {
             new_admin: pending_admin,
@@ -680,9 +701,11 @@ impl ProtocolConfigContract {
         let key = DataKey::ProofTypeApproved(proof_type);
         let approved = env.storage().persistent().get(&key).unwrap_or(false);
         if env.storage().persistent().has(&key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         approved
     }

@@ -97,6 +97,10 @@ pub fn protocol_config_key(env: &Env) -> (Symbol,) {
     (Symbol::new(env, "ProtocolConfig"),)
 }
 
+pub fn proof_type_approved_key(env: &Env, proof_type: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofTypeApproved"), proof_type.clone())
+}
+
 pub fn issuer_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Issuer"), id.clone())
 }
@@ -115,6 +119,10 @@ pub fn address_ttl_key(env: &Env, address: &Address) -> (Symbol, Address) {
 
 pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
+}
+
+pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofTtl"), id.clone())
 }
 
 pub fn genesis_key() -> (Symbol,) {

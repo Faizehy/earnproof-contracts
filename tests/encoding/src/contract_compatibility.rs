@@ -170,6 +170,7 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&1);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -196,6 +197,7 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
         &issuer_address,
         &1,
         &(env.ledger().timestamp() + 1_000),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
 
     let record = proofs.get_proof(&proof_id_hash);

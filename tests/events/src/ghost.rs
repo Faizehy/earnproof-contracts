@@ -77,6 +77,7 @@ fn duplicate_proof_id_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -113,6 +114,7 @@ fn registration_while_paused_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -133,6 +135,7 @@ fn unapproved_schema_emits_no_event() {
             &deployment.issuer,
             &99, // never approved
             &expires,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -154,6 +157,7 @@ fn deprecated_schema_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -189,6 +193,7 @@ fn revoked_issuer_registration_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -211,6 +216,7 @@ fn suspended_issuer_registration_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -309,6 +315,7 @@ fn already_expired_proof_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &past,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -328,6 +335,7 @@ fn expiry_equal_to_now_emits_no_event() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &now,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 

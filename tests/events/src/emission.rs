@@ -292,6 +292,7 @@ fn register_proof_emits_proof_registered_with_the_advanced_epoch() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -364,6 +365,7 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 

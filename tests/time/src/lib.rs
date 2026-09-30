@@ -83,6 +83,7 @@ mod tests {
         let config = ProtocolConfigContractClient::new(&clock.env, &config_id);
         config.initialize(&admin);
         config.approve_schema_version(&1);
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&clock.env, &[1u8; 32]));
         let issuers_id = clock.env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&clock.env, &issuers_id);
         issuers.initialize(&admin);
@@ -110,6 +111,7 @@ mod tests {
             &fixture.issuer,
             &1,
             &expires_at,
+            &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32]),
         );
     }
 
@@ -136,6 +138,7 @@ mod tests {
                     &fixture.issuer,
                     &1,
                     &expires_at,
+                    &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
                 ),
                 Err(Ok(ProofError::ProofExpired))
             );
@@ -162,7 +165,8 @@ mod tests {
                 &bytes(&fixture.clock.env, 6),
                 &fixture.issuer,
                 &0,
-                &(NOW + 1)
+                &(NOW + 1),
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::InvalidSchemaVersion))
         );
@@ -173,7 +177,8 @@ mod tests {
                 &bytes(&fixture.clock.env, 8),
                 &fixture.issuer,
                 &1,
-                &(NOW + 1)
+                &(NOW + 1),
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::ContractPaused))
         );
@@ -231,6 +236,7 @@ mod tests {
                 &fixture.issuer,
                 &1,
                 &(NOW + 1),
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::UnsupportedSchema))
         );
@@ -250,6 +256,7 @@ mod tests {
                 &fixture.issuer,
                 &2,
                 &(NOW + 1),
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::UnsupportedSchema))
         );
@@ -273,6 +280,7 @@ mod tests {
                 &fixture.issuer,
                 &1,
                 &(NOW + 100),
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::UnsupportedSchema))
         );
@@ -290,6 +298,7 @@ mod tests {
                 &fixture.issuer,
                 &1,
                 &0,
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::ProofExpired))
         );
@@ -304,6 +313,7 @@ mod tests {
         let config = ProtocolConfigContractClient::new(&clock.env, &config_id);
         config.initialize(&admin);
         config.approve_schema_version(&1);
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&clock.env, &[1u8; 32]));
         let issuers_id = clock.env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&clock.env, &issuers_id);
         issuers.initialize(&admin);
@@ -324,6 +334,7 @@ mod tests {
             &issuer,
             &1,
             &1,
+            &soroban_sdk::BytesN::from_array(&clock.env, &[1u8; 32]),
         );
         assert!(proofs.is_valid_proof(&bytes(&clock.env, 41)));
     }

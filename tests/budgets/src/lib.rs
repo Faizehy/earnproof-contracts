@@ -476,7 +476,12 @@ mod tests {
         for index in 0..MAX_ISSUER_STATUS_BATCH {
             let issuer_id = bytes(&env, index as u8);
             let issuer_address = Address::generate(&env);
-            client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 200));
+            client.register_issuer(
+                &issuer_id,
+                &issuer_address,
+                &bytes(&env, 200),
+                &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+            );
             request.push_back(issuer_id);
         }
 
@@ -503,7 +508,12 @@ mod tests {
         client.initialize(&admin);
 
         let known = bytes(&env, 1);
-        client.register_issuer(&known, &Address::generate(&env), &bytes(&env, 2));
+        client.register_issuer(
+            &known,
+            &Address::generate(&env),
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         let missing = bytes(&env, 99);
 
         env.cost_estimate().budget().reset_unlimited();
@@ -552,6 +562,7 @@ mod tests {
 
         protocol_client.initialize(&admin);
         protocol_client.approve_schema_version(&1);
+        protocol_client.approve_proof_type(&soroban_sdk::BytesN::from_array(env, &[1u8; 32]));
         issuer_client.initialize(&admin);
         issuer_client.register_issuer(&issuer_id, &issuer, &bytes(env, 8), &bytes(env, 99));
         proof_client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
@@ -592,7 +603,14 @@ mod tests {
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
 
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        proof_client.register_proof(
+            &proof_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         assert_budget(
             &env,
@@ -609,7 +627,14 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        proof_client.register_proof(
+            &proof_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         env.cost_estimate().budget().reset_unlimited();
 
@@ -630,7 +655,14 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        proof_client.register_proof(
+            &proof_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         env.cost_estimate().budget().reset_unlimited();
 
@@ -651,7 +683,14 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        proof_client.register_proof(
+            &proof_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         env.cost_estimate().budget().reset_unlimited();
 

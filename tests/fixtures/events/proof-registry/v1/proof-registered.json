@@ -10,6 +10,31 @@
       "description": "Identifier hash of the proof that was registered.",
       "example": "0x0101010101010101010101010101010101010101010101010101010101010101"
     },
+    "issuer_address": {
+      "type": "Address",
+      "description": "Public address of the issuer that registered the proof.",
+      "example": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+    },
+    "schema_version": {
+      "type": "u32",
+      "description": "Approved schema version used by this proof.",
+      "example": 1
+    },
+    "created_ledger": {
+      "type": "u32",
+      "description": "Ledger sequence at which the proof was registered.",
+      "example": 4242
+    },
+    "created_at": {
+      "type": "u64",
+      "description": "Ledger timestamp at which the proof was registered.",
+      "example": 1500
+    },
+    "expires_at": {
+      "type": "u64",
+      "description": "Ledger timestamp at which the proof expires.",
+      "example": 50000
+    },
     "epoch": {
       "type": "u32",
       "description": "Registry epoch after this registration committed. A cache or indexer may invalidate on this value alone instead of diffing individual records.",
@@ -17,6 +42,6 @@
     }
   },
   "emitted_by": "register_proof",
-  "description": "Published once a proof registration commits. Carries only the identifier hash and the registry epoch — never the commitment, issuer, schema, or expiration, which must be read back with get_proof.",
+  "description": "Published once a proof registration commits, carrying the public record fields and creation timing but not the commitment hash.",
   "compatibility": "additive"
 }

@@ -106,6 +106,17 @@ fuzz_target!(|data: &[u8]| {
         1
     };
 
+    // An absent trailing proof-type segment models a legacy record; present
+    // bytes exercise the stable identifier carried by current records.
+    let proof_type = if data.len() >= 129 {
+        match BytesN::<32>::try_from(Bytes::from_slice(&env, &data[97..129])) {
+            Ok(value) => Some(value),
+            Err(_) => return,
+        }
+    } else {
+        None
+    };
+
     // Construct the ProofRecord - this should never panic or cause undefined behavior
     let _proof = ProofRecord {
         proof_id_hash,

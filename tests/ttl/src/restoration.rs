@@ -111,6 +111,7 @@ fn a_restored_proof_id_cannot_be_re_registered() {
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
@@ -171,6 +172,7 @@ fn a_long_idle_deployment_recovers_every_contract_on_the_next_call() {
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     assert!(deployment.proofs.is_valid_proof(&second_proof));

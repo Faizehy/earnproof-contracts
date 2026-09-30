@@ -36,12 +36,18 @@ fn fixtures() -> (Env, Address, Address, BytesN<32>, Address, Address) {
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&APPROVED_SCHEMA);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
     let issuer_id = hash(&env, 0x01);
-    issuers.register_issuer(&issuer_id, &issuer, &hash(&env, 0xAA));
+    issuers.register_issuer(
+        &issuer_id,
+        &issuer,
+        &hash(&env, 0xAA),
+        &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+    );
 
     (env, admin, issuer, issuer_id, issuers_id, config_id)
 }
@@ -212,6 +218,7 @@ fn a_stale_issuer_address_fails_closed_after_rotation() {
         &rotated_to,
         &APPROVED_SCHEMA,
         &deployment.expiry(),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 }
 
@@ -227,6 +234,10 @@ fn the_referenced_protocol_config_gates_registration_not_a_newer_deployment() {
     let newer = ProtocolConfigContractClient::new(&deployment.env, &newer_id);
     newer.initialize(&deployment.admin);
     newer.approve_schema_version(&APPROVED_SCHEMA);
+    newer.approve_proof_type(&soroban_sdk::BytesN::from_array(
+        &deployment.env,
+        &[1u8; 32],
+    ));
 
     deployment.config.pause();
     assert!(!newer.is_paused());

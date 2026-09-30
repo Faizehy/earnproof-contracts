@@ -27,7 +27,7 @@ Backend mapping guidance, including how to handle a code this document does not 
 
 The protocol-config range is allocated but empty: that contract returns common errors only. The range stays reserved so a future protocol-config error cannot collide with anything.
 
-**Status** distinguishes a code that some contract path actually returns from one that is declared and reserved but produced by nothing in this release. Six codes are currently reserved, and the distinction matters in practice: see the ambiguity note below before writing a client that waits for one of them.
+**Status** distinguishes a code that some contract path actually returns from one that is declared and reserved but produced by nothing in this release. Seven codes are currently reserved, and the distinction matters in practice: see the ambiguity note below before writing a client that waits for one of them.
 
 **Retry** answers whether repeating the call can ever succeed:
 
@@ -86,7 +86,8 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 41 | `NotFound` | `ContractError` | common | reserved | after-caller-change | 404 |
 | 42 | `InvalidState` | `ContractError` | common | reserved | never | 400 |
 | 60 | `InvalidInput` | `ContractError` | common | returned | after-caller-change | 400 |
-| 62 | `IncompatibleInterfaceVersion` | `ContractError` | common | returned | after-caller-change | 400 |
+| 62 | `BatchTooLarge` | `ContractError` | common | returned | after-caller-change | 400 |
+| 63 | `IncompatibleInterfaceVersion` | `ContractError` | common | returned | after-caller-change | 400 |
 | 80 | `ProtocolPaused` | `ContractError` | common | reserved | after-operator-action | 503 |
 | 200 | `IssuerAlreadyRegistered` | `IssuerError` | issuer-registry | returned | never | 409 |
 | 201 | `IssuerNotFound` | `IssuerError` | issuer-registry | returned | after-caller-change | 404 |
@@ -95,19 +96,22 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 204 | `IssuerRevoked` | `IssuerError` | issuer-registry | returned | never | 403 |
 | 205 | `IssuerInactive` | `IssuerError` | issuer-registry | reserved | after-operator-action | 403 |
 | 206 | `InvalidTransition` | `IssuerError` | issuer-registry | returned | never | 400 |
-| 208 | `IssuerCapacityExceeded` | `IssuerError` | issuer-registry | returned | after-operator-action | 409 |
-| 209 | `MaxBelowActiveUsage` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
-| 210 | `ReactivationCooldownActive` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 208 | `BatchTooLarge` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 209 | `InvalidMetadataCommitment` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 210 | `IssuerCapacityExceeded` | `IssuerError` | issuer-registry | returned | after-operator-action | 409 |
+| 211 | `MaxBelowActiveUsage` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 212 | `ReactivationCooldownActive` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 300 | `ProofAlreadyRegistered` | `ProofError` | proof-registry | returned | never | 409 |
 | 301 | `ProofNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 302 | `ProofAlreadyRevoked` | `ProofError` | proof-registry | returned | never | 400 |
 | 303 | `ProofExpired` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
-| 304 | `InvalidSchemaVersion` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 304 | `InvalidSchemaVersion` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 | 305 | `SchemaVersionNotApproved` | `ProofError` | proof-registry | reserved | after-operator-action | 400 |
 | 307 | `ContractPaused` | `ProofError` | proof-registry | returned | after-operator-action | 503 |
 | 308 | `IssuerInactive` | `ProofError` | proof-registry | returned | after-operator-action | 403 |
 | 309 | `UnsupportedSchema` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 310 | `MalformedInput` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
+| 311 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 
 ## Details
 
@@ -188,7 +192,18 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Invalid input provided"
 
-### 62 - `IncompatibleInterfaceVersion`
+### 62 - `BatchTooLarge`
+
+- Enum: `ContractError`
+- Domain: common
+- Status: returned
+- Retry: after-caller-change
+- Cause: get_schema_statuses was given more schema versions than the bounded batch limit.
+- Remediation: Split the request into batches of at most MAX_SCHEMA_STATUS_BATCH entries.
+- Suggested HTTP status: 400
+- Client message: "Request batch is too large"
+
+### 63 - `IncompatibleInterfaceVersion`
 
 - Enum: `ContractError`
 - Domain: common
@@ -287,7 +302,29 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Invalid status transition"
 
-### 208 - `IssuerCapacityExceeded`
+### 208 - `BatchTooLarge`
+
+- Enum: `IssuerError`
+- Domain: issuer-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: get_issuer_statuses was given more issuer identifiers than the bounded batch limit.
+- Remediation: Split the request into batches of at most MAX_ISSUER_STATUS_BATCH entries.
+- Suggested HTTP status: 400
+- Client message: "Request batch is too large"
+
+### 209 - `InvalidMetadataCommitment`
+
+- Enum: `IssuerError`
+- Domain: issuer-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: set_issuer_metadata_commitment was given an all-zero content or URI commitment.
+- Remediation: Provide nonzero 32-byte commitments for both the canonical document and its URI.
+- Suggested HTTP status: 400
+- Client message: "Invalid issuer commitment"
+
+### 210 - `IssuerCapacityExceeded`
 
 - Enum: `IssuerError`
 - Domain: issuer-registry
@@ -298,7 +335,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 409
 - Client message: "Issuer capacity reached"
 
-### 209 - `MaxBelowActiveUsage`
+### 211 - `MaxBelowActiveUsage`
 
 - Enum: `IssuerError`
 - Domain: issuer-registry
@@ -309,7 +346,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Capacity limit below current usage"
 
-### 210 - `ReactivationCooldownActive`
+### 212 - `ReactivationCooldownActive`
 
 - Enum: `IssuerError`
 - Domain: issuer-registry
@@ -369,9 +406,9 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Enum: `ProofError`
 - Domain: proof-registry
 - Status: returned
-- Retry: after-operator-action
-- Cause: register_proof was given schema version zero, or a precondition that the registry currently reports through this same code failed: the protocol is paused, or the issuer address is not active.
-- Remediation: Check three things in order: that the schema version is non-zero, that is_paused is false, and that is_active_address is true for the issuer. This code is overloaded in the current release; see the ambiguity note in docs/errors.md.
+- Retry: after-caller-change
+- Cause: register_proof was given schema version zero.
+- Remediation: Use a nonzero schema version. Check protocol pause, issuer activity, schema approval, and proof-type approval separately when registration is rejected.
 - Suggested HTTP status: 400
 - Client message: "Invalid schema version"
 
@@ -429,5 +466,16 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Call get_schema_payload_limit for the schema version and shrink the payload to fit, or use register_proof without a payload if none is required.
 - Suggested HTTP status: 400
 - Client message: "Malformed proof input"
+
+### 311 - `UnsupportedProofType`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-operator-action
+- Cause: The proof type identifier is not supported by the protocol config.
+- Remediation: Call is_proof_type_approved on the protocol config contract to verify the proof type is approved. An operator must approve the proof type before it can be used for proof registration.
+- Suggested HTTP status: 400
+- Client message: "Proof type not supported"
 
 <!-- END GENERATED -->

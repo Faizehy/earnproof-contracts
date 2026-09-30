@@ -49,7 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 36] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 39] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "AddressIssuer",
@@ -172,6 +172,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 36] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "InstanceLiveUntil",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "keepalive operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "IssuerRegistry",
         arity: 0,
         class: StorageClass::Instance,
@@ -201,6 +209,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 36] = [
         class: StorageClass::Persistent,
         value: "ProofPayloadRecord",
         owner: "issuing party",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "ProofTtl",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "keepalive operator",
     },
     StorageNamespace {
         contract: "proof-registry",
@@ -300,18 +316,18 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 36] = [
     },
     StorageNamespace {
         contract: "protocol-config",
-        namespace: "SchemaPayloadLimit",
-        arity: 1,
-        class: StorageClass::Persistent,
-        value: "u32",
-        owner: "protocol operator",
-    },
-    StorageNamespace {
-        contract: "protocol-config",
         namespace: "ProofTypeApproved",
         arity: 1,
         class: StorageClass::Persistent,
         value: "bool",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SchemaPayloadLimit",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
         owner: "protocol operator",
     },
     StorageNamespace {

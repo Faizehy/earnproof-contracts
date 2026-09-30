@@ -43,6 +43,7 @@ impl Deployment<'_> {
         let config = ProtocolConfigContractClient::new(&env, &config_id);
         config.initialize(&admin);
         config.approve_schema_version(&APPROVED_SCHEMA);
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
         let issuers_id = env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -78,6 +79,7 @@ impl Deployment<'_> {
             &self.issuer,
             &APPROVED_SCHEMA,
             &(self.env.ledger().timestamp() + 100_000),
+            &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
         );
         proof_id
     }

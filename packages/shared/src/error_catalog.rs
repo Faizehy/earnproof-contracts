@@ -8,7 +8,7 @@
 //! The catalog is machine-readable so that three things can be checked rather
 //! than asserted in prose, all of them in `tests/error-catalog/`:
 //!
-//! * every enum variant has a catalog entry with a matching code, so a new
+//! * every published enum variant has a catalog entry with a matching code, so a new
 //!   error cannot be added without being documented;
 //! * the codes in [`docs/errors.md`](../../../docs/errors.md) and in the golden
 //!   fixture match the catalog, so renumbering or reuse is caught;
@@ -36,7 +36,7 @@
 /// Whether a code is returned by the current release.
 ///
 /// A code can be declared in an error enum without any contract path returning
-/// it. Publishing that distinction matters: for example, [`ProofError::MalformedInput`]
+/// it. Publishing that distinction matters: for example, [`ProofError::SchemaVersionNotApproved`]
 /// is declared and reserved but returned by no path in the current release.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Status {
@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 26] = [
+pub const ERROR_CATALOG: [ErrorSpec; 33] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -242,6 +242,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 26] = [
     },
     ErrorSpec {
         code: 62,
+        name: "BatchTooLarge",
+        enum_name: "ContractError",
+        domain: Domain::Common,
+        status: Status::Returned,
+        cause: "get_schema_statuses was given more schema versions than the bounded batch limit.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Split the request into batches of at most MAX_SCHEMA_STATUS_BATCH entries.",
+        http_status: 400,
+        client_message: "Request batch is too large",
+    },
+    ErrorSpec {
+        code: 63,
         name: "IncompatibleInterfaceVersion",
         enum_name: "ContractError",
         domain: Domain::Common,
@@ -350,6 +362,30 @@ pub const ERROR_CATALOG: [ErrorSpec; 26] = [
     },
     ErrorSpec {
         code: 208,
+        name: "BatchTooLarge",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "get_issuer_statuses was given more issuer identifiers than the bounded batch limit.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Split the request into batches of at most MAX_ISSUER_STATUS_BATCH entries.",
+        http_status: 400,
+        client_message: "Request batch is too large",
+    },
+    ErrorSpec {
+        code: 209,
+        name: "InvalidMetadataCommitment",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "set_issuer_metadata_commitment was given an all-zero content or URI commitment.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Provide nonzero 32-byte commitments for both the canonical document and its URI.",
+        http_status: 400,
+        client_message: "Invalid issuer commitment",
+    },
+    ErrorSpec {
+        code: 210,
         name: "IssuerCapacityExceeded",
         enum_name: "IssuerError",
         domain: Domain::IssuerRegistry,
@@ -361,7 +397,7 @@ pub const ERROR_CATALOG: [ErrorSpec; 26] = [
         client_message: "Issuer capacity reached",
     },
     ErrorSpec {
-        code: 209,
+        code: 211,
         name: "MaxBelowActiveUsage",
         enum_name: "IssuerError",
         domain: Domain::IssuerRegistry,
@@ -373,7 +409,7 @@ pub const ERROR_CATALOG: [ErrorSpec; 26] = [
         client_message: "Capacity limit below current usage",
     },
     ErrorSpec {
-        code: 210,
+        code: 212,
         name: "ReactivationCooldownActive",
         enum_name: "IssuerError",
         domain: Domain::IssuerRegistry,
@@ -438,9 +474,9 @@ pub const ERROR_CATALOG: [ErrorSpec; 26] = [
         enum_name: "ProofError",
         domain: Domain::ProofRegistry,
         status: Status::Returned,
-        cause: "register_proof was given schema version zero, or a precondition that the registry currently reports through this same code failed: the protocol is paused, or the issuer address is not active.",
-        retry: Retry::AfterOperatorAction,
-        remediation: "Check three things in order: that the schema version is non-zero, that is_paused is false, and that is_active_address is true for the issuer. This code is overloaded in the current release; see the ambiguity note in docs/errors.md.",
+        cause: "register_proof was given schema version zero.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Use a nonzero schema version. Check protocol pause, issuer activity, schema approval, and proof-type approval separately when registration is rejected.",
         http_status: 400,
         client_message: "Invalid schema version",
     },

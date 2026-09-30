@@ -135,6 +135,7 @@ pub fn build(name: &str) -> Scenario {
                 &issuer,
                 &SCHEMA_VERSION,
                 &PROOF_EXPIRES_AT,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             )
         });
     }

@@ -95,6 +95,7 @@ fn attempt(deployment: &Deployment, discriminator: u8) -> bool {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
     });
     rejection == Rejection::Accepted

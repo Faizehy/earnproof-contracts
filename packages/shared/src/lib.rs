@@ -408,6 +408,8 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    /// The proof-type identifier is unknown or deprecated in protocol config.
+    UnsupportedProofType = 311,
 }
 
 /// Fixed capacity of the protocol-config change-history ring. Once this many
@@ -480,7 +482,7 @@ pub enum ProofStatus {
 /// Structured proof validity outcome.
 ///
 /// A single boolean (`is_valid_proof`) cannot distinguish why a proof is
-/// invalid. `ProofValidity` maps every invalid state to exactly one primary
+/// invalid. `ProofValidityReason` maps every invalid state to exactly one primary
 /// reason, evaluated in a documented, deterministic order (see
 /// `ProofRegistryContract::proof_validity`):
 ///
@@ -496,13 +498,15 @@ pub enum ProofStatus {
 /// precedence is also the declaration order.
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProofValidity {
+pub enum ProofValidityReason {
     Valid,
     Unknown,
     Revoked,
     Expired,
     IssuerInactive,
     SchemaDeprecated,
+}
+
 /// Stores temporal metadata for an upgrade approval.
 ///
 /// # Timing invariants
