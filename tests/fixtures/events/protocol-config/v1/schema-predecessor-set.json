@@ -1,9 +1,9 @@
 {
-  "event": "SchemaPredecessorSet",
+  "event": "schema_predecessor_set",
   "contract": "protocol-config",
   "contract_version": "0.1.0",
   "schema_version": 1,
-  "topics": ["SchemaPredecessorSet"],
+  "topics": ["schema_predecessor_set"],
   "payload": {
     "version": {
       "type": "U32",

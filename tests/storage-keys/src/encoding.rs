@@ -11,10 +11,13 @@
 //! there first.
 
 use super::support::{
-    address_issuer_key, address_ttl_key, admin_key, bytes32, config_version_key,
-    contract_version_key, deployment, encoded, encoded_keys_in, instance_live_until_key,
-    issuer_key, issuer_registry_key, issuer_ttl_key, paused_key, proof_key,
-    proof_type_approved_key, protocol_config_key, schema_predecessor_key, schema_version_key,
+    active_issuer_count_key, address_issuer_key, address_ttl_key, admin_key, bytes32,
+    config_history_ring_key,
+    config_history_total_key, config_version_key, contract_version_key, deployment, encoded,
+    encoded_keys_in, genesis_key, instance_live_until_key, issuer_epoch_key, issuer_key,
+    issuer_registry_key, issuer_ttl_key, max_active_issuers_key, paused_key, proof_key,
+    proof_type_approved_key, protocol_config_key, reactivation_cooldown_key,
+    registry_epoch_key, schema_predecessor_key, schema_version_key,
 };
 use earnproof_shared::StorageClass;
 use soroban_sdk::testutils::Address as _;
@@ -41,6 +44,8 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, paused_key()),
             encoded(env, config_version_key(env)),
             encoded(env, contract_version_key(env)),
+            encoded(env, genesis_key()),
+            encoded(env, config_history_total_key(env)),
         ]),
         "protocol-config instance keys"
     );
@@ -52,6 +57,8 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, proof_type_approved_key(env, &bytes32(env, 1))),
             encoded(env, schema_version_key(env, 2)),
             encoded(env, schema_predecessor_key(env, 2)),
+            encoded(env, config_history_ring_key(env, 0)),
+            encoded(env, config_history_ring_key(env, 1)),
         ]),
         "protocol-config persistent keys"
     );
@@ -62,6 +69,11 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, admin_key()),
             encoded(env, contract_version_key(env)),
             encoded(env, instance_live_until_key(env)),
+            encoded(env, genesis_key()),
+            encoded(env, active_issuer_count_key(env)),
+            encoded(env, issuer_epoch_key(env)),
+            encoded(env, max_active_issuers_key(env)),
+            encoded(env, reactivation_cooldown_key(env)),
         ]),
         "issuer-registry instance keys"
     );
@@ -84,6 +96,8 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, contract_version_key(env)),
             encoded(env, issuer_registry_key(env)),
             encoded(env, protocol_config_key(env)),
+            encoded(env, genesis_key()),
+            encoded(env, registry_epoch_key(env)),
         ]),
         "proof-registry instance keys"
     );
@@ -293,7 +307,7 @@ fn identical_namespaces_in_different_contracts_address_different_entries() {
     // another: the issuer registry still holds only its fixed instance keys.
     assert_eq!(
         encoded_keys_in(env, &deployment.issuers_id, StorageClass::Instance).len(),
-        3
+        4
     );
 }
 

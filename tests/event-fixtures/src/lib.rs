@@ -214,10 +214,14 @@ fn issuer_registry_fixture_matches_contract_version() {
 }
 
 // ---------------------------------------------------------------------------
-// Proof-registry: 1 event fixture
+// Proof-registry: 2 event fixtures
 // ---------------------------------------------------------------------------
+//
+// proof-registry used to emit nothing; issue #187 (registry epoch exposure)
+// added `proof_registered` and `proof_revoked`, each carrying the epoch it
+// advanced to. Mirrors the protocol-config fixture pattern above.
 
-const PROOF_REGISTRY_EVENTS: &[&str] = &["proof-revoked"];
+const PROOF_REGISTRY_EVENTS: &[&str] = &["proof-registered", "proof-revoked"];
 
 #[test]
 fn proof_registry_all_event_fixtures_exist() {
@@ -286,6 +290,24 @@ fn proof_registry_event_names_match_topics() {
             fixture.topics[0], fixture.event,
             "{name}.json: first topic must equal event name"
         );
+    }
+}
+
+#[test]
+fn proof_registry_no_private_data_in_fixtures() {
+    let forbidden_keywords = ["salary", "income", "email", "phone", "ssn", "private"];
+    let base = fixtures_dir();
+    let dir = format!("{base}/proof-registry/v1");
+    for name in PROOF_REGISTRY_EVENTS {
+        let path = format!("{dir}/{name}.json");
+        let content = fs::read_to_string(&path).unwrap();
+        let lower = content.to_lowercase();
+        for keyword in &forbidden_keywords {
+            assert!(
+                !lower.contains(keyword),
+                "{name}.json contains forbidden keyword '{keyword}'"
+            );
+        }
     }
 }
 

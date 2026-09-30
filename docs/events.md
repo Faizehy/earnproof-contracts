@@ -52,35 +52,51 @@ lineage link and `schema_approved` for the approval itself. A predecessor-less
 
 | Topic | Emitted by | Payload |
 |---|---|---|
-| `issuer_registered` | `register_issuer` | `issuer_id_hash`, `issuer_address`, `metadata_hash`, `created_at` |
-| `issuer_metadata_updated` | `update_issuer` | `issuer_id_hash`, `metadata_hash`, `updated_at` |
-| `issuer_suspended` | `suspend_issuer` | `issuer_id_hash`, `updated_at` |
-| `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `updated_at` |
-| `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `updated_at` |
-| `issuer_address_rotated` | `rotate_issuer_address` | `issuer_id_hash`, `old_address`, `new_address`, `updated_at` |
+| `issuer_registered` | `register_issuer` | `issuer_id_hash`, `issuer_address`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `provenance_commitment`, `created_at`, `epoch` |
+| `issuer_metadata_updated` | `update_issuer`, `set_issuer_metadata_commitment` | `issuer_id_hash`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `updated_at`, `epoch` |
+| `issuer_suspended` | `suspend_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `reason_commitment`, `updated_at`, `epoch` |
+| `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `reason_commitment`, `updated_at`, `epoch` |
+| `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `reason_commitment`, `updated_at`, `epoch` |
+| `issuer_address_rotated` | `rotate_issuer_address` | `issuer_id_hash`, `old_address`, `new_address`, `updated_at`, `epoch` |
 
 `issuer_address_rotated` carries both addresses so an indexer can update its
 address→issuer mapping without scanning storage. An indexer that ignores
 `old_address` will keep routing to a rotated-out key.
 
+`issuer_registered` and `issuer_metadata_updated` carry **both** metadata
+commitments. `metadata_hash` commits to the canonical metadata document
+(content); `metadata_uri_hash` commits to the canonical document URI (location),
+so an off-chain resolver can distinguish a change of location from a change of
+content. At registration `metadata_uri_hash` is the all-zero "no URI commitment
+recorded" sentinel until `set_issuer_metadata_commitment` sets it.
+`metadata_revision` starts at `1` and increments on every accepted metadata
+update. See [`metadata-commitment.md`](./metadata-commitment.md) for the
+canonical-byte and domain-separation rules.
+
+The status lifecycle events carry `effective_ledger` and `effective_timestamp`:
+the ledger sequence and timestamp at which the suspension, reactivation, or
+revocation became effective. Legacy records predating these fields carry the
+documented `0` sentinel.
+
 ### `proof-registry`
 
 | Topic | Emitted by | Payload |
 |---|---|---|
-| `proof_revoked` | `revoke_proof`, `admin_revoke_proof` | `proof_id_hash`, `revoked_at`, `revoked_ledger`, `by_admin` |
+| `proof_registered` | `register_proof` | `proof_id_hash`, `issuer_address`, `schema_version`, `created_ledger`, `created_at`, `expires_at`, `epoch` |
+| `proof_registered_with_payload` | `register_proof_with_payload` | `proof_id_hash`, `payload_len`, `payload_hash`, `epoch` |
+| `proof_revoked` | `revoke_proof`, `admin_revoke_proof` | `proof_id_hash`, `revoked_at`, `revoked_ledger`, `by_admin`, `epoch` |
 
-`proof_revoked` carries the effective revocation timing — both the ledger
-timestamp (`revoked_at`) and the ledger sequence (`revoked_ledger`) — so a
-verifier learns *when* a proof became invalid on-chain without a follow-up
-`get_proof_validity` query. `by_admin` distinguishes an admin revocation from an
-issuer revocation. For a legacy record revoked before the ledger sequence was
-recorded, `revoked_ledger` is `0` and the timestamp remains authoritative.
+Each successful proof registration publishes one event. `proof_registered`
+carries the issuer, schema, creation and expiry timing, and registry epoch;
+`proof_registered_with_payload` carries only the payload length and hash, never
+the raw auxiliary bytes. Creation timing is sourced from the host ledger.
 
-Proof **registration** remains a silent state change: an indexer waiting for a
-`proof_registered` event will wait forever, and proof state must be read with
-`get_proof`, `is_valid_proof`, `is_revoked`, and `get_proof_validity`. This is
-asserted rather than assumed — `proof_registry_registration_is_silent` fails if
-registration ever starts emitting.
+`proof_revoked` carries the effective revocation timing — the ledger timestamp
+(`revoked_at`) and sequence (`revoked_ledger`) — plus whether the admin
+performed the revocation and the post-mutation registry epoch. For a legacy
+record revoked before the sequence was recorded, `revoked_ledger` is `0` and
+the timestamp remains authoritative. A rejected or repeated mutation publishes
+no event and does not advance the epoch.
 
 ### Silent entry points
 
@@ -90,7 +106,6 @@ Not every mutation emits. These do not, and the omission is deliberate:
 |---|---|---|
 | `issuer-registry` | `initialize` | Only `protocol-config` announces initialization. An indexer keying deployment off an event should watch that contract. |
 | `proof-registry` | `initialize` | As above. |
-| `proof-registry` | `register_proof` | Registration is a silent state change; only revocation is announced, via `proof_revoked`. |
 
 ## Topic naming
 

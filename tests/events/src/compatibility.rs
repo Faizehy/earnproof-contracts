@@ -9,7 +9,7 @@
 //! the fixtures usable as a compatibility contract for indexers rather than
 //! documentation that happened to be true once.
 
-use crate::harness::{hash, read_events, Deployment, ObservedEvent};
+use crate::harness::{hash, read_events, Deployment, ObservedEvent, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 
@@ -21,15 +21,9 @@ use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     // protocol-config
     ("initialized", &["admin"]),
-    (
-        "admin_transfer_nominated",
-        &["pending_admin", "nominated_by"],
-    ),
+    ("admin_transfer_nominated", &["pending_admin", "nominated_by"]),
     ("admin_transfer_accepted", &["new_admin"]),
-    (
-        "admin_transfer_cancelled",
-        &["pending_admin", "cancelled_by"],
-    ),
+    ("admin_transfer_cancelled", &["pending_admin", "cancelled_by"]),
     ("paused", &["paused"]),
     ("unpaused", &["paused"]),
     ("schema_approved", &["version"]),
@@ -42,37 +36,91 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "issuer_address",
             "metadata_hash",
+            "metadata_uri_hash",
+            "metadata_revision",
             "provenance_commitment",
             "created_at",
+            "epoch",
         ],
     ),
     (
         "issuer_metadata_updated",
-        &["issuer_id_hash", "metadata_hash", "updated_at"],
+        &[
+            "issuer_id_hash",
+            "metadata_hash",
+            "metadata_uri_hash",
+            "metadata_revision",
+            "updated_at",
+            "epoch",
+        ],
     ),
     (
         "issuer_suspended",
-        &["issuer_id_hash", "updated_at", "reason_commitment"],
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "reason_commitment",
+            "updated_at",
+            "epoch",
+        ],
     ),
     (
         "issuer_reactivated",
-        &["issuer_id_hash", "updated_at", "reason_commitment"],
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "reason_commitment",
+            "updated_at",
+            "epoch",
+        ],
     ),
     (
         "issuer_revoked",
-        &["issuer_id_hash", "reason_commitment", "updated_at"],
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "reason_commitment",
+            "updated_at",
+            "epoch",
+        ],
     ),
     (
         "issuer_address_rotated",
-        &["issuer_id_hash", "old_address", "new_address", "updated_at"],
+        &[
+            "issuer_id_hash",
+            "old_address",
+            "new_address",
+            "updated_at",
+            "epoch",
+        ],
     ),
     // proof-registry
     (
+        "proof_registered",
+        &[
+            "proof_id_hash",
+            "issuer_address",
+            "schema_version",
+            "created_ledger",
+            "created_at",
+            "expires_at",
+            "epoch",
+        ],
+    ),
+    (
         "proof_revoked",
-        &["proof_id_hash", "revoked_at", "revoked_ledger", "by_admin"],
+        &[
+            "proof_id_hash",
+            "revoked_at",
+            "revoked_ledger",
+            "by_admin",
+            "epoch",
+        ],
     ),
 ];
-
 /// Looks up the declared payload fields for a topic.
 fn declared_fields(topic: &str) -> &'static [&'static str] {
     DECLARED_EVENTS
@@ -237,6 +285,16 @@ fn issuer_registry_events_match_their_fixtures() {
 fn proof_registry_events_match_their_fixtures() {
     let deployment = Deployment::new();
 
+    let _registered = deployment.register_proof(0x20);
+    // Registration and both revocation paths must stay aligned with the
+    // published fixture fields.
+    let registration_events = read_events(&deployment.env);
+    let registered_event = registration_events
+        .iter()
+        .find(|event| event.is(&deployment.env, "proof_registered"))
+        .expect("register_proof must emit proof_registered");
+    assert_matches_fixture(&deployment.env, registered_event);
+
     let issuer_revoked = deployment.register_proof(0x21);
     for event in deployment.capture(|| deployment.proofs.revoke_proof(&issuer_revoked)) {
         assert_matches_fixture(&deployment.env, &event);
@@ -278,21 +336,12 @@ fn every_declared_event_names_at_least_one_payload_field() {
 }
 
 #[test]
-fn proof_registry_declares_the_revocation_event() {
-    // proof-registry announces exactly one event: proof_revoked. Its fixture at
-    // tests/fixtures/events/proof-registry/v1/proof-revoked.json and docs/events.md
-    // must stay in step with this declaration.
+fn proof_registry_declares_registration_and_revocation_events() {
     let proof_events: std::vec::Vec<&str> = DECLARED_EVENTS
         .iter()
         .map(|(name, _)| *name)
         .filter(|name| name.starts_with("proof_"))
         .collect();
 
-    assert_eq!(
-        proof_events,
-        std::vec!["proof_revoked"],
-        "proof-registry declares only proof_revoked; \
-         update tests/fixtures/events/proof-registry/v1/ and docs/events.md \
-         before declaring another"
-    );
+    assert_eq!(proof_events, std::vec!["proof_registered", "proof_revoked"]);
 }

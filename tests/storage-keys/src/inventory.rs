@@ -154,7 +154,13 @@ fn lookup_helpers_agree_with_the_inventory() {
         namespaces_for("issuer-registry", StorageClass::Persistent).collect();
     assert_eq!(
         persistent,
-        std::vec!["AddressIssuer", "AddressTtl", "Issuer", "IssuerTtl"]
+        std::vec![
+            "AddressIssuer",
+            "AddressTtl",
+            "Issuer",
+            "IssuerTtl",
+            "ReactivatableAt"
+        ]
     );
 
     let instance: std::vec::Vec<&str> =
@@ -165,9 +171,11 @@ fn lookup_helpers_agree_with_the_inventory() {
             "Admin",
             "ContractVersion",
             "Decommissioned",
+            "Genesis",
             "IssuerRegistry",
             "MigrationStatus",
             "ProtocolConfig",
+            "RegistryEpoch",
             "Successor"
         ]
     );

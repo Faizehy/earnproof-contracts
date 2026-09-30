@@ -40,13 +40,16 @@ mod tests {
     // Protocol Config thresholds
     const PROTOCOL_INIT_CPU_MAX: u64 = 300_000;
     const PROTOCOL_INIT_MEM_MAX: u64 = 100_000;
-    // Includes the two fixed-size incident metadata writes added to pause.
-    const PROTOCOL_PAUSE_CPU_MAX: u64 = 230_000;
-    const PROTOCOL_PAUSE_MEM_MAX: u64 = 80_000;
-    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 200_000;
+    // Includes the two fixed-size incident metadata writes added to pause,
+    // plus one bounded change-history ring append (issue #193).
+    const PROTOCOL_PAUSE_CPU_MAX: u64 = 300_000;
+    const PROTOCOL_PAUSE_MEM_MAX: u64 = 90_000;
+    // Includes one bounded change-history ring append (issue #193).
+    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 250_000;
     const PROTOCOL_MIGRATION_STEP_MEM_MAX: u64 = 80_000;
-    const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 250_000;
-    const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 90_000;
+    // Includes one bounded change-history ring append (issue #193).
+    const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 335_000;
+    const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 100_000;
     // Worst-case bounded batch schema status query: a full
     // MAX_SCHEMA_STATUS_BATCH of approved versions, each requiring a persistent
     // read. Thresholds include ~20% headroom over the measured baseline.

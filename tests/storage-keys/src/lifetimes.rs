@@ -99,26 +99,29 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     let deployment = exercised_deployment();
     let env = &deployment.env;
 
-    // Three issuers, each with a record and a reverse-index entry. The rotated
+    // Four issuers, each with a record and a reverse-index entry. The rotated
     // address replaces the old index entry rather than adding to it, so the
-    // count is twelve including one TTL tracker for every record and reverse
-    // index; the rotated address and its tracker replace their old entries.
+    // three baseline issuers account for twelve entries including TTL trackers;
+    // the deliberately suspended fourth issuer adds its record, reverse index,
+    // both TTL trackers, and the reactivation deadline.
     assert_eq!(
         keys_in(env, &deployment.issuers_id, StorageClass::Persistent).len(),
-        12
+        17
     );
 
-    // Two proofs, one of them revoked in place.
+    // Three proofs (one revoked in place, one registered with a payload) plus
+    // one payload-metadata entry for the payload-bearing registration.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        2
+        4
     );
 
-    // Three schema versions, one SchemaPredecessor link, one scoped pause,
-    // and two approved proof types.
+    // Three schema versions, one predecessor link, two approved proof types,
+    // one schema payload limit, one scoped pause, and ten bounded config-history
+    // ring entries for the governance mutations exercised below.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        7
+        18
     );
 }
 

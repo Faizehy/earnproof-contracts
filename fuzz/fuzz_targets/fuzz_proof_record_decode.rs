@@ -106,6 +106,13 @@ fuzz_target!(|data: &[u8]| {
         None
     };
 
+    // Parse created_ledger after the optional proof_type bytes.
+    let created_ledger = if data.len() >= 129 {
+        u32::from_be_bytes([data[125], data[126], data[127], data[128]])
+    } else {
+        1
+    };
+
     // Construct the ProofRecord - this should never panic or cause undefined behavior
     let _proof = ProofRecord {
         proof_id_hash,
@@ -119,6 +126,7 @@ fuzz_target!(|data: &[u8]| {
         revoked_at,
         proof_type,
         revoked_ledger: 0,
+        created_ledger,
     };
 
     // Verify invariants (test should not reach here if invariants are violated)

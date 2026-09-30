@@ -49,6 +49,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
         ),
         (
             "ContractError",
+            "IncompatibleInterfaceVersion",
+            ContractError::IncompatibleInterfaceVersion as u32
+        ),
+        (
+            "ContractError",
             "ProtocolPaused",
             ContractError::ProtocolPaused as u32
         ),
@@ -91,6 +96,26 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "IssuerError",
             "BatchTooLarge",
             IssuerError::BatchTooLarge as u32
+        ),
+        (
+            "IssuerError",
+            "MaxBelowActiveUsage",
+            IssuerError::MaxBelowActiveUsage as u32
+        ),
+        (
+            "IssuerError",
+            "ReactivationCooldownActive",
+            IssuerError::ReactivationCooldownActive as u32
+        ),
+        (
+            "IssuerError",
+            "IssuerCapacityExceeded",
+            IssuerError::IssuerCapacityExceeded as u32
+        ),
+        (
+            "IssuerError",
+            "InvalidMetadataCommitment",
+            IssuerError::InvalidMetadataCommitment as u32
         ),
         (
             "ProofError",
