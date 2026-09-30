@@ -270,17 +270,143 @@ fn rotate_issuer_address_emits_both_old_and_new_address() {
 }
 
 // ─── proof-registry ─────────────────────────────────────────────────────────
+//
+// proof-registry used to emit nothing (tracked as the known gap in
+// docs/events.md and issue #3). Exposing the registry epoch through typed
+// events, as required by issue #187, closes that gap for register_proof and
+// revoke_proof/admin_revoke_proof: each now publishes exactly one event
+// carrying the epoch it advanced to, matching the "at most one event per
+// invocation" rule the rest of this workspace follows.
 
 #[test]
-fn proof_registry_emits_no_events_as_documented() {
-    // `tests/fixtures/events/proof-registry/v1/events.json` records that this
-    // contract publishes nothing. That is the "unless explicitly documented
-    // otherwise" case, and it is asserted rather than assumed: an indexer that
-    // waited for a ProofRegistered event would wait forever, and this test is
-    // what makes that a deliberate, visible decision.
+fn register_proof_emits_proof_registered_with_the_advanced_epoch() {
     let deployment = Deployment::new();
+    let epoch_before = deployment.proofs.get_registry_epoch();
+    let proof_id = hash(&deployment.env, 0x11);
+    let expires_at = deployment.env.ledger().timestamp() + 100_000;
+
     let events = deployment.capture(|| {
-        let proof_id = deployment.register_proof(0x11);
+        deployment.proofs.register_proof(
+            &proof_id,
+            &hash(&deployment.env, 0xEE),
+            &deployment.issuer,
+            &APPROVED_SCHEMA,
+            &expires_at,
+        );
+    });
+
+    let event = expect_single(&deployment.env, &events, "proof_registered");
+    let announced_id: BytesN<32> = event
+        .field(&deployment.env, "proof_id_hash")
+        .expect("proof_registered event must carry proof_id_hash");
+    let announced_epoch: u32 = event
+        .field(&deployment.env, "epoch")
+        .expect("proof_registered event must carry epoch");
+
+    assert_eq!(announced_id, proof_id);
+    assert_eq!(announced_epoch, epoch_before + 1);
+    assert_eq!(deployment.proofs.get_registry_epoch(), epoch_before + 1);
+}
+
+#[test]
+fn revoke_proof_emits_proof_revoked_with_the_advanced_epoch() {
+    let deployment = Deployment::new();
+    let proof_id = deployment.register_proof(0x21);
+    let epoch_before = deployment.proofs.get_registry_epoch();
+
+    let events = deployment.capture(|| {
+        deployment.proofs.revoke_proof(&proof_id);
+    });
+
+    let event = expect_single(&deployment.env, &events, "proof_revoked");
+    let announced_id: BytesN<32> = event
+        .field(&deployment.env, "proof_id_hash")
+        .expect("proof_revoked event must carry proof_id_hash");
+    let by_admin: bool = event
+        .field(&deployment.env, "by_admin")
+        .expect("proof_revoked event must carry by_admin");
+    let announced_epoch: u32 = event
+        .field(&deployment.env, "epoch")
+        .expect("proof_revoked event must carry epoch");
+
+    assert_eq!(announced_id, proof_id);
+    assert!(!by_admin);
+    assert_eq!(announced_epoch, epoch_before + 1);
+}
+
+#[test]
+fn admin_revoke_proof_emits_proof_revoked_with_by_admin_true() {
+    let deployment = Deployment::new();
+    let proof_id = deployment.register_proof(0x22);
+
+    let events = deployment.capture(|| {
+        deployment.proofs.admin_revoke_proof(&proof_id);
+    });
+
+    let event = expect_single(&deployment.env, &events, "proof_revoked");
+    let by_admin: bool = event
+        .field(&deployment.env, "by_admin")
+        .expect("proof_revoked event must carry by_admin");
+    assert!(by_admin);
+}
+
+#[test]
+fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
+    let deployment = Deployment::new();
+    deployment.config.pause();
+    let epoch_before = deployment.proofs.get_registry_epoch();
+    let expires_at = deployment.env.ledger().timestamp() + 100_000;
+
+    let events = deployment.capture(|| {
+        let _ = deployment.proofs.try_register_proof(
+            &hash(&deployment.env, 0x31),
+            &hash(&deployment.env, 0x32),
+            &deployment.issuer,
+            &APPROVED_SCHEMA,
+            &expires_at,
+        );
+    });
+
+    assert!(events.is_empty(), "a rejected call must publish nothing");
+    assert_eq!(
+        deployment.proofs.get_registry_epoch(),
+        epoch_before,
+        "a rejected call must not advance the registry epoch"
+    );
+}
+
+#[test]
+fn proof_registry_emits_proof_registered_on_registration() {
+    // proof-registry publishes exactly one `proof_registered` event on a
+    // successful registration, carrying the on-chain creation timing so an
+    // indexer can record deterministic audit timestamps.
+    let deployment = Deployment::new();
+
+    let register_events = deployment.capture(|| {
+        deployment.register_proof(0x11);
+    });
+    let from_registration: std::vec::Vec<_> = register_events
+        .iter()
+        .filter(|event| event.contract == deployment.proofs.address)
+        .collect();
+    assert_eq!(
+        from_registration.len(),
+        1,
+        "registration must emit exactly one proof-registry event"
+    );
+    assert!(
+        from_registration[0].is(&deployment.env, "proof_registered"),
+        "the registration event must be proof_registered"
+    );
+}
+
+#[test]
+fn proof_registry_revocation_emits_proof_revoked() {
+    // Revocation is the one proof-registry event: it carries the effective
+    // revocation timing so verifiers learn when a proof became invalid.
+    let deployment = Deployment::new();
+    let proof_id = deployment.register_proof(0x11);
+    let events = deployment.capture(|| {
         deployment.proofs.admin_revoke_proof(&proof_id);
     });
     let from_proof_registry: std::vec::Vec<_> = events
@@ -288,10 +414,13 @@ fn proof_registry_emits_no_events_as_documented() {
         .filter(|event| event.contract == deployment.proofs.address)
         .collect();
 
+    assert_eq!(
+        from_proof_registry.len(),
+        1,
+        "revocation must publish exactly one proof-registry event"
+    );
     assert!(
-        from_proof_registry.is_empty(),
-        "proof-registry is documented as emitting no events; \
-         adding one requires updating tests/fixtures/events/proof-registry/ \
-         and docs/events.md"
+        from_proof_registry[0].is(&deployment.env, "proof_revoked"),
+        "the revocation event is published under the topic proof_revoked"
     );
 }

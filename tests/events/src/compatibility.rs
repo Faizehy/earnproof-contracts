@@ -9,7 +9,7 @@
 //! the fixtures usable as a compatibility contract for indexers rather than
 //! documentation that happened to be true once.
 
-use crate::harness::{hash, read_events, Deployment, ObservedEvent};
+use crate::harness::{hash, read_events, Deployment, ObservedEvent, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 
@@ -34,6 +34,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     ("unpaused", &["paused"]),
     ("schema_approved", &["version"]),
     ("schema_deprecated", &["version"]),
+    ("schema_predecessor_set", &["version", "predecessor"]),
     // issuer-registry
     (
         "issuer_registered",
@@ -41,29 +42,89 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "issuer_address",
             "metadata_hash",
+            "metadata_uri_hash",
+            "metadata_revision",
             "provenance_commitment",
             "created_at",
+            "epoch",
         ],
     ),
     (
         "issuer_metadata_updated",
-        &["issuer_id_hash", "metadata_hash", "updated_at"],
+        &[
+            "issuer_id_hash",
+            "metadata_hash",
+            "metadata_uri_hash",
+            "metadata_revision",
+            "updated_at",
+            "epoch",
+        ],
     ),
     (
         "issuer_suspended",
-        &["issuer_id_hash", "reason_commitment", "updated_at"],
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "reason_commitment",
+            "updated_at",
+            "epoch",
+        ],
     ),
     (
         "issuer_reactivated",
-        &["issuer_id_hash", "reason_commitment", "updated_at"],
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "reason_commitment",
+            "updated_at",
+            "epoch",
+        ],
     ),
     (
         "issuer_revoked",
-        &["issuer_id_hash", "reason_commitment", "updated_at"],
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "reason_commitment",
+            "updated_at",
+            "epoch",
+        ],
     ),
     (
         "issuer_address_rotated",
-        &["issuer_id_hash", "old_address", "new_address", "updated_at"],
+        &[
+            "issuer_id_hash",
+            "old_address",
+            "new_address",
+            "updated_at",
+            "epoch",
+        ],
+    ),
+    // proof-registry
+    (
+        "proof_registered",
+        &[
+            "proof_id_hash",
+            "issuer_address",
+            "schema_version",
+            "created_ledger",
+            "created_at",
+            "expires_at",
+            "epoch",
+        ],
+    ),
+    (
+        "proof_revoked",
+        &[
+            "proof_id_hash",
+            "revoked_at",
+            "revoked_ledger",
+            "by_admin",
+            "epoch",
+        ],
     ),
 ];
 
@@ -137,6 +198,11 @@ fn protocol_config_events_match_their_fixtures() {
     for event in deployment.capture(|| deployment.config.deprecate_schema_version(&4)) {
         assert_matches_fixture(&deployment.env, &event);
     }
+    // Schema lineage emits both the predecessor link and schema approval events.
+    for event in deployment.capture(|| deployment.config.approve_schema_with_predecessor(&9, &1)) {
+        assert_matches_fixture(&deployment.env, &event);
+    }
+    // Preserve the two-step administrator handoff and both of its event records.
     for event in deployment.capture(|| {
         deployment.config.nominate_admin(&successor);
         deployment.config.accept_admin()
@@ -223,6 +289,21 @@ fn issuer_registry_events_match_their_fixtures() {
 }
 
 #[test]
+fn proof_registry_events_match_their_fixtures() {
+    let deployment = Deployment::new();
+
+    let issuer_revoked = deployment.register_proof(0x21);
+    for event in deployment.capture(|| deployment.proofs.revoke_proof(&issuer_revoked)) {
+        assert_matches_fixture(&deployment.env, &event);
+    }
+
+    let admin_revoked = deployment.register_proof(0x22);
+    for event in deployment.capture(|| deployment.proofs.admin_revoke_proof(&admin_revoked)) {
+        assert_matches_fixture(&deployment.env, &event);
+    }
+}
+
+#[test]
 fn the_declared_event_set_has_no_duplicates() {
     // Two entries for one topic would make `declared_fields` return whichever
     // came first, silently weakening every assertion that depends on it.
@@ -252,18 +333,18 @@ fn every_declared_event_names_at_least_one_payload_field() {
 }
 
 #[test]
-fn proof_registry_declares_no_events() {
-    // The fixture at tests/fixtures/events/proof-registry/v1/events.json records
-    // an empty event list. Adding an event to this contract must therefore fail
-    // here first, forcing the fixture and docs/events.md to be updated with it.
-    let emitted_by_proof_registry = DECLARED_EVENTS
+fn proof_registry_declares_registration_and_revocation_events() {
+    let proof_events: std::vec::Vec<&str> = DECLARED_EVENTS
         .iter()
-        .any(|(name, _)| name.starts_with("proof_"));
+        .map(|(name, _)| *name)
+        .filter(|name| name.starts_with("proof_"))
+        .collect();
 
-    assert!(
-        !emitted_by_proof_registry,
-        "proof-registry is documented as emitting no events; \
-         update tests/fixtures/events/proof-registry/v1/events.json and \
-         docs/events.md before declaring one here"
+    assert_eq!(
+        proof_events,
+        std::vec!["proof_registered", "proof_revoked"],
+        "proof-registry registration and revocation fixtures and docs/events.md \
+         update tests/fixtures/events/proof-registry/v1/ and docs/events.md \
+         must track both event declarations"
     );
 }

@@ -99,11 +99,11 @@ fuzz_target!(|data: &[u8]| {
         0
     };
 
-    // Parse proof_type (Optional BytesN<32>, bytes 93-125)
-    let proof_type = if data.len() >= 125 {
-        BytesN::<32>::try_from(Bytes::from_slice(&env, &data[93..125])).ok()
+    // Parse created_ledger (u32, bytes 93-97, big-endian) when available.
+    let created_ledger = if data.len() > 96 {
+        u32::from_be_bytes([data[93], data[94], data[95], data[96]])
     } else {
-        None
+        1
     };
 
     // Construct the ProofRecord - this should never panic or cause undefined behavior
@@ -117,6 +117,8 @@ fuzz_target!(|data: &[u8]| {
         created_at,
         revoked_at,
         proof_type,
+        revoked_ledger: 0,
+        created_ledger,
     };
 
     // Verify invariants (test should not reach here if invariants are violated)

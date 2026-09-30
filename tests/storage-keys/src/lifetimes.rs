@@ -108,16 +108,18 @@ fn per_record_namespaces_hold_one_entry_per_record() {
         12
     );
 
-    // Two proofs, one of them revoked in place.
+    // Three proofs (one revoked in place, one registered with a payload) plus
+    // one payload-metadata entry for the payload-bearing registration.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        2
+        4
     );
 
-    // Two schema versions, one scoped pause, two approved proof types.
+    // Schema history, type approvals, payload limits, and bounded governance
+    // history all use independent persistent keys.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        5
+        17
     );
 }
 

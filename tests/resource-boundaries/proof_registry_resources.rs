@@ -41,7 +41,6 @@ mod proof_registry_resource_tests {
 
         protocol_config_client.initialize(&admin);
         protocol_config_client.approve_schema_version(&1);
-        protocol_config_client.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
         issuer_registry_client.initialize(&admin);
         issuer_registry_client.register_issuer(&issuer_id, &issuer, &bytes(&env, 8));
         client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
@@ -65,7 +64,7 @@ mod proof_registry_resource_tests {
 
         env.budget().reset_default();
 
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
         let record = client.get_proof(&proof_id);
 
         assert_eq!(record.proof_id_hash, proof_id);
@@ -94,7 +93,7 @@ mod proof_registry_resource_tests {
         let commitment = bytes(&env, 2);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
 
         env.budget().reset_default();
         let is_valid = client.is_valid_proof(&proof_id);
@@ -114,7 +113,7 @@ mod proof_registry_resource_tests {
         let commitment = bytes(&env, 2);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
 
         env.budget().reset_default();
         client.revoke_proof(&proof_id);
@@ -136,7 +135,7 @@ mod proof_registry_resource_tests {
         let commitment = bytes(&env, 2);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
 
         env.budget().reset_default();
         client.admin_revoke_proof(&proof_id);
@@ -160,11 +159,11 @@ mod proof_registry_resource_tests {
         let commitment2 = bytes(&env, 3);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &commitment1, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id, &commitment1, &issuer, &1, &2_000);
 
         // Attempt duplicate proof_id
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&proof_id, &commitment2, &issuer, &1, &3_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+            client.register_proof(&proof_id, &commitment2, &issuer, &1, &3_000);
         }));
 
         assert!(
@@ -185,7 +184,7 @@ mod proof_registry_resource_tests {
 
         // Try to register with unapproved schema version
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&proof_id, &commitment, &issuer, &999, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+            client.register_proof(&proof_id, &commitment, &issuer, &999, &2_000);
         }));
 
         assert!(
@@ -206,7 +205,7 @@ mod proof_registry_resource_tests {
 
         // Try to register with past expiration timestamp
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&proof_id, &commitment, &issuer, &1, &0, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+            client.register_proof(&proof_id, &commitment, &issuer, &1, &0);
         }));
 
         assert!(
@@ -228,7 +227,7 @@ mod proof_registry_resource_tests {
         // Register inactive issuer (not in issuer registry)
         // Try to register proof with non-existent issuer
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&proof_id, &commitment, &inactive_issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+            client.register_proof(&proof_id, &commitment, &inactive_issuer, &1, &2_000);
         }));
 
         assert!(
@@ -247,11 +246,11 @@ mod proof_registry_resource_tests {
         let commitment = bytes(&env, 2);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
 
         // Attempt duplicate (will fail on proof_id check)
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+            client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
         }));
 
         if result.is_err() {
@@ -282,7 +281,7 @@ mod proof_registry_resource_tests {
         let proof_id1 = bytes(&env, 10);
         let commitment1 = bytes(&env, 11);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id1, &commitment1, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id1, &commitment1, &issuer, &1, &2_000);
 
         let cpu_first = env.budget().cpu_instruction_count();
         println!("[resource] register_proof(v=1) [cross-contract]: cpu={}", cpu_first);
@@ -291,7 +290,7 @@ mod proof_registry_resource_tests {
         env.budget().reset_default();
         let proof_id2 = bytes(&env, 20);
         let commitment2 = bytes(&env, 21);
-        client.register_proof(&proof_id2, &commitment2, &issuer, &2, &3_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id2, &commitment2, &issuer, &2, &3_000);
 
         let cpu_second = env.budget().cpu_instruction_count();
         println!("[resource] register_proof(v=2) [cross-contract]: cpu={}", cpu_second);
@@ -321,7 +320,7 @@ mod proof_registry_resource_tests {
 
             // Skip if duplicate
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                client.register_proof(&proof_id, &commitment, &issuer, &1, &(2_000 + i as u64), &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+                client.register_proof(&proof_id, &commitment, &issuer, &1, &(2_000 + i as u64));
             }));
 
             if result.is_err() {
@@ -358,7 +357,7 @@ mod proof_registry_resource_tests {
             let commitment = bytes(&env, ((i + 1) % 256) as u8);
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                client.register_proof(&proof_id, &commitment, &issuer, &1, &(2_000 + i as u64), &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+                client.register_proof(&proof_id, &commitment, &issuer, &1, &(2_000 + i as u64));
             }));
 
             if result.is_err() {
@@ -420,7 +419,6 @@ mod proof_registry_resource_tests {
 
         protocol_config_client2.initialize(&admin);
         protocol_config_client2.approve_schema_version(&1);
-        protocol_config_client2.approve_proof_type(&soroban_sdk::BytesN::from_array(&env2, &[1; 32]));
         issuer_registry_client2.initialize(&admin);
         issuer_registry_client2.register_issuer(&issuer_id2, &issuer2, &bytes(&env2, 8));
 
@@ -437,7 +435,7 @@ mod proof_registry_resource_tests {
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
         env.budget().reset_default();
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
         println!("  - register_proof(): cpu={}", env.budget().cpu_instruction_count());
 
         // Operation 4: get_proof
@@ -458,7 +456,7 @@ mod proof_registry_resource_tests {
         // Operation 7: Register another for admin_revoke
         let proof_id2 = bytes(&env, 10);
         let commitment2 = bytes(&env, 11);
-        client.register_proof(&proof_id2, &commitment2, &issuer, &1, &3_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id2, &commitment2, &issuer, &1, &3_000);
 
         env.budget().reset_default();
         client.admin_revoke_proof(&proof_id2);
@@ -496,7 +494,7 @@ mod proof_registry_resource_tests {
         env.budget().reset_default();
         let proof_id = bytes(&env, 50);
         let commitment = bytes(&env, 51);
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
 
         let cpu_first_proof = env.budget().cpu_instruction_count();
         println!(
@@ -508,7 +506,7 @@ mod proof_registry_resource_tests {
         env.budget().reset_default();
         let proof_id2 = bytes(&env, 60);
         let commitment2 = bytes(&env, 61);
-        client.register_proof(&proof_id2, &commitment2, &issuer, &1, &3_000, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        client.register_proof(&proof_id2, &commitment2, &issuer, &1, &3_000);
 
         let cpu_second_proof = env.budget().cpu_instruction_count();
         println!(

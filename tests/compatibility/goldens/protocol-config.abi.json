@@ -103,49 +103,6 @@
       "note": "Returns false if version == 0; extends TTL on read"
     },
     {
-      "name": "keepalive_proof_type",
-      "inputs": [
-        { "name": "env", "type": "Env" },
-        { "name": "proof_type", "type": "BytesN<32>" }
-      ],
-      "output": "bool",
-      "access": "public",
-      "auth": "none"
-    },
-    {
-      "name": "approve_proof_type",
-      "inputs": [
-        { "name": "env", "type": "Env" },
-        { "name": "proof_type", "type": "BytesN<32>" }
-      ],
-      "output": "Result<(), ContractError>",
-      "access": "public",
-      "auth": "admin_only",
-      "effects": "bumps ConfigVersion, emits ProofTypeApprovedEvent"
-    },
-    {
-      "name": "deprecate_proof_type",
-      "inputs": [
-        { "name": "env", "type": "Env" },
-        { "name": "proof_type", "type": "BytesN<32>" }
-      ],
-      "output": "Result<(), ContractError>",
-      "access": "public",
-      "auth": "admin_only",
-      "effects": "bumps ConfigVersion, emits ProofTypeDeprecatedEvent"
-    },
-    {
-      "name": "is_proof_type_approved",
-      "inputs": [
-        { "name": "env", "type": "Env" },
-        { "name": "proof_type", "type": "BytesN<32>" }
-      ],
-      "output": "bool",
-      "access": "public",
-      "auth": "none",
-      "note": "Extends TTL on read"
-    },
-    {
       "name": "get_config_version",
       "inputs": [
         { "name": "env", "type": "Env" }
@@ -221,9 +178,8 @@
         { "name": "Paused", "discriminant": 1, "storage_tier": "instance", "value_type": "bool" },
         { "name": "ConfigVersion", "discriminant": 2, "storage_tier": "instance", "value_type": "u32" },
         { "name": "SchemaVersion", "discriminant": 3, "storage_tier": "persistent", "value_type": "bool", "note": "Maps u32 version to approval status" },
-        { "name": "ProofTypeApproved", "discriminant": 4, "storage_tier": "persistent", "value_type": "bool", "note": "Maps BytesN<32> to approval status" },
-        { "name": "AllowedWasm", "discriminant": 5, "storage_tier": "instance", "value_type": "u32", "note": "Maps BytesN<32> to target ContractVersion" },
-        { "name": "ContractVersion", "discriminant": 6, "storage_tier": "instance", "value_type": "u32", "note": "Monotonic counter; prevents downgrade" }
+        { "name": "AllowedWasm", "discriminant": 4, "storage_tier": "instance", "value_type": "u32", "note": "Maps BytesN<32> to target ContractVersion" },
+        { "name": "ContractVersion", "discriminant": 5, "storage_tier": "instance", "value_type": "u32", "note": "Monotonic counter; prevents downgrade" }
       ]
     }
   ],
@@ -264,16 +220,6 @@
       "name": "SchemaDeprecated",
       "data_type": "{ version: u32 }",
       "when": "deprecate_schema_version() succeeds"
-    },
-    {
-      "name": "ProofTypeApprovedEvent",
-      "data_type": "{ proof_type: BytesN<32> }",
-      "when": "approve_proof_type() succeeds"
-    },
-    {
-      "name": "ProofTypeDeprecatedEvent",
-      "data_type": "{ proof_type: BytesN<32> }",
-      "when": "deprecate_proof_type() succeeds"
     },
     {
       "name": "UpgradeAllowlisted",
@@ -330,14 +276,6 @@
       "ttl": "extends via extend_schema_ttl(version, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS)"
     },
     {
-      "key": "DataKey::ProofTypeApproved(BytesN<32>)",
-      "tier": "persistent",
-      "value_type": "bool",
-      "access": "is_proof_type_approved(proof_type), keepalive_proof_type(proof_type)",
-      "mutated_by": "approve_proof_type(), deprecate_proof_type()",
-      "ttl": "extends via extend_proof_type_ttl()"
-    },
-    {
       "key": "DataKey::AllowedWasm(BytesN<32>)",
       "tier": "instance",
       "value_type": "u32",
@@ -358,8 +296,8 @@
   ],
 
   "ttl_constants": {
-    "TTL_THRESHOLD_LEDGERS": 50000,
-    "TTL_EXTEND_TO_LEDGERS": 500000,
+    "TTL_THRESHOLD_LEDGERS": 50_000,
+    "TTL_EXTEND_TO_LEDGERS": 500_000,
     "source": "earnproof-shared/src/lib.rs"
   },
 

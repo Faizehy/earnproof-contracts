@@ -65,10 +65,6 @@ pub fn schema_version_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaVersion"), version)
 }
 
-pub fn proof_type_approved_key(env: &Env, proof_type: &BytesN<32>) -> (Symbol, BytesN<32>) {
-    (Symbol::new(env, "ProofTypeApproved"), proof_type.clone())
-}
-
 #[allow(dead_code)]
 pub fn schema_record_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaRecord"), version)
@@ -87,6 +83,10 @@ pub fn issuer_registry_version_key(env: &Env) -> (Symbol,) {
 #[allow(dead_code)]
 pub fn schema_ttl_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaTtl"), version)
+}
+
+pub fn schema_predecessor_key(env: &Env, version: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaPredecessor"), version)
 }
 
 pub fn issuer_registry_key(env: &Env) -> (Symbol,) {
@@ -115,6 +115,33 @@ pub fn address_ttl_key(env: &Env, address: &Address) -> (Symbol, Address) {
 
 pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
+}
+
+pub fn genesis_key() -> (Symbol,) {
+    (symbol_short!("Genesis"),)
+}
+
+pub fn registry_epoch_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "RegistryEpoch"),)
+}
+
+#[allow(dead_code)]
+pub fn proof_payload_meta_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofPayloadMeta"), id.clone())
+}
+
+#[allow(dead_code)]
+pub fn schema_payload_limit_key(env: &Env, version: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaPayloadLimit"), version)
+}
+
+pub fn config_history_total_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "ConfigHistoryTotal"),)
+}
+
+#[allow(dead_code)]
+pub fn config_history_ring_key(env: &Env, slot: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "ConfigHistoryRing"), slot)
 }
 
 #[allow(dead_code)]
@@ -197,6 +224,8 @@ pub fn deployment() -> Deployment {
     config.initialize(&admin);
     config.approve_schema_version(&1);
     config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+    // Approve a successor version so the SchemaPredecessor namespace is written.
+    config.approve_schema_with_predecessor(&2, &1);
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -239,6 +268,7 @@ pub fn exercised_deployment() -> Deployment {
     let rotated_issuer = Address::generate(&env);
     let suspended_issuer = Address::generate(&env);
     let revoked_issuer = Address::generate(&env);
+    let held_suspended_issuer = Address::generate(&env);
     let issuer_id = bytes32(&env, 1);
     let proof_id = bytes32(&env, 5);
 
@@ -247,9 +277,12 @@ pub fn exercised_deployment() -> Deployment {
     config.initialize(&admin);
     config.approve_schema_version(&1);
     config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
-    config.approve_schema_version(&2);
     config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[2; 32]));
+    config.approve_schema_version(&2);
     config.deprecate_schema_version(&2);
+    // Approve a successor with a lineage link so SchemaPredecessor is exercised.
+    config.approve_schema_with_predecessor(&3, &1);
+    config.set_schema_payload_limit(&1, &2_048);
     config.pause();
     config.unpause();
     config.nominate_admin(&rotated_admin);
@@ -306,6 +339,15 @@ pub fn exercised_deployment() -> Deployment {
         &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
     );
     proofs.revoke_proof(&bytes32(&env, 7));
+    proofs.register_proof_with_payload(
+        &bytes32(&env, 9),
+        &bytes32(&env, 10),
+        &rotated_issuer,
+        &1,
+        &1_000_000,
+        &soroban_sdk::BytesN::from_array(&env, &[2; 32]),
+        &Bytes::from_array(&env, &[0xAB; 8]),
+    );
     config.pause();
 
     config.begin_migration(&2, &1);

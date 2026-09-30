@@ -196,7 +196,6 @@ fn cross_contract_rejection_publishes_nothing_from_either_contract() {
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
         );
     });
 
@@ -230,6 +229,7 @@ const FORBIDDEN_FIELDS: &[&str] = &[
     "signature",
     "key",
     "seed",
+    "commitment",
 ];
 
 /// Asserts that no payload field name resembles protected data.

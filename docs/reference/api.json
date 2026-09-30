@@ -6,11 +6,55 @@
       "contract": "issuer-registry",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
-      "name": "approve_upgrade",
-      "parameters": "env: Env, wasm_hash: BytesN<32>, new_version: u32",
-      "result": "()",
+      "name": "activate_successor",
+      "parameters": "env: Env",
+      "result": "Result<(), IssuerError>",
       "source": "contracts/issuer-registry/src/lib.rs",
       "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "advance_migration",
+      "parameters": "env: Env, expected_cursor: u32, processed_items: u32,",
+      "result": "Result<MigrationStatus, ContractError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "approve_upgrade",
+      "parameters": "env: Env, wasm_hash: BytesN<32>, new_version: u32,",
+      "result": "Result<(), ContractError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "begin_migration",
+      "parameters": "env: Env, target_contract_version: u32, total_items: u32,",
+      "result": "Result<MigrationStatus, ContractError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_address_ttl_status",
+      "parameters": "env: Env, issuer_address: Address",
+      "result": "TtlStatus",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
     },
     {
       "authorization": "none",
@@ -28,9 +72,53 @@
       "contract": "issuer-registry",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_config_digest",
+      "parameters": "env: Env",
+      "result": "Result<BytesN<32>, ContractError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_config_digest_version",
+      "parameters": "",
+      "result": "u32",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "get_contract_version",
       "parameters": "env: Env",
       "result": "u32",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_genesis",
+      "parameters": "env: Env",
+      "result": "Result<GenesisRecord, ContractError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_instance_ttl_status",
+      "parameters": "env: Env",
+      "result": "TtlStatus",
       "source": "contracts/issuer-registry/src/lib.rs",
       "storage_effect": "read-only"
     },
@@ -53,6 +141,61 @@
       "name": "get_issuer_by_address",
       "parameters": "env: Env, issuer_address: Address,",
       "result": "Result<IssuerRecord, IssuerError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_issuer_ttl_status",
+      "parameters": "env: Env, issuer_id_hash: BytesN<32>",
+      "result": "TtlStatus",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_latest_upgrade_receipt",
+      "parameters": "env: Env",
+      "result": "Option<UpgradeReceipt>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_migration_status",
+      "parameters": "env: Env",
+      "result": "Option<MigrationStatus>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_provenance_commitment",
+      "parameters": "env: Env, issuer_id_hash: BytesN<32>,",
+      "result": "Result<BytesN<32>, IssuerError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_successor",
+      "parameters": "env: Env",
+      "result": "Option<Address>",
       "source": "contracts/issuer-registry/src/lib.rs",
       "storage_effect": "read-only"
     },
@@ -94,11 +237,66 @@
       "contract": "issuer-registry",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "is_decommissioned",
+      "parameters": "env: Env",
+      "result": "bool",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "is_upgrade_allowed",
       "parameters": "env: Env, wasm_hash: BytesN<32>",
       "result": "bool",
       "source": "contracts/issuer-registry/src/lib.rs",
       "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "keepalive_address_issuer",
+      "parameters": "env: Env, issuer_address: Address",
+      "result": "bool",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "keepalive_instance",
+      "parameters": "env: Env",
+      "result": "bool",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "keepalive_issuer",
+      "parameters": "env: Env, issuer_id_hash: BytesN<32>",
+      "result": "bool",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "nominate_successor",
+      "parameters": "env: Env, successor: Address",
+      "result": "Result<(), IssuerError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
     },
     {
       "authorization": "current admin",
@@ -116,8 +314,19 @@
       "contract": "issuer-registry",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "refresh_instance_ttl",
+      "parameters": "env: Env",
+      "result": "Result<TtlStatus, ContractError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "register_issuer",
-      "parameters": "env: Env, issuer_id_hash: BytesN<32>, issuer_address: Address, metadata_hash: BytesN<32>,",
+      "parameters": "env: Env, issuer_id_hash: BytesN<32>, issuer_address: Address, metadata_hash: BytesN<32>, provenance_commitment: BytesN<32>,",
       "result": "Result<(), IssuerError>",
       "source": "contracts/issuer-registry/src/lib.rs",
       "storage_effect": "documented in lifecycle specification"
@@ -140,7 +349,18 @@
       "failure_atomicity": "Soroban invocation rollback",
       "name": "revoke_upgrade",
       "parameters": "env: Env, wasm_hash: BytesN<32>",
-      "result": "()",
+      "result": "Result<(), ContractError>",
+      "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "issuer-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "revoke_upgrade_approval",
+      "parameters": "env: Env",
+      "result": "Result<(), ContractError>",
       "source": "contracts/issuer-registry/src/lib.rs",
       "storage_effect": "documented in lifecycle specification"
     },
@@ -183,9 +403,20 @@
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
       "name": "upgrade_contract",
-      "parameters": "env: Env, wasm_hash: BytesN<32>",
-      "result": "()",
+      "parameters": "env: Env, wasm_hash: BytesN<32>, new_version: u32,",
+      "result": "Result<(), ContractError>",
       "source": "contracts/issuer-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "activate_successor",
+      "parameters": "env: Env",
+      "result": "Result<(), ProofError>",
+      "source": "contracts/proof-registry/src/lib.rs",
       "storage_effect": "documented in lifecycle specification"
     },
     {
@@ -204,9 +435,31 @@
       "contract": "proof-registry",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "advance_migration",
+      "parameters": "env: Env, expected_cursor: u32, processed_items: u32,",
+      "result": "Result<MigrationStatus, ContractError>",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "approve_upgrade",
       "parameters": "env: Env, wasm_hash: BytesN<32>, new_version: u32",
       "result": "()",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "begin_migration",
+      "parameters": "env: Env, target_contract_version: u32, total_items: u32,",
+      "result": "Result<MigrationStatus, ContractError>",
       "source": "contracts/proof-registry/src/lib.rs",
       "storage_effect": "documented in lifecycle specification"
     },
@@ -233,6 +486,17 @@
       "storage_effect": "read-only"
     },
     {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_genesis",
+      "parameters": "env: Env",
+      "result": "Result<GenesisRecord, ContractError>",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
       "authorization": "none",
       "contract": "proof-registry",
       "event_effect": "none unless documented in lifecycle specification",
@@ -244,6 +508,17 @@
       "storage_effect": "read-only"
     },
     {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_migration_status",
+      "parameters": "env: Env",
+      "result": "Option<MigrationStatus>",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
       "authorization": "none",
       "contract": "proof-registry",
       "event_effect": "none unless documented in lifecycle specification",
@@ -251,6 +526,17 @@
       "name": "get_proof",
       "parameters": "env: Env, proof_id_hash: BytesN<32>",
       "result": "Result<ProofRecord, ProofError>",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_proof_payload",
+      "parameters": "env: Env, proof_id_hash: BytesN<32>,",
+      "result": "Result<ProofPayloadRecord, ProofError>",
       "source": "contracts/proof-registry/src/lib.rs",
       "storage_effect": "read-only"
     },
@@ -270,11 +556,44 @@
       "contract": "proof-registry",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_registry_epoch",
+      "parameters": "env: Env",
+      "result": "u32",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_successor",
+      "parameters": "env: Env",
+      "result": "Option<Address>",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "initialize",
       "parameters": "env: Env, admin: Address, issuer_registry: Address, protocol_config: Address,",
       "result": "Result<(), ContractError>",
       "source": "contracts/proof-registry/src/lib.rs",
       "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "is_decommissioned",
+      "parameters": "env: Env",
+      "result": "bool",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "read-only"
     },
     {
       "authorization": "none",
@@ -314,8 +633,52 @@
       "contract": "proof-registry",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "keepalive_instance",
+      "parameters": "env: Env",
+      "result": "bool",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "keepalive_proof",
+      "parameters": "env: Env, proof_id_hash: BytesN<32>",
+      "result": "bool",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "nominate_successor",
+      "parameters": "env: Env, successor: Address",
+      "result": "Result<(), ProofError>",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "register_proof",
       "parameters": "env: Env, proof_id_hash: BytesN<32>, commitment_hash: BytesN<32>, issuer_address: Address, schema_version: u32, expires_at: u64,",
+      "result": "Result<(), ProofError>",
+      "source": "contracts/proof-registry/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "proof-registry",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "register_proof_with_payload",
+      "parameters": "env: Env, proof_id_hash: BytesN<32>, commitment_hash: BytesN<32>, issuer_address: Address, schema_version: u32, expires_at: u64, payload: Bytes,",
       "result": "Result<(), ProofError>",
       "source": "contracts/proof-registry/src/lib.rs",
       "storage_effect": "documented in lifecycle specification"
@@ -358,6 +721,28 @@
       "contract": "protocol-config",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "activate_successor",
+      "parameters": "env: Env",
+      "result": "Result<(), ContractError>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "advance_migration",
+      "parameters": "env: Env, expected_cursor: u32, processed_items: u32,",
+      "result": "Result<MigrationStatus, ContractError>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "approve_schema_version",
       "parameters": "env: Env, version: u32",
       "result": "Result<(), ContractError>",
@@ -380,6 +765,17 @@
       "contract": "protocol-config",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "begin_migration",
+      "parameters": "env: Env, target_contract_version: u32, total_items: u32,",
+      "result": "Result<MigrationStatus, ContractError>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "deprecate_schema_version",
       "parameters": "env: Env, version: u32",
       "result": "Result<(), ContractError>",
@@ -394,6 +790,28 @@
       "name": "get_admin",
       "parameters": "env: Env",
       "result": "Result<Address, ContractError>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_config_history",
+      "parameters": "env: Env, cursor: u32, limit: u32",
+      "result": "Vec<ConfigChangeSummary>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_config_history_cursor",
+      "parameters": "env: Env",
+      "result": "u32",
       "source": "contracts/protocol-config/src/lib.rs",
       "storage_effect": "read-only"
     },
@@ -424,11 +842,66 @@
       "contract": "protocol-config",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_genesis",
+      "parameters": "env: Env",
+      "result": "Result<GenesisRecord, ContractError>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_migration_status",
+      "parameters": "env: Env",
+      "result": "Option<MigrationStatus>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_schema_payload_limit",
+      "parameters": "env: Env, version: u32",
+      "result": "u32",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "get_successor",
+      "parameters": "env: Env",
+      "result": "Option<Address>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "initialize",
       "parameters": "env: Env, admin: Address",
       "result": "Result<(), ContractError>",
       "source": "contracts/protocol-config/src/lib.rs",
       "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "is_decommissioned",
+      "parameters": "env: Env",
+      "result": "bool",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "read-only"
     },
     {
       "authorization": "none",
@@ -457,11 +930,55 @@
       "contract": "protocol-config",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "is_scope_paused",
+      "parameters": "env: Env, scope: PauseScope",
+      "result": "bool",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "is_upgrade_allowed",
       "parameters": "env: Env, wasm_hash: BytesN<32>",
       "result": "bool",
       "source": "contracts/protocol-config/src/lib.rs",
       "storage_effect": "read-only"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "keepalive_instance",
+      "parameters": "env: Env",
+      "result": "bool",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "keepalive_schema_version",
+      "parameters": "env: Env, version: u32",
+      "result": "bool",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "nominate_successor",
+      "parameters": "env: Env, successor: Address",
+      "result": "Result<(), ContractError>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
     },
     {
       "authorization": "current admin",
@@ -501,6 +1018,28 @@
       "contract": "protocol-config",
       "event_effect": "none unless documented in lifecycle specification",
       "failure_atomicity": "Soroban invocation rollback",
+      "name": "set_schema_payload_limit",
+      "parameters": "env: Env, version: u32, max_size: u32,",
+      "result": "Result<(), ContractError>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
+      "name": "set_scoped_pause",
+      "parameters": "env: Env, scope: PauseScope, paused: bool,",
+      "result": "Result<(), ContractError>",
+      "source": "contracts/protocol-config/src/lib.rs",
+      "storage_effect": "documented in lifecycle specification"
+    },
+    {
+      "authorization": "current admin",
+      "contract": "protocol-config",
+      "event_effect": "none unless documented in lifecycle specification",
+      "failure_atomicity": "Soroban invocation rollback",
       "name": "unpause",
       "parameters": "env: Env",
       "result": "Result<(), ContractError>",
@@ -531,7 +1070,12 @@
         "InvalidState",
         "InvalidInput",
         "InvalidAddress",
-        "ProtocolPaused"
+        "ProtocolPaused",
+        "NoUpgradeApproval",
+        "UpgradeTimelockNotElapsed",
+        "UpgradeApprovalExpired",
+        "WasmHashMismatch",
+        "InvalidTimingConfig"
       ]
     },
     {
@@ -556,7 +1100,11 @@
         "ProofExpired",
         "InvalidSchemaVersion",
         "SchemaVersionNotApproved",
-        "InvalidAddress"
+        "InvalidAddress",
+        "ContractPaused",
+        "IssuerInactive",
+        "UnsupportedSchema",
+        "MalformedInput"
       ]
     }
   ],
@@ -584,6 +1132,22 @@
     {
       "contract": "protocol-config",
       "name": "SchemaDeprecated"
+    },
+    {
+      "contract": "protocol-config",
+      "name": "ScopedPauseChanged"
+    },
+    {
+      "contract": "protocol-config",
+      "name": "SuccessorNominated"
+    },
+    {
+      "contract": "protocol-config",
+      "name": "ContractDecommissioned"
+    },
+    {
+      "contract": "protocol-config",
+      "name": "SchemaPayloadLimitSet"
     },
     {
       "contract": "protocol-config",
@@ -634,6 +1198,14 @@
       "name": "IssuerAddressRotated"
     },
     {
+      "contract": "issuer-registry",
+      "name": "SuccessorNominated"
+    },
+    {
+      "contract": "issuer-registry",
+      "name": "ContractDecommissioned"
+    },
+    {
       "contract": "proof-registry",
       "name": "UpgradeAllowlisted"
     },
@@ -644,6 +1216,26 @@
     {
       "contract": "proof-registry",
       "name": "ContractUpgraded"
+    },
+    {
+      "contract": "proof-registry",
+      "name": "SuccessorNominated"
+    },
+    {
+      "contract": "proof-registry",
+      "name": "ContractDecommissioned"
+    },
+    {
+      "contract": "proof-registry",
+      "name": "ProofRegistered"
+    },
+    {
+      "contract": "proof-registry",
+      "name": "ProofRegisteredWithPayload"
+    },
+    {
+      "contract": "proof-registry",
+      "name": "ProofRevoked"
     }
   ],
   "format_version": 1,

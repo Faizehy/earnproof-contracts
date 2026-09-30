@@ -61,7 +61,6 @@ impl Deployment {
             &self.issuer,
             &SCHEMA_VERSION,
             &expires_at,
-            &soroban_sdk::BytesN::from_array(&self.env, &[1; 32]),
         );
         proof_id
     }
@@ -135,7 +134,6 @@ pub fn deployment() -> Deployment {
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&SCHEMA_VERSION);
-    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);

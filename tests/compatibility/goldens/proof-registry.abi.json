@@ -35,8 +35,7 @@
         { "name": "commitment_hash", "type": "BytesN<32>" },
         { "name": "issuer_address", "type": "Address" },
         { "name": "schema_version", "type": "u32" },
-        { "name": "expires_at", "type": "u64" },
-        { "name": "proof_type", "type": "BytesN<32>" }
+        { "name": "expires_at", "type": "u64" }
       ],
       "output": "Result<(), ProofError>",
       "access": "public",
@@ -216,8 +215,7 @@
         { "name": "schema_version", "type": "u32" },
         { "name": "expires_at", "type": "u64" },
         { "name": "created_at", "type": "u64" },
-        { "name": "revoked_at", "type": "u64" },
-        { "name": "proof_type", "type": "Option<BytesN<32>>" }
+        { "name": "revoked_at", "type": "u64" }
       ]
     },
     {
@@ -238,9 +236,7 @@
     { "name": "ProofExpired", "code": 303, "category": "domain", "shared": true },
     { "name": "InvalidSchemaVersion", "code": 304, "category": "domain", "shared": true, "note": "Overloaded: schema_version == 0, protocol paused, issuer inactive" },
     { "name": "SchemaVersionNotApproved", "code": 305, "category": "domain", "shared": true },
-    { "name": "InvalidAddress", "code": 306, "category": "domain", "shared": true },
-    { "name": "MalformedInput", "code": 310, "category": "validation", "shared": true },
-    { "name": "UnsupportedProofType", "code": 311, "category": "domain", "shared": true }
+    { "name": "InvalidAddress", "code": 306, "category": "domain", "shared": true }
   ],
 
   "events": [
@@ -336,8 +332,8 @@
   ],
 
   "ttl_constants": {
-    "TTL_THRESHOLD_LEDGERS": 50000,
-    "TTL_EXTEND_TO_LEDGERS": 500000,
+    "TTL_THRESHOLD_LEDGERS": 50_000,
+    "TTL_EXTEND_TO_LEDGERS": 500_000,
     "source": "earnproof-shared/src/lib.rs"
   },
 

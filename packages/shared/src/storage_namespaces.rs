@@ -49,7 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 28] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 36] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "AddressIssuer",
@@ -89,6 +89,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 28] = [
         class: StorageClass::Instance,
         value: "bool",
         owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "Genesis",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "GenesisRecord",
+        owner: "deployment operator",
     },
     StorageNamespace {
         contract: "issuer-registry",
@@ -156,6 +164,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 28] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "Genesis",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "GenesisRecord",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "IssuerRegistry",
         arity: 0,
         class: StorageClass::Instance,
@@ -180,10 +196,26 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 28] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "ProofPayloadMeta",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "ProofPayloadRecord",
+        owner: "issuing party",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "ProtocolConfig",
         arity: 0,
         class: StorageClass::Instance,
         value: "Address",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "RegistryEpoch",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
         owner: "deployment operator",
     },
     StorageNamespace {
@@ -200,6 +232,22 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 28] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "Address",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "ConfigHistoryRing",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "ConfigChangeSummary",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "ConfigHistoryTotal",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
         owner: "protocol operator",
     },
     StorageNamespace {
@@ -228,6 +276,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 28] = [
     },
     StorageNamespace {
         contract: "protocol-config",
+        namespace: "Genesis",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "GenesisRecord",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
         namespace: "MigrationStatus",
         arity: 0,
         class: StorageClass::Instance,
@@ -244,10 +300,26 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 28] = [
     },
     StorageNamespace {
         contract: "protocol-config",
+        namespace: "SchemaPayloadLimit",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
         namespace: "ProofTypeApproved",
         arity: 1,
         class: StorageClass::Persistent,
         value: "bool",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SchemaPredecessor",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
         owner: "protocol operator",
     },
     StorageNamespace {

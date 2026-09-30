@@ -1,10 +1,15 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, MigrationStatus, PauseScope, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
+    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, MigrationStatus,
+    PauseScope, SchemaStatusResult, SchemaVersionState, CONFIG_HISTORY_CAPACITY,
+    DEFAULT_SCHEMA_PAYLOAD_LIMIT, MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH,
+    MIGRATION_STATUS_VERSION, MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH,
     TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
+use soroban_sdk::{
+    contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Vec,
+};
 
 #[contract]
 pub struct ProtocolConfigContract;
@@ -19,6 +24,10 @@ enum DataKey {
     SchemaVersion(u32),
     ProofTypeApproved(BytesN<32>),
     PendingAdmin,
+    /// Optional lineage link: maps an approved schema version to the prior
+    /// version it intentionally succeeds. Absent for root (predecessor-less) and
+    /// legacy schemas.
+    SchemaPredecessor(u32),
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
     AllowedWasm(BytesN<32>),
@@ -27,6 +36,14 @@ enum DataKey {
     ContractVersion,
     Successor,
     Decommissioned,
+    /// Immutable deployment identity, written once at `initialize`.
+    Genesis,
+    /// Governed per-schema-version auxiliary payload size bound (bytes).
+    SchemaPayloadLimit(u32),
+    /// Ring-buffer slot holding one bounded change-history summary.
+    ConfigHistoryRing(u32),
+    /// Monotonic count of change-history entries ever appended.
+    ConfigHistoryTotal,
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -109,6 +126,22 @@ pub struct ContractDecommissioned {
     pub activated_by: Address,
 }
 
+/// Emitted when an approved schema version records the prior version it
+/// intentionally succeeds, so off-chain consumers can verify schema lineage.
+#[contractevent]
+pub struct SchemaPredecessorSet {
+    pub version: u32,
+    pub predecessor: u32,
+}
+
+/// Emitted when the admin sets or updates the maximum auxiliary payload size
+/// accepted for a schema version.
+#[contractevent]
+pub struct SchemaPayloadLimitSet {
+    pub version: u32,
+    pub max_size: u32,
+}
+
 // ── upgrade events ───────────────────────────────────────────────────────────
 
 /// Emitted when the admin adds a WASM hash to the upgrade allowlist.
@@ -168,9 +201,23 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
+        let genesis = GenesisRecord {
+            genesis_id: earnproof_shared::compute_genesis_id(&env, "earnproof_protocol_config"),
+            initialized_at_ledger: env.ledger().sequence(),
+        };
+        env.storage().instance().set(&DataKey::Genesis, &genesis);
         Self::extend_instance_ttl(env.clone());
         Initialized { admin }.publish(&env);
         Ok(())
+    }
+
+    /// Returns the immutable genesis identity recorded at `initialize`.
+    /// Unchanged across upgrades and storage migrations.
+    pub fn get_genesis(env: Env) -> Result<GenesisRecord, ContractError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Genesis)
+            .ok_or(ContractError::NotInitialized)
     }
 
     pub fn get_admin(env: Env) -> Result<Address, ContractError> {
@@ -180,6 +227,12 @@ impl ProtocolConfigContract {
             .ok_or(ContractError::NotInitialized)
     }
 
+    /// Machine-readable interface version this contract exposes to consumers.
+    pub fn interface_version(_env: Env) -> InterfaceVersion {
+        PROTOCOL_CONFIG_INTERFACE_VERSION
+    }
+
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
@@ -212,6 +265,12 @@ impl ProtocolConfigContract {
         env.storage().instance().remove(&DataKey::PendingAdmin);
 
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::AdminRotation,
+            Self::commit(&env, new_admin.clone()),
+        );
+        AdminChanged { new_admin }.publish(&env);
 
         AdminTransferAccepted {
             new_admin: pending_admin,
@@ -253,6 +312,11 @@ impl ProtocolConfigContract {
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &true);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::PauseToggle,
+            Self::commit(&env, true),
+        );
         Paused { paused: true }.publish(&env);
         Ok(())
     }
@@ -263,6 +327,11 @@ impl ProtocolConfigContract {
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &false);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::PauseToggle,
+            Self::commit(&env, false),
+        );
         Unpaused { paused: false }.publish(&env);
         Ok(())
     }
@@ -279,6 +348,11 @@ impl ProtocolConfigContract {
             .persistent()
             .set(&DataKey::ScopedPause(scope), &paused);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::ScopedPause,
+            Self::commit(&env, (scope, paused)),
+        );
         ScopedPauseChanged { scope, paused }.publish(&env);
         Ok(())
     }
@@ -379,8 +453,130 @@ impl ProtocolConfigContract {
             .set(&DataKey::SchemaVersion(version), &true);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaApproval,
+            Self::commit(&env, version),
+        );
         SchemaApproved { version }.publish(&env);
         Ok(())
+    }
+
+    /// Approves `version` and records `predecessor` as the prior schema version
+    /// it intentionally succeeds.
+    ///
+    /// A `predecessor` of `0` means the version is a lineage root — this is
+    /// equivalent to [`Self::approve_schema_version`] and records no link.
+    ///
+    /// # Validation (all before any state mutation)
+    /// - `version` must be non-zero.
+    /// - `predecessor` must not equal `version` (no self-predecessor).
+    /// - A non-zero `predecessor` must already be a known schema version
+    ///   (approved or deprecated); an unknown predecessor is rejected before
+    ///   anything is written.
+    /// - The predecessor chain must not reach back to `version` (no cycle) and
+    ///   must be no deeper than [`MAX_SCHEMA_LINEAGE_DEPTH`].
+    ///
+    /// # Immutability
+    /// A version's predecessor is fixed at activation. Re-approving a version
+    /// with the same predecessor is idempotent; supplying a different predecessor
+    /// after the version already exists is rejected with
+    /// [`ContractError::InvalidState`].
+    pub fn approve_schema_with_predecessor(
+        env: Env,
+        version: u32,
+        predecessor: u32,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+
+        if predecessor == version {
+            return Err(ContractError::InvalidInput);
+        }
+
+        // Predecessor immutability: if this version already carries a lineage
+        // link, it may not be changed once set.
+        let existing_predecessor = Self::stored_predecessor(env.clone(), version);
+        if let Some(existing) = existing_predecessor {
+            if existing != predecessor {
+                return Err(ContractError::InvalidState);
+            }
+        } else if predecessor != 0 && Self::schema_version_exists(env.clone(), version) {
+            // The version was already activated as a root; giving it a
+            // predecessor afterwards would rewrite its lineage.
+            return Err(ContractError::InvalidState);
+        }
+
+        if predecessor != 0 {
+            // Unknown predecessors fail before any state mutation.
+            if !Self::schema_version_exists(env.clone(), predecessor) {
+                return Err(ContractError::InvalidState);
+            }
+            // Reject cycles within the bounded lineage depth.
+            if Self::lineage_reaches(env.clone(), predecessor, version) {
+                return Err(ContractError::InvalidState);
+            }
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion(version), &true);
+        Self::extend_schema_ttl(env.clone(), version);
+
+        if predecessor != 0 {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SchemaPredecessor(version), &predecessor);
+            env.storage().persistent().extend_ttl(
+                &DataKey::SchemaPredecessor(version),
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+            SchemaPredecessorSet {
+                version,
+                predecessor,
+            }
+            .publish(&env);
+        }
+
+        Self::bump_config_version(env.clone());
+        SchemaApproved { version }.publish(&env);
+        Ok(())
+    }
+
+    /// Returns the recorded predecessor of `version`, or `None` for a root or
+    /// legacy schema that has no lineage link. This is a pure read and extends
+    /// no TTL.
+    pub fn get_schema_predecessor(env: Env, version: u32) -> Option<u32> {
+        Self::stored_predecessor(env, version)
+    }
+
+    /// Returns the lineage of `version` from the version itself back toward its
+    /// root, `[version, predecessor, predecessor_of_predecessor, ...]`.
+    ///
+    /// A root or legacy schema yields a single-element chain. The walk is capped
+    /// at [`MAX_SCHEMA_LINEAGE_DEPTH`] links, so it always terminates even if
+    /// storage were ever inconsistent. This is a pure read and extends no TTL.
+    pub fn get_schema_lineage(env: Env, version: u32) -> soroban_sdk::Vec<u32> {
+        let mut chain = soroban_sdk::Vec::new(&env);
+        if version == 0 {
+            return chain;
+        }
+        chain.push_back(version);
+        let mut current = version;
+        let mut depth = 0;
+        while depth < MAX_SCHEMA_LINEAGE_DEPTH {
+            match Self::stored_predecessor(env.clone(), current) {
+                Some(predecessor) => {
+                    chain.push_back(predecessor);
+                    current = predecessor;
+                    depth += 1;
+                }
+                None => break,
+            }
+        }
+        chain
     }
 
     pub fn deprecate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
@@ -393,8 +589,102 @@ impl ProtocolConfigContract {
             .set(&DataKey::SchemaVersion(version), &false);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaDeprecation,
+            Self::commit(&env, version),
+        );
         SchemaDeprecated { version }.publish(&env);
         Ok(())
+    }
+
+    /// Returns the lifecycle state of each supplied schema version, in the same
+    /// order as the request.
+    ///
+    /// This lets a client that evaluates several proof types check schema
+    /// approval and deprecation in one call instead of one query per version.
+    ///
+    /// # Bounding
+    /// The batch is rejected with [`ContractError::BatchTooLarge`] when it
+    /// carries more than [`MAX_SCHEMA_STATUS_BATCH`] versions. The check runs
+    /// before any storage read, so an oversized request cannot force unbounded
+    /// host work. An empty batch is valid and yields an empty response.
+    ///
+    /// # Duplicates and unknown versions
+    /// Input order is preserved and each occurrence produces its own entry, so a
+    /// repeated version appears once per occurrence. A version that was never
+    /// approved — including version `0` — is reported as
+    /// [`SchemaVersionState::Unknown`]; one that was approved and later withdrawn
+    /// is [`SchemaVersionState::Deprecated`], distinct from `Unknown`.
+    ///
+    /// # No side effects
+    /// This is a pure read: unlike [`Self::is_schema_version_approved`] it does
+    /// not extend any schema TTL, and it never bumps the config version, so a
+    /// caller can query freely without mutating schema TTL or governance state.
+    pub fn get_schema_statuses(
+        env: Env,
+        versions: Vec<u32>,
+    ) -> Result<Vec<SchemaStatusResult>, ContractError> {
+        if versions.len() > MAX_SCHEMA_STATUS_BATCH {
+            return Err(ContractError::BatchTooLarge);
+        }
+
+        let mut results = Vec::new(&env);
+        for version in versions.iter() {
+            let state = if version == 0 {
+                SchemaVersionState::Unknown
+            } else {
+                let key = DataKey::SchemaVersion(version);
+                // Read without extending the TTL: a status query must not touch
+                // schema lifetime or governance state.
+                match env.storage().persistent().get::<DataKey, bool>(&key) {
+                    Some(true) => SchemaVersionState::Approved,
+                    Some(false) => SchemaVersionState::Deprecated,
+                    None => SchemaVersionState::Unknown,
+                }
+            };
+            results.push_back(SchemaStatusResult { version, state });
+        }
+        Ok(results)
+    }
+
+    pub fn approve_proof_type(env: Env, proof_type: BytesN<32>) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let key = DataKey::ProofTypeApproved(proof_type.clone());
+        env.storage().persistent().set(&key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        Self::bump_config_version(env.clone());
+        ProofTypeApprovedEvent { proof_type }.publish(&env);
+        Ok(())
+    }
+
+    pub fn deprecate_proof_type(env: Env, proof_type: BytesN<32>) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let key = DataKey::ProofTypeApproved(proof_type.clone());
+        env.storage().persistent().set(&key, &false);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        Self::bump_config_version(env.clone());
+        ProofTypeDeprecatedEvent { proof_type }.publish(&env);
+        Ok(())
+    }
+
+    pub fn is_proof_type_approved(env: Env, proof_type: BytesN<32>) -> bool {
+        let key = DataKey::ProofTypeApproved(proof_type);
+        let approved = env.storage().persistent().get(&key).unwrap_or(false);
+        if env.storage().persistent().has(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        }
+        approved
     }
 
     pub fn is_schema_version_approved(env: Env, version: u32) -> bool {
@@ -414,63 +704,106 @@ impl ProtocolConfigContract {
         approved
     }
 
-    pub fn keepalive_proof_type(env: Env, proof_type: BytesN<32>) -> bool {
-        let key = DataKey::ProofTypeApproved(proof_type);
-        if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                TTL_THRESHOLD_LEDGERS,
-                TTL_EXTEND_TO_LEDGERS,
-            );
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn approve_proof_type(env: Env, proof_type: BytesN<32>) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env)?;
-        let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
-        env.storage()
-            .persistent()
-            .set(&DataKey::ProofTypeApproved(proof_type.clone()), &true);
-        Self::extend_proof_type_ttl(env.clone(), proof_type.clone());
-        Self::bump_config_version(env.clone());
-        ProofTypeApprovedEvent { proof_type }.publish(&env);
-        Ok(())
-    }
-
-    pub fn deprecate_proof_type(env: Env, proof_type: BytesN<32>) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env)?;
-        let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
-        env.storage()
-            .persistent()
-            .set(&DataKey::ProofTypeApproved(proof_type.clone()), &false);
-        Self::extend_proof_type_ttl(env.clone(), proof_type.clone());
-        Self::bump_config_version(env.clone());
-        ProofTypeDeprecatedEvent { proof_type }.publish(&env);
-        Ok(())
-    }
-
-    pub fn is_proof_type_approved(env: Env, proof_type: BytesN<32>) -> bool {
-        let key = DataKey::ProofTypeApproved(proof_type);
-        let approved = env.storage().persistent().get(&key).unwrap_or(false);
-        if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                TTL_THRESHOLD_LEDGERS,
-                TTL_EXTEND_TO_LEDGERS,
-            );
-        }
-        approved
-    }
-
     pub fn get_config_version(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&DataKey::ConfigVersion)
+            .unwrap_or(0)
+    }
+
+    // ── schema payload size limits ───────────────────────────────────────────
+
+    /// Admin-only: set the maximum auxiliary payload size (in bytes) a proof
+    /// registered under `version` may carry. Applies going forward only —
+    /// proofs already registered are never re-validated against a changed
+    /// limit.
+    pub fn set_schema_payload_limit(
+        env: Env,
+        version: u32,
+        max_size: u32,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaPayloadLimit(version), &max_size);
+        Self::extend_schema_payload_limit_ttl(env.clone(), version);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaPayloadLimit,
+            Self::commit(&env, (version, max_size)),
+        );
+        SchemaPayloadLimitSet { version, max_size }.publish(&env);
+        Ok(())
+    }
+
+    /// Returns the active payload-size bound for `version`: the governed
+    /// override if one was set, otherwise the shared default. Version `0`
+    /// always returns the default, since it can never be approved.
+    pub fn get_schema_payload_limit(env: Env, version: u32) -> u32 {
+        if version == 0 {
+            return DEFAULT_SCHEMA_PAYLOAD_LIMIT;
+        }
+        let key = DataKey::SchemaPayloadLimit(version);
+        let limit = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(DEFAULT_SCHEMA_PAYLOAD_LIMIT);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        limit
+    }
+
+    // ── bounded configuration change history ─────────────────────────────────
+
+    /// Returns up to `limit` change-history entries starting at `cursor`
+    /// (an absolute, monotonically increasing sequence number; `0` is the
+    /// very first change ever recorded).
+    ///
+    /// If `cursor` refers to an entry the ring has already evicted, the read
+    /// starts at the oldest entry still available rather than erroring — a
+    /// stale cursor is clamped forward, deterministically, instead of
+    /// panicking. `limit` is capped at `MAX_CONFIG_HISTORY_PAGE` regardless of
+    /// the requested value.
+    pub fn get_config_history(env: Env, cursor: u32, limit: u32) -> Vec<ConfigChangeSummary> {
+        let total = Self::get_config_history_cursor(env.clone());
+        let oldest_available = total.saturating_sub(CONFIG_HISTORY_CAPACITY);
+        let start = cursor.max(oldest_available);
+        let capped_limit = limit.min(MAX_CONFIG_HISTORY_PAGE);
+        let end = start.saturating_add(capped_limit).min(total);
+
+        let mut page = Vec::new(&env);
+        let mut index = start;
+        while index < end {
+            let slot = index % CONFIG_HISTORY_CAPACITY;
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<_, ConfigChangeSummary>(&DataKey::ConfigHistoryRing(slot))
+            {
+                page.push_back(entry);
+            }
+            index += 1;
+        }
+        page
+    }
+
+    /// Total number of change-history entries ever appended. Also the cursor
+    /// value a caller should pass to `get_config_history` to read only
+    /// entries recorded after the most recent page it consumed.
+    pub fn get_config_history_cursor(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ConfigHistoryTotal)
             .unwrap_or(0)
     }
 
@@ -614,6 +947,50 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
+    /// Reads a version's recorded predecessor without touching any TTL. Returns
+    /// `None` for a root or legacy schema.
+    fn stored_predecessor(env: Env, version: u32) -> Option<u32> {
+        if version == 0 {
+            return None;
+        }
+        env.storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::SchemaPredecessor(version))
+    }
+
+    /// True when a schema version has a stored record, whether currently
+    /// approved or deprecated. A deprecated version keeps its key, so it stays a
+    /// valid predecessor.
+    fn schema_version_exists(env: Env, version: u32) -> bool {
+        version != 0
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::SchemaVersion(version))
+    }
+
+    /// Walks the lineage starting at `from` and reports whether it reaches
+    /// `target` within [`MAX_SCHEMA_LINEAGE_DEPTH`] links. Used to reject a
+    /// predecessor whose own ancestry loops back to the version being approved,
+    /// and to bound how deep a lineage may grow.
+    fn lineage_reaches(env: Env, from: u32, target: u32) -> bool {
+        let mut current = from;
+        let mut depth = 0;
+        while current != 0 {
+            if current == target {
+                return true;
+            }
+            if depth >= MAX_SCHEMA_LINEAGE_DEPTH {
+                // Treat an over-deep chain as reaching the target so the new
+                // link is rejected rather than extending an unbounded lineage.
+                return true;
+            }
+            current = Self::stored_predecessor(env.clone(), current).unwrap_or(0);
+            depth += 1;
+        }
+        false
+    }
+
     fn require_valid_principal(address: &Address) -> Result<(), ContractError> {
         if !earnproof_shared::is_valid_principal_address(address) {
             return Err(ContractError::InvalidInput);
@@ -646,12 +1023,54 @@ impl ProtocolConfigContract {
         );
     }
 
-    fn extend_proof_type_ttl(env: Env, proof_type: BytesN<32>) {
+    fn extend_schema_payload_limit_ttl(env: Env, version: u32) {
         env.storage().persistent().extend_ttl(
-            &DataKey::ProofTypeApproved(proof_type),
+            &DataKey::SchemaPayloadLimit(version),
             TTL_THRESHOLD_LEDGERS,
             TTL_EXTEND_TO_LEDGERS,
         );
+    }
+
+    /// SHA-256 commitment to an arbitrary XDR-encodable value. Used so
+    /// change-history entries carry proof of what changed without carrying
+    /// the value itself.
+    fn commit<T: ToXdr>(env: &Env, value: T) -> BytesN<32> {
+        env.crypto().sha256(&value.to_xdr(env)).to_bytes()
+    }
+
+    /// Appends one bounded change-history entry, overwriting the oldest slot
+    /// once the ring is full. Only called from a success path, after the
+    /// state it summarizes has already been committed, so a failed mutation
+    /// never appends.
+    fn append_config_history(
+        env: Env,
+        category: ConfigChangeCategory,
+        proposal_commitment: BytesN<32>,
+    ) {
+        let total = Self::get_config_history_cursor(env.clone());
+        let slot = total % CONFIG_HISTORY_CAPACITY;
+        let summary = ConfigChangeSummary {
+            category,
+            proposal_commitment,
+            config_version: Self::get_config_version(env.clone()),
+            ledger: env.ledger().sequence(),
+            timestamp: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ConfigHistoryRing(slot), &summary);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ConfigHistoryRing(slot),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        let next_total = total
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("config history overflow: reached maximum"));
+        env.storage()
+            .instance()
+            .set(&DataKey::ConfigHistoryTotal, &next_total);
+        Self::extend_instance_ttl(env);
     }
 
     pub fn get_migration_status(env: Env) -> Option<MigrationStatus> {
@@ -739,8 +1158,14 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
-    use earnproof_shared::TTL_THRESHOLD_LEDGERS;
-    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
+    use earnproof_shared::{
+        ConfigChangeCategory, ContractError, SchemaStatusResult, SchemaVersionState,
+        MAX_SCHEMA_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
+    };
+    use soroban_sdk::{
+        testutils::{storage::Persistent as _, Ledger as _},
+        vec, Address, BytesN, Env, Vec,
+    };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const OTHER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -760,6 +1185,14 @@ mod test {
     }
 
     // ── existing tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn exposes_a_stable_interface_version() {
+        let (_env, client, _admin) = setup();
+        let version = client.interface_version();
+        assert_eq!(version, earnproof_shared::PROTOCOL_CONFIG_INTERFACE_VERSION);
+        assert_eq!(version.major, 1);
+    }
 
     #[test]
     fn initializes_config_defaults() {
@@ -820,6 +1253,261 @@ mod test {
                     > TTL_THRESHOLD_LEDGERS
             );
         });
+    }
+
+    // ── bounded batch schema status query tests ───────────────────────────────
+
+    #[test]
+    fn batch_schema_status_reports_states_in_request_order() {
+        let (env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        client.approve_schema_version(&2);
+        client.deprecate_schema_version(&2);
+        // Version 3 is never approved; version 0 is always unknown.
+
+        let request = vec![&env, 3u32, 2u32, 1u32, 0u32];
+        let results = client.get_schema_statuses(&request);
+
+        let expected = vec![
+            &env,
+            SchemaStatusResult {
+                version: 3,
+                state: SchemaVersionState::Unknown,
+            },
+            SchemaStatusResult {
+                version: 2,
+                state: SchemaVersionState::Deprecated,
+            },
+            SchemaStatusResult {
+                version: 1,
+                state: SchemaVersionState::Approved,
+            },
+            SchemaStatusResult {
+                version: 0,
+                state: SchemaVersionState::Unknown,
+            },
+        ];
+        assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn batch_schema_status_preserves_duplicate_versions() {
+        let (env, client, _admin) = setup();
+        client.approve_schema_version(&5);
+
+        let request = vec![&env, 5u32, 5u32, 5u32];
+        let results = client.get_schema_statuses(&request);
+
+        assert_eq!(results.len(), 3);
+        for entry in results.iter() {
+            assert_eq!(entry.version, 5);
+            assert_eq!(entry.state, SchemaVersionState::Approved);
+        }
+    }
+
+    #[test]
+    fn batch_schema_status_empty_request_returns_empty_response() {
+        let (env, client, _admin) = setup();
+        let request: Vec<u32> = Vec::new(&env);
+        let results = client.get_schema_statuses(&request);
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn batch_schema_status_at_maximum_is_accepted() {
+        let (env, client, _admin) = setup();
+        let mut request: Vec<u32> = Vec::new(&env);
+        for version in 1..=MAX_SCHEMA_STATUS_BATCH {
+            request.push_back(version);
+        }
+        let results = client.get_schema_statuses(&request);
+        assert_eq!(results.len(), MAX_SCHEMA_STATUS_BATCH);
+        for entry in results.iter() {
+            assert_eq!(entry.state, SchemaVersionState::Unknown);
+        }
+    }
+
+    #[test]
+    fn batch_schema_status_over_maximum_is_rejected_before_reads() {
+        let (env, client, _admin) = setup();
+        let mut request: Vec<u32> = Vec::new(&env);
+        for version in 1..=(MAX_SCHEMA_STATUS_BATCH + 1) {
+            request.push_back(version);
+        }
+        let result = client.try_get_schema_statuses(&request);
+        assert_eq!(result, Err(Ok(ContractError::BatchTooLarge)));
+    }
+
+    #[test]
+    fn batch_schema_status_does_not_mutate_ttl_or_governance() {
+        let (env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+
+        // Advance the ledger until the schema entry's remaining TTL drops below
+        // the extension threshold, so that any accidental extension would be
+        // observable as the TTL jumping back up.
+        env.ledger().set_sequence_number(460_000);
+
+        let ttl_before = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::SchemaVersion(1))
+        });
+        assert!(ttl_before < TTL_THRESHOLD_LEDGERS);
+        let config_version_before = client.get_config_version();
+
+        let request = vec![&env, 1u32];
+        let results = client.get_schema_statuses(&request);
+        assert_eq!(results.get(0).unwrap().state, SchemaVersionState::Approved);
+
+        let ttl_after = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::SchemaVersion(1))
+        });
+        // The query neither extended the schema TTL nor bumped governance state.
+        assert_eq!(ttl_after, ttl_before);
+        assert_eq!(client.get_config_version(), config_version_before);
+    }
+
+    // ── schema lineage and predecessor tests ──────────────────────────────────
+
+    #[test]
+    fn root_approval_records_no_predecessor() {
+        let (env, client, _admin) = setup();
+        client.approve_schema_with_predecessor(&1, &0);
+
+        assert!(client.is_schema_version_approved(&1));
+        assert_eq!(client.get_schema_predecessor(&1), None);
+        assert_eq!(client.get_schema_lineage(&1), vec![&env, 1u32]);
+    }
+
+    #[test]
+    fn successor_records_link_and_lineage_chain() {
+        let (env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        client.approve_schema_with_predecessor(&2, &1);
+        client.approve_schema_with_predecessor(&3, &2);
+
+        assert_eq!(client.get_schema_predecessor(&2), Some(1));
+        assert_eq!(client.get_schema_predecessor(&3), Some(2));
+        assert_eq!(client.get_schema_lineage(&3), vec![&env, 3u32, 2u32, 1u32]);
+        assert_eq!(client.get_schema_lineage(&2), vec![&env, 2u32, 1u32]);
+    }
+
+    #[test]
+    fn legacy_schema_is_queryable_without_a_predecessor() {
+        let (env, client, _admin) = setup();
+        // Approved through the predecessor-unaware entry point.
+        client.approve_schema_version(&5);
+
+        assert_eq!(client.get_schema_predecessor(&5), None);
+        assert_eq!(client.get_schema_lineage(&5), vec![&env, 5u32]);
+    }
+
+    #[test]
+    fn unknown_predecessor_is_rejected_before_state_mutation() {
+        let (_env, client, _admin) = setup();
+        let result = client.try_approve_schema_with_predecessor(&2, &99);
+        assert_eq!(result, Err(Ok(ContractError::InvalidState)));
+        // No mutation: the version was not approved and records no lineage.
+        assert!(!client.is_schema_version_approved(&2));
+        assert_eq!(client.get_schema_predecessor(&2), None);
+    }
+
+    #[test]
+    fn self_predecessor_is_rejected() {
+        let (_env, client, _admin) = setup();
+        let result = client.try_approve_schema_with_predecessor(&4, &4);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+        assert!(!client.is_schema_version_approved(&4));
+    }
+
+    #[test]
+    fn predecessor_is_immutable_after_activation() {
+        let (_env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        client.approve_schema_version(&2);
+        client.approve_schema_with_predecessor(&3, &1);
+
+        // Re-approving with the same predecessor is idempotent.
+        client.approve_schema_with_predecessor(&3, &1);
+        assert_eq!(client.get_schema_predecessor(&3), Some(1));
+
+        // Changing the predecessor after activation is rejected.
+        let changed = client.try_approve_schema_with_predecessor(&3, &2);
+        assert_eq!(changed, Err(Ok(ContractError::InvalidState)));
+        assert_eq!(client.get_schema_predecessor(&3), Some(1));
+    }
+
+    #[test]
+    fn a_root_cannot_gain_a_predecessor_after_activation() {
+        let (_env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        client.approve_schema_version(&2);
+
+        // Version 2 was activated as a root; it cannot be given a predecessor.
+        let result = client.try_approve_schema_with_predecessor(&2, &1);
+        assert_eq!(result, Err(Ok(ContractError::InvalidState)));
+        assert_eq!(client.get_schema_predecessor(&2), None);
+    }
+
+    #[test]
+    fn back_edge_that_would_form_a_cycle_is_rejected() {
+        let (_env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        client.approve_schema_with_predecessor(&2, &1);
+
+        // Pointing 1 back at 2 would close a cycle 1 -> 2 -> 1; it is rejected,
+        // and the existing lineage is left intact.
+        let result = client.try_approve_schema_with_predecessor(&1, &2);
+        assert_eq!(result, Err(Ok(ContractError::InvalidState)));
+        assert_eq!(client.get_schema_predecessor(&1), None);
+        assert_eq!(client.get_schema_predecessor(&2), Some(1));
+    }
+
+    #[test]
+    fn a_deprecated_schema_remains_a_valid_predecessor() {
+        let (env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        client.deprecate_schema_version(&1);
+
+        // A withdrawn version keeps its record, so a migration can still succeed
+        // it explicitly.
+        client.approve_schema_with_predecessor(&2, &1);
+        assert_eq!(client.get_schema_predecessor(&2), Some(1));
+        assert_eq!(client.get_schema_lineage(&2), vec![&env, 2u32, 1u32]);
+    }
+
+    #[test]
+    fn lineage_depth_is_bounded() {
+        use earnproof_shared::MAX_SCHEMA_LINEAGE_DEPTH;
+        let (_env, client, _admin) = setup();
+
+        // Build the deepest chain the rules allow: version 1 as root, then a
+        // successor for every additional allowed link.
+        client.approve_schema_version(&1);
+        for version in 2..=(MAX_SCHEMA_LINEAGE_DEPTH + 1) {
+            client.approve_schema_with_predecessor(&version, &(version - 1));
+        }
+
+        // One link past the bound is rejected rather than extending an
+        // unbounded lineage.
+        let too_deep = MAX_SCHEMA_LINEAGE_DEPTH + 2;
+        let result =
+            client.try_approve_schema_with_predecessor(&too_deep, &(MAX_SCHEMA_LINEAGE_DEPTH + 1));
+        assert_eq!(result, Err(Ok(ContractError::InvalidState)));
+        assert!(!client.is_schema_version_approved(&too_deep));
+    }
+
+    #[test]
+    fn lineage_query_of_unknown_version_is_empty_or_singleton() {
+        let (env, client, _admin) = setup();
+        // Version 0 is never a schema; its lineage is empty.
+        assert_eq!(client.get_schema_lineage(&0), Vec::<u32>::new(&env));
+        // An unknown non-zero version has only itself and no predecessor.
+        assert_eq!(client.get_schema_lineage(&7), vec![&env, 7u32]);
+        assert_eq!(client.get_schema_predecessor(&7), None);
     }
 
     // ── upgrade governance tests ──────────────────────────────────────────────
@@ -1542,5 +2230,253 @@ mod test {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    // ── genesis identity (issue #192) ────────────────────────────────────────
+
+    #[test]
+    fn genesis_is_recorded_at_initialization() {
+        let (env, client, _admin) = setup();
+        let genesis = client.get_genesis();
+        assert_ne!(genesis.genesis_id, BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(genesis.initialized_at_ledger, env.ledger().sequence());
+    }
+
+    #[test]
+    fn genesis_id_is_deterministic_for_the_same_inputs() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::from_str(&env, ADMIN);
+
+        let one = env.register(ProtocolConfigContract, ());
+        let one = ProtocolConfigContractClient::new(&env, &one);
+        one.initialize(&admin);
+
+        // Recomputing from the same env/contract address/domain must be
+        // stable, since the identifier is a pure function of those inputs.
+        let recomputed = env.as_contract(&one.address, || {
+            earnproof_shared::compute_genesis_id(&env, "earnproof_protocol_config")
+        });
+        assert_eq!(one.get_genesis().genesis_id, recomputed);
+    }
+
+    #[test]
+    fn genesis_id_differs_across_contract_instances() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::from_str(&env, ADMIN);
+
+        let a = env.register(ProtocolConfigContract, ());
+        let a = ProtocolConfigContractClient::new(&env, &a);
+        a.initialize(&admin);
+
+        let b = env.register(ProtocolConfigContract, ());
+        let b = ProtocolConfigContractClient::new(&env, &b);
+        b.initialize(&admin);
+
+        // Different contract addresses (different instances) must never share
+        // an identity, even with the same admin and the same domain.
+        assert_ne!(a.get_genesis().genesis_id, b.get_genesis().genesis_id);
+    }
+
+    #[test]
+    fn genesis_is_unchanged_across_an_upgrade() {
+        let (env, client, _admin) = setup();
+        let genesis_before = client.get_genesis();
+
+        let hash = bytes(&env, 0x55);
+        client.approve_upgrade(&hash, &2);
+        client.upgrade_contract(&hash);
+
+        assert_eq!(client.get_genesis(), genesis_before);
+    }
+
+    #[test]
+    fn get_genesis_fails_before_initialization() {
+        let env = Env::default();
+        let contract_id = env.register(ProtocolConfigContract, ());
+        let client = ProtocolConfigContractClient::new(&env, &contract_id);
+        use earnproof_shared::ContractError;
+
+        let result = client.try_get_genesis();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    // ── schema payload size limits (issue #190) ──────────────────────────────
+
+    #[test]
+    fn unset_schema_gets_the_default_payload_limit() {
+        let (_env, client, _admin) = setup();
+        assert_eq!(
+            client.get_schema_payload_limit(&1),
+            earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT
+        );
+        // Version 0 can never be approved, and always reads as the default.
+        assert_eq!(
+            client.get_schema_payload_limit(&0),
+            earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT
+        );
+    }
+
+    #[test]
+    fn schema_payload_limit_can_be_set_and_read_back() {
+        let (_env, client, _admin) = setup();
+        client.set_schema_payload_limit(&1, &1_024);
+        assert_eq!(client.get_schema_payload_limit(&1), 1_024);
+        // Other schema versions are unaffected.
+        assert_eq!(
+            client.get_schema_payload_limit(&2),
+            earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT
+        );
+    }
+
+    #[test]
+    fn schema_payload_limit_of_zero_is_a_deterministic_valid_policy() {
+        // A limit of zero is a legitimate governance choice (no auxiliary
+        // payload permitted for that schema at all), not an error.
+        let (_env, client, _admin) = setup();
+        client.set_schema_payload_limit(&1, &0);
+        assert_eq!(client.get_schema_payload_limit(&1), 0);
+    }
+
+    #[test]
+    fn schema_payload_limit_rejects_zero_version() {
+        let (_env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
+        let result = client.try_set_schema_payload_limit(&0, &1_024);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+    }
+
+    #[test]
+    fn schema_payload_limit_survives_deprecation() {
+        // Deprecating a schema version does not clear its configured limit;
+        // the policy and the approval flag are independent.
+        let (_env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        client.set_schema_payload_limit(&1, &1_024);
+        client.deprecate_schema_version(&1);
+        assert_eq!(client.get_schema_payload_limit(&1), 1_024);
+    }
+
+    #[test]
+    fn schema_payload_limit_update_does_not_retroactively_invalidate() {
+        // Changing the limit is a forward-looking policy change: nothing here
+        // reaches into proof-registry to revalidate proofs already written
+        // under the old limit, and there is no mechanism by which it could.
+        let (_env, client, _admin) = setup();
+        client.set_schema_payload_limit(&1, &2_048);
+        client.set_schema_payload_limit(&1, &16);
+        assert_eq!(client.get_schema_payload_limit(&1), 16);
+    }
+
+    // ── bounded configuration change history (issue #193) ────────────────────
+
+    #[test]
+    fn change_history_starts_empty() {
+        let (_env, client, _admin) = setup();
+        assert_eq!(client.get_config_history_cursor(), 0);
+        assert_eq!(client.get_config_history(&0, &10).len(), 0);
+    }
+
+    #[test]
+    fn change_history_records_ordering_and_category() {
+        let (_env, client, _admin) = setup();
+        client.pause();
+        client.unpause();
+        client.approve_schema_version(&9);
+
+        assert_eq!(client.get_config_history_cursor(), 3);
+        let page = client.get_config_history(&0, &10);
+        assert_eq!(page.len(), 3);
+        assert_eq!(
+            page.get(0).unwrap().category,
+            ConfigChangeCategory::PauseToggle
+        );
+        assert_eq!(
+            page.get(1).unwrap().category,
+            ConfigChangeCategory::PauseToggle
+        );
+        assert_eq!(
+            page.get(2).unwrap().category,
+            ConfigChangeCategory::SchemaApproval
+        );
+        // Each entry records the config version in effect right after it.
+        assert_eq!(
+            page.get(2).unwrap().config_version,
+            client.get_config_version()
+        );
+    }
+
+    #[test]
+    fn failed_changes_do_not_append_history() {
+        let (_env, client, _admin) = setup();
+        client.pause();
+        let cursor_before = client.get_config_history_cursor();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.approve_schema_version(&0);
+        }));
+        assert!(result.is_err());
+
+        assert_eq!(client.get_config_history_cursor(), cursor_before);
+    }
+
+    #[test]
+    fn change_history_ring_rolls_over_deterministically() {
+        let (_env, client, _admin) = setup();
+        let capacity = earnproof_shared::CONFIG_HISTORY_CAPACITY;
+
+        // Overrun the ring by a handful of entries.
+        for version in 1..=(capacity + 3) {
+            client.approve_schema_version(&version);
+        }
+        let total = client.get_config_history_cursor();
+        assert_eq!(total, capacity + 3);
+
+        // A cursor before the oldest still-available entry is clamped forward
+        // deterministically rather than erroring. The page length is bounded
+        // by MAX_CONFIG_HISTORY_PAGE, independent of the ring capacity.
+        let page = client.get_config_history(&0, &capacity);
+        assert_eq!(page.len(), earnproof_shared::MAX_CONFIG_HISTORY_PAGE);
+        // The oldest surviving entry is the one that pushed the first three
+        // out of the ring.
+        let oldest_surviving_version = 4u32;
+        assert_eq!(
+            page.get(0).unwrap().proposal_commitment,
+            ProtocolConfigContract::commit_for_test(&_env, oldest_surviving_version)
+        );
+    }
+
+    #[test]
+    fn change_history_page_size_is_capped() {
+        let (_env, client, _admin) = setup();
+        for version in 1..=(earnproof_shared::MAX_CONFIG_HISTORY_PAGE + 5) {
+            client.approve_schema_version(&version);
+        }
+        // Requesting more than the cap returns at most the cap.
+        let page = client.get_config_history(&0, &(earnproof_shared::MAX_CONFIG_HISTORY_PAGE + 5));
+        assert_eq!(page.len(), earnproof_shared::MAX_CONFIG_HISTORY_PAGE);
+    }
+
+    #[test]
+    fn change_history_survives_migration() {
+        let (_env, client, admin) = setup();
+        client.pause();
+        let cursor_before = client.get_config_history_cursor();
+
+        client.begin_migration(&2, &1);
+        client.advance_migration(&0, &1);
+        let _ = admin;
+
+        assert_eq!(client.get_config_history_cursor(), cursor_before);
+        assert_eq!(client.get_config_history(&0, &10).len(), cursor_before);
+    }
+
+    /// Test-only helper mirroring the contract's private `commit` so the
+    /// rollover test can assert on a specific expected commitment.
+    impl ProtocolConfigContract {
+        fn commit_for_test(env: &Env, version: u32) -> BytesN<32> {
+            Self::commit(env, version)
+        }
     }
 }
