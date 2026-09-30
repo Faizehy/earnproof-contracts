@@ -4,11 +4,11 @@ use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
     MigrationStatus, PauseScope, SchemaRateLimit, SchemaStatusResult, SchemaVersionState,
     CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT, DEFAULT_SCHEMA_RATE_LIMIT,
-    DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH, MIGRATION_STATUS_VERSION,
-    LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE, MAX_SCHEMA_PROOF_TYPES,
-    MAX_SCHEMA_VALIDITY_SECONDS, PROTOCOL_CONFIG_INTERFACE_VERSION,
-    SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH, MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES,
+    MAX_SCHEMA_STATUS_BATCH, MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION,
+    PROTOCOL_CONFIG_INTERFACE_VERSION, SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
@@ -875,7 +875,10 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
-        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::SchemaVersion(version))
             || proof_types.is_empty()
             || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
             || max_validity_seconds == 0
@@ -948,9 +951,7 @@ impl ProtocolConfigContract {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
-        if algorithm != LEGACY_COMMITMENT_ALGORITHM
-            && algorithm != SHA256_COMMITMENT_ALGORITHM_V1
-        {
+        if algorithm != LEGACY_COMMITMENT_ALGORITHM && algorithm != SHA256_COMMITMENT_ALGORITHM_V1 {
             return Err(ContractError::InvalidInput);
         }
         env.storage()
@@ -974,9 +975,7 @@ impl ProtocolConfigContract {
     /// published identifiers are enabled by default; unknown identifiers are
     /// always rejected.
     pub fn is_algorithm_supported(env: Env, algorithm: u32) -> bool {
-        if algorithm != LEGACY_COMMITMENT_ALGORITHM
-            && algorithm != SHA256_COMMITMENT_ALGORITHM_V1
-        {
+        if algorithm != LEGACY_COMMITMENT_ALGORITHM && algorithm != SHA256_COMMITMENT_ALGORITHM_V1 {
             return false;
         }
         let key = DataKey::CommitmentAlgorithm(algorithm);
@@ -2786,10 +2785,10 @@ mod test {
         for proof_type in 0..=MAX_SCHEMA_PROOF_TYPES {
             oversized.push_back(proof_type);
         }
+        assert!(client.try_set_schema_policy(&3, &oversized, &1).is_err());
         assert!(client
-            .try_set_schema_policy(&3, &oversized, &1)
+            .try_set_schema_policy(&3, &changed_types, &0)
             .is_err());
-        assert!(client.try_set_schema_policy(&3, &changed_types, &0).is_err());
         assert!(client
             .try_set_schema_policy(&3, &changed_types, &(MAX_SCHEMA_VALIDITY_SECONDS + 1))
             .is_err());

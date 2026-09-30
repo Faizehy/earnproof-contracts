@@ -469,7 +469,7 @@ export interface RegisterProofParams {
 export type RegisterProofResult = void;
 
 /** Parameters for proof_registry::register_proof_with_policy */
-export interface RegisterProofWithPolicyParams extends RegisterProofParams {
+export interface RegisterProofWithPolicyParams extends Omit<RegisterProofParams, "proof_type"> {
   proof_type: number;
   commitment_algorithm: CommitmentAlgorithm;
 }

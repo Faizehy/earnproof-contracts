@@ -330,18 +330,22 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     observed.record(
         "proof-registry payload exceeds schema limit",
-        code(initial_dep.proofs.try_register_proof_with_type_identifier_and_payload(
-            &bytes32(env, 36),
-            &bytes32(env, 37),
-            &initial_dep.issuer,
-            &1,
-            &FAR_FUTURE,
-            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
-            &soroban_sdk::Bytes::from_array(
-                env,
-                &[0u8; (earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT + 1) as usize],
-            ),
-        )),
+        code(
+            initial_dep
+                .proofs
+                .try_register_proof_with_type_identifier_and_payload(
+                    &bytes32(env, 36),
+                    &bytes32(env, 37),
+                    &initial_dep.issuer,
+                    &1,
+                    &FAR_FUTURE,
+                    &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+                    &soroban_sdk::Bytes::from_array(
+                        env,
+                        &[0u8; (earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT + 1) as usize],
+                    ),
+                ),
+        ),
     );
     // New precondition codes (307-309): drive a real failure path for each.
     // 307: ContractPaused — pause the protocol then attempt registration.

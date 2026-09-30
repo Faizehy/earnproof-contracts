@@ -47,13 +47,19 @@ mod tests {
         let payload = b"proof:example:1";
         let legacy = Sha256::digest(payload);
         assert_eq!(LEGACY_COMMITMENT_ALGORITHM, 0);
-        assert_eq!(format!("{legacy:x}"), "c5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19");
+        assert_eq!(
+            format!("{legacy:x}"),
+            "c5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19"
+        );
 
         let mut versioned_hasher = Sha256::new();
         versioned_hasher.update(b"earnproof:proof-commitment:v1\0");
         versioned_hasher.update(payload);
         let versioned = versioned_hasher.finalize();
         assert_eq!(SHA256_COMMITMENT_ALGORITHM_V1, 1);
-        assert_eq!(format!("{versioned:x}"), "401f9532c86efbb3b12e265287875c82792657c04834d25b7f6736649ae535f4");
+        assert_eq!(
+            format!("{versioned:x}"),
+            "401f9532c86efbb3b12e265287875c82792657c04834d25b7f6736649ae535f4"
+        );
     }
 }

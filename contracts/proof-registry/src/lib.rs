@@ -4,14 +4,12 @@
 use earnproof_shared::{
     is_interface_compatible, ApprovalQuery, ApprovalStatus, ArchivedProofRecord, ContractError,
     DisputeActorClass, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
-    MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofPolicySnapshot,
-    ProofRecord,
-    ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaRateLimit,
-    SchemaPolicy, SchemaRateLimitUsage, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
+    MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofPolicySnapshot, ProofRecord,
+    ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaPolicy,
+    SchemaRateLimit, SchemaRateLimitUsage, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
     UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt, LEGACY_COMMITMENT_ALGORITHM,
-    LEGACY_PROOF_TYPE, MAX_MIGRATION_BATCH,
-    MAX_PROOF_BATCH_SIZE, MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    LEGACY_PROOF_TYPE, MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE, MAX_SCHEMA_VALIDITY_SECONDS,
+    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
     UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{
@@ -336,10 +334,7 @@ impl ProofRegistryContract {
 
     /// Returns the bounded auxiliary-payload metadata recorded for a proof
     /// registered via `register_proof_with_payload`.
-    pub fn get_proof_payload(
-        env: Env,
-        proof_id_hash: BytesN<32>,
-    ) -> Result {
+    pub fn get_proof_payload(env: Env, proof_id_hash: BytesN<32>) -> Result {
         let key = DataKey::ProofPayloadMeta(proof_id_hash);
         let record = env
             .storage()
@@ -750,7 +745,9 @@ impl ProofRegistryContract {
         {
             return Err(ProofError::MalformedInput);
         }
-        let validity = expires_at.checked_sub(now).ok_or(ProofError::ProofExpired)?;
+        let validity = expires_at
+            .checked_sub(now)
+            .ok_or(ProofError::ProofExpired)?;
         if validity == 0 || validity > policy.max_validity_seconds {
             return Err(ProofError::ProofExpired);
         }
@@ -1116,10 +1113,7 @@ impl ProofRegistryContract {
 
     /// Returns the immutable policy interpretation selected when the proof
     /// was registered. Older records are reported using explicit legacy IDs.
-    pub fn get_proof_policy_snapshot(
-        env: Env,
-        proof_id_hash: BytesN<32>,
-    ) -> Result {
+    pub fn get_proof_policy_snapshot(env: Env, proof_id_hash: BytesN<32>) -> Result {
         let proof_key = DataKey::Proof(proof_id_hash.clone());
         if !env.storage().persistent().has(&proof_key) {
             return Err(ProofError::ProofNotFound);
@@ -1650,11 +1644,7 @@ impl ProofRegistryContract {
         env.storage().instance().get(&DataKey::MigrationStatus)
     }
 
-    pub fn begin_migration(
-        env: Env,
-        target_contract_version: u32,
-        total_items: u32,
-    ) -> Result {
+    pub fn begin_migration(env: Env, target_contract_version: u32, total_items: u32) -> Result {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         if target_contract_version <= Self::get_contract_version(env.clone()) || total_items == 0 {
@@ -1683,11 +1673,7 @@ impl ProofRegistryContract {
         Ok(status)
     }
 
-    pub fn advance_migration(
-        env: Env,
-        expected_cursor: u32,
-        processed_items: u32,
-    ) -> Result {
+    pub fn advance_migration(env: Env, expected_cursor: u32, processed_items: u32) -> Result {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         if processed_items == 0 || processed_items > MAX_MIGRATION_BATCH {
@@ -3190,7 +3176,10 @@ mod test {
             &1,
             &u64::MAX,
         );
-        assert_eq!(client.get_proof(&bytes(&env, 60)).unwrap().expires_at, u64::MAX);
+        assert_eq!(
+            client.get_proof(&bytes(&env, 60)).unwrap().expires_at,
+            u64::MAX
+        );
     }
 
     #[test]
