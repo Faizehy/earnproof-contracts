@@ -16,9 +16,9 @@ use super::support::{
     deployment, encoded, encoded_keys_in, genesis_key, instance_live_until_key,
     issuer_active_proof_count_key, issuer_epoch_key, issuer_key, issuer_lifetime_proof_count_key,
     issuer_registry_key, issuer_ttl_key, max_active_issuers_key, paused_key, proof_key,
-    proof_ttl_key, proof_type_approved_key, protocol_config_key, reactivation_cooldown_key,
-    registry_epoch_key, schema_predecessor_key, schema_rate_usage_key, schema_version_key,
-    successors_key,
+    proof_ttl_key, proof_type_approved_key, protocol_config_key, reactivatable_at_key,
+    reactivation_cooldown_key, registry_epoch_key, schema_predecessor_key, schema_rate_usage_key,
+    schema_version_key, successors_key,
 };
 use earnproof_shared::StorageClass;
 use soroban_sdk::testutils::Address as _;
@@ -124,10 +124,7 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, proof_key(&successor_id)),
             encoded(env, proof_ttl_key(env, &successor_id)),
             encoded(env, successors_key(env, &deployment.proof_id)),
-            encoded(
-                env,
-                issuer_active_proof_count_key(env, &deployment.issuer)
-            ),
+            encoded(env, issuer_active_proof_count_key(env, &deployment.issuer)),
             encoded(
                 env,
                 issuer_lifetime_proof_count_key(env, &deployment.issuer)
@@ -159,6 +156,13 @@ fn keys_encode_as_a_discriminant_followed_by_the_payload() {
     assert_eq!(successors.len(), 2);
     let discriminant: Symbol = successors.get(0).unwrap().into_val(&env);
     assert_eq!(discriminant, Symbol::new(&env, "Successors"));
+
+    let reactivation: SorobanVec<Val> = reactivatable_at_key(&env, &identifier).into_val(&env);
+    assert_eq!(reactivation.len(), 2);
+    let discriminant: Symbol = reactivation.get(0).unwrap().into_val(&env);
+    assert_eq!(discriminant, Symbol::new(&env, "ReactivatableAt"));
+    let payload: BytesN<32> = reactivation.get(1).unwrap().into_val(&env);
+    assert_eq!(payload, identifier);
 }
 
 #[test]

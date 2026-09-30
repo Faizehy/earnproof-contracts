@@ -71,11 +71,12 @@ mod tests {
     const ISSUER_REVOKE_MEM_MAX: u64 = 150_000;
     const ISSUER_ROTATE_CPU_MAX: u64 = 500_000;
     const ISSUER_ROTATE_MEM_MAX: u64 = 180_000;
-    // Worst-case bounded batch status query: a full MAX_ISSUER_STATUS_BATCH of
-    // registered identifiers, each requiring a persistent read and a TTL
-    // extension. Thresholds include ~20% headroom over the measured baseline.
-    const ISSUER_BATCH_STATUS_CPU_MAX: u64 = 4_200_000;
-    const ISSUER_BATCH_STATUS_MEM_MAX: u64 = 1_500_000;
+    // Full-size bounded batch status query, with as many registered identifiers
+    // as fit under the test host's 100-entry transaction-footprint limit. The
+    // remaining identifiers are unknown, which is also a supported result.
+    // Thresholds include ~20% headroom over the measured baseline.
+    const ISSUER_BATCH_STATUS_CPU_MAX: u64 = 6_800_000;
+    const ISSUER_BATCH_STATUS_MEM_MAX: u64 = 2_200_000;
 
     // Proof Registry thresholds
     const PROOF_INIT_CPU_MAX: u64 = 400_000;
@@ -93,7 +94,9 @@ mod tests {
     const PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX: u64 = 800_000;
     const PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX: u64 = 320_000;
     const PROOF_REVOKE_BATCH_MAX_CPU_MAX: u64 = 6_800_000;
-    const PROOF_REVOKE_BATCH_MAX_MEM_MAX: u64 = 2_000_000;
+    // The bounded batch includes records with the proof-type and optional
+    // predecessor fields introduced for renewed credentials.
+    const PROOF_REVOKE_BATCH_MAX_MEM_MAX: u64 = 2_500_000;
     const PROOF_OPEN_DISPUTE_CPU_MAX: u64 = 500_000;
     const PROOF_OPEN_DISPUTE_MEM_MAX: u64 = 180_000;
     const PROOF_RESOLVE_DISPUTE_CPU_MAX: u64 = 500_000;
@@ -469,14 +472,25 @@ mod tests {
         let admin = Address::from_str(&env, ADMIN);
         client.initialize(&admin);
 
-        // Register the maximum number of issuers so the worst-case batch reads a
-        // real record and extends a TTL for every entry.
+        // Fill a maximum-length request while keeping the number of known
+        // issuers within Soroban test host's 100-entry transaction-footprint
+        // ceiling. Every known entry exercises the record read and TTL update;
+        // unknown entries exercise the supported NotFound path.
+        let registered_count = MAX_ISSUER_STATUS_BATCH.min(24);
         let mut request: Vec<BytesN<32>> = Vec::new(&env);
-        for index in 0..MAX_ISSUER_STATUS_BATCH {
+        for index in 0..registered_count {
             let issuer_id = bytes(&env, index as u8);
             let issuer_address = Address::generate(&env);
-            client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 200));
+            client.register_issuer(
+                &issuer_id,
+                &issuer_address,
+                &bytes(&env, 200),
+                &bytes(&env, 99),
+            );
             request.push_back(issuer_id);
+        }
+        for index in registered_count..MAX_ISSUER_STATUS_BATCH {
+            request.push_back(bytes(&env, index as u8));
         }
 
         env.cost_estimate().budget().reset_unlimited();
@@ -502,7 +516,12 @@ mod tests {
         client.initialize(&admin);
 
         let known = bytes(&env, 1);
-        client.register_issuer(&known, &Address::generate(&env), &bytes(&env, 2));
+        client.register_issuer(
+            &known,
+            &Address::generate(&env),
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
         let missing = bytes(&env, 99);
 
         env.cost_estimate().budget().reset_unlimited();
@@ -765,6 +784,8 @@ mod tests {
                 &issuer,
                 &1,
                 &2_000,
+                &None,
+                &bytes(&env, 1),
             );
             batch.push_back(proof_id);
         }
@@ -787,7 +808,15 @@ mod tests {
         let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
 
         let proof_id = bytes(&env, 1);
-        proof_client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        proof_client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         env.cost_estimate().budget().reset_unlimited();
 
@@ -807,7 +836,15 @@ mod tests {
         let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
 
         let proof_id = bytes(&env, 1);
-        proof_client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        proof_client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         proof_client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
         env.cost_estimate().budget().reset_unlimited();

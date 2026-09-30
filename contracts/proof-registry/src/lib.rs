@@ -1,4 +1,7 @@
 #![no_std]
+// The Soroban endpoint must expose the proof, issuer, schema, expiry,
+// predecessor, and proof-type arguments as separate ABI fields.
+#![allow(clippy::too_many_arguments)]
 
 #[allow(unused_imports)]
 use earnproof_shared::{
@@ -6,10 +9,9 @@ use earnproof_shared::{
     DisputeActorClass, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
     MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofRecord,
     ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaRateLimit,
-    SchemaRateLimitUsage,
-    TtlStatus, UpgradeApproval, UpgradeApprovalMetadata, UpgradeApprovalRecord,
-    UpgradeHistoryRecord, UpgradeReceipt, MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE,
-    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    SchemaRateLimitUsage, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
+    UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt, MAX_MIGRATION_BATCH,
+    MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
     UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{
@@ -2142,12 +2144,18 @@ impl ProofRegistryContract {
     ) -> Result<(), ContractError> {
         let issuer_version =
             IssuerRegistryContractClient::new(env, issuer_registry).interface_version();
-        if !earnproof_shared::is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &issuer_version) {
+        if !earnproof_shared::is_interface_compatible(
+            &REQUIRED_ISSUER_REGISTRY_VERSION,
+            &issuer_version,
+        ) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
         let config_version =
             ProtocolConfigContractClient::new(env, protocol_config).interface_version();
-        if !earnproof_shared::is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &config_version) {
+        if !earnproof_shared::is_interface_compatible(
+            &REQUIRED_PROTOCOL_CONFIG_VERSION,
+            &config_version,
+        ) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
         Ok(())
@@ -2904,15 +2912,6 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
 
         // Schema version 0 must be rejected with a typed error.
-        let result = client.try_register_proof(
-            &bytes(&env, 1),
-            &bytes(&env, 2),
-            &issuer,
-            &0,
-            &2_000,
-            &None,
-            &BytesN::from_array(&env, &[1; 32]),
-        );
         let result = client.try_register_proof(
             &bytes(&env, 1),
             &bytes(&env, 2),
@@ -4211,7 +4210,15 @@ mod test {
     fn register_proofs_batch_rejects_duplicate_against_existing_chain_state() {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         let batch = make_batch(&env, &[9, 1, 10], 2_000);
         let result = client.try_register_proofs_batch(&batch, &issuer);
@@ -4367,7 +4374,15 @@ mod test {
             &2_000,
             &now,
         );
-        client.register_proof(&bytes(&env, 3), &bytes(&env, 4), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 3),
+            &bytes(&env, 4),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         assert_eq!(
             client.get_proof_validity(&bytes(&env, 1)),
@@ -4701,6 +4716,8 @@ mod test {
                 &issuer,
                 &1,
                 &2_000,
+                &None,
+                &bytes(&env, 1),
             );
         }
 
@@ -4728,6 +4745,8 @@ mod test {
                 &issuer,
                 &1,
                 &2_000,
+                &None,
+                &bytes(&env, 1),
             );
         }
 
@@ -4786,6 +4805,8 @@ mod test {
                 &issuer,
                 &1,
                 &2_000,
+                &None,
+                &bytes(&env, 1),
             );
         }
 
@@ -4810,6 +4831,8 @@ mod test {
                 &issuer,
                 &1,
                 &2_000,
+                &None,
+                &bytes(&env, 1),
             );
         }
 
@@ -4825,8 +4848,24 @@ mod test {
     fn revoke_proofs_batch_rejects_duplicate_within_batch() {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer, &1, &2_000);
-        client.register_proof(&bytes(&env, 2), &bytes(&env, 102), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
+        client.register_proof(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         let batch = ids(&env, &[1, 2, 1]); // duplicate of the first
         let result = client.try_revoke_proofs_batch(&batch);
@@ -4841,8 +4880,24 @@ mod test {
     fn revoke_proofs_batch_rejects_already_revoked_entry() {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer, &1, &2_000);
-        client.register_proof(&bytes(&env, 2), &bytes(&env, 102), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
+        client.register_proof(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.revoke_proof(&bytes(&env, 1));
 
         let batch = ids(&env, &[2, 1]);
@@ -4857,7 +4912,15 @@ mod test {
     fn revoke_proofs_batch_rejects_unknown_proof_id() {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         let batch = ids(&env, &[1, 99]);
         let result = client.try_revoke_proofs_batch(&batch);
@@ -4877,8 +4940,24 @@ mod test {
             &bytes(&env, 99),
         );
 
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer_one, &1, &2_000);
-        client.register_proof(&bytes(&env, 2), &bytes(&env, 102), &issuer_two, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer_one,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
+        client.register_proof(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer_two,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         // env.mock_all_auths() (from setup()) authorizes every address, so a
         // mixed-ownership batch succeeds when both issuers would sign.
@@ -4902,8 +4981,24 @@ mod test {
             &bytes(&env, 99),
         );
 
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer_one, &1, &2_000);
-        client.register_proof(&bytes(&env, 2), &bytes(&env, 102), &issuer_two, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer_one,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
+        client.register_proof(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer_two,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         // Only issuer_one is authorized for this invocation; issuer_two's
         // entry must not be smuggled through behind it.
@@ -4934,7 +5029,15 @@ mod test {
     fn revoke_proofs_batch_rejects_when_revocation_paused() {
         let (env, client, pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         pc.set_scoped_pause(&PauseScope::Revocation, &true);
 
         let result = client.try_revoke_proofs_batch(&ids(&env, &[1]));
@@ -4947,7 +5050,15 @@ mod test {
         let (env, client, ..) = setup();
         let issuer = Address::from_str(&env, ISSUER);
         let admin = Address::from_str(&env, ADMIN);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.nominate_successor(&admin);
         client.activate_successor();
 
@@ -4967,6 +5078,8 @@ mod test {
                 &issuer,
                 &1,
                 &2_000,
+                &None,
+                &bytes(&env, 1),
             );
         }
 
@@ -4981,7 +5094,15 @@ mod test {
     fn admin_revoke_proofs_batch_requires_admin_auth() {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         env.set_auths(&[]);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -5005,8 +5126,24 @@ mod test {
             &bytes(&env, 21),
             &bytes(&env, 99),
         );
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 101), &issuer_one, &1, &2_000);
-        client.register_proof(&bytes(&env, 2), &bytes(&env, 102), &issuer_two, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer_one,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
+        client.register_proof(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer_two,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         // Only the admin needs to authorize; neither issuer does.
         client.admin_revoke_proofs_batch(&ids(&env, &[1, 2]));
@@ -5024,7 +5161,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
@@ -5044,8 +5189,24 @@ mod test {
 
         let proof_a = bytes(&env, 1);
         let proof_b = bytes(&env, 2);
-        client.register_proof(&proof_a, &bytes(&env, 11), &issuer, &1, &2_000);
-        client.register_proof(&proof_b, &bytes(&env, 12), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_a,
+            &bytes(&env, 11),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
+        client.register_proof(
+            &proof_b,
+            &bytes(&env, 12),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         client.open_dispute(&proof_a, &admin, &bytes(&env, 30));
         client.open_dispute(&proof_b, &third_party, &bytes(&env, 31));
@@ -5066,7 +5227,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let third_party = Address::from_str(&env, THIRD_PARTY);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         env.set_auths(&[]);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -5093,7 +5262,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let third_party = Address::from_str(&env, THIRD_PARTY);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
         let result = client.try_open_dispute(&proof_id, &third_party, &bytes(&env, 31));
@@ -5111,7 +5288,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let third_party = Address::from_str(&env, THIRD_PARTY);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
         client.withdraw_dispute(&proof_id);
@@ -5130,7 +5315,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let third_party = Address::from_str(&env, THIRD_PARTY);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.open_dispute(&proof_id, &third_party, &bytes(&env, 30));
 
         client.withdraw_dispute(&proof_id);
@@ -5156,7 +5349,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let third_party = Address::from_str(&env, THIRD_PARTY);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
         let auth_entry = MockAuth {
@@ -5183,7 +5384,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         // No dispute at all.
         let result = client.try_withdraw_dispute(&proof_id);
@@ -5202,7 +5411,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let admin = Address::from_str(&env, ADMIN);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
         env.set_auths(&[]);
@@ -5238,7 +5455,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let admin = Address::from_str(&env, ADMIN);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
         env.set_auths(&[]);
@@ -5263,7 +5488,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         assert_eq!(
             client.try_resolve_dispute(&proof_id),
@@ -5299,7 +5532,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         // Disputing an active, valid proof does not change its validity.
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
@@ -5331,7 +5572,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.revoke_proof(&proof_id);
 
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
@@ -5343,7 +5592,15 @@ mod test {
         let (env, client, pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
         pc.set_scoped_pause(&earnproof_shared::PauseScope::Disputes, &true);
@@ -5382,7 +5639,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let admin = Address::from_str(&env, ADMIN);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
         client.nominate_successor(&admin);
@@ -5415,7 +5680,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
 
         client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
 
@@ -5528,10 +5801,26 @@ mod test {
         let (env, client, ..) = setup();
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         assert_eq!(client.get_registry_epoch(), 1);
 
-        client.register_proof(&bytes(&env, 3), &bytes(&env, 4), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 3),
+            &bytes(&env, 4),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         assert_eq!(client.get_registry_epoch(), 2);
     }
 
@@ -5541,7 +5830,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         assert_eq!(client.get_registry_epoch(), 1);
 
         client.revoke_proof(&proof_id);
@@ -5554,7 +5851,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.admin_revoke_proof(&proof_id);
         assert_eq!(client.get_registry_epoch(), 2);
     }
@@ -5565,8 +5870,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         protocol_config.pause();
 
-        let result =
-            client.try_register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        let result = client.try_register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         assert!(result.is_err());
         assert_eq!(client.get_registry_epoch(), 0);
     }
@@ -5577,7 +5889,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.revoke_proof(&proof_id);
         let epoch_after_first_revocation = client.get_registry_epoch();
 
@@ -5597,7 +5917,15 @@ mod test {
 
         let issuer = Address::from_str(&env, ISSUER);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+            client.register_proof(
+                &bytes(&env, 1),
+                &bytes(&env, 2),
+                &issuer,
+                &1,
+                &2_000,
+                &None,
+                &bytes(&env, 1),
+            );
         }));
         assert!(result.is_err());
     }
@@ -5606,7 +5934,15 @@ mod test {
     fn registry_epoch_survives_an_upgrade() {
         let (env, client, ..) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         let epoch_before = client.get_registry_epoch();
 
         let hash = bytes(&env, 0x88);
@@ -5793,7 +6129,15 @@ mod test {
             client.get_proof_ttl_status(&unknown_id).health,
             earnproof_shared::TtlHealth::Missing
         );
-        client.register_proof(&proof_id, &bytes(&env, 0xe6), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 0xe6),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         assert_eq!(
             client.get_proof_ttl_status(&proof_id).health,
             earnproof_shared::TtlHealth::Healthy
@@ -5807,7 +6151,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         assert_eq!(client.proof_validity(&proof_id), ProofValidity::Valid);
         // The legacy boolean helper agrees for the happy path.
         assert!(client.is_valid_proof(&proof_id));
@@ -5827,7 +6179,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.revoke_proof(&proof_id);
         assert_eq!(client.proof_validity(&proof_id), ProofValidity::Revoked);
     }
@@ -5837,7 +6197,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         env.ledger().with_mut(|li| li.timestamp = 3_000);
         assert_eq!(client.proof_validity(&proof_id), ProofValidity::Expired);
         // Legacy helper also reports the proof as no longer valid.
@@ -5849,7 +6217,15 @@ mod test {
         let (env, client, _pc, issuer_registry, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         // Suspend the issuer registered by setup (issuer_id == bytes 9).
         issuer_registry.suspend_issuer(&bytes(&env, 9), &bytes(&env, 90));
         assert_eq!(
@@ -5929,7 +6305,15 @@ mod test {
         let (env, client, protocol_config, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         protocol_config.deprecate_schema_version(&1);
         assert_eq!(
             client.proof_validity(&proof_id),
@@ -5944,7 +6328,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         client.revoke_proof(&proof_id);
         env.ledger().with_mut(|li| li.timestamp = 3_000);
         assert_eq!(client.proof_validity(&proof_id), ProofValidity::Revoked);
@@ -5956,7 +6348,15 @@ mod test {
         let (env, client, protocol_config, issuer_registry, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         issuer_registry.suspend_issuer(&bytes(&env, 9), &bytes(&env, 90));
         protocol_config.deprecate_schema_version(&1);
         env.ledger().with_mut(|li| li.timestamp = 3_000);
@@ -5974,7 +6374,15 @@ mod test {
         });
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &5_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &5_000,
+            &None,
+            &bytes(&env, 1),
+        );
         let record = client.get_proof(&proof_id);
         assert_eq!(record.created_ledger, 4_321);
         assert_eq!(record.created_at, 1_500);
@@ -5986,7 +6394,15 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+        );
         // register_proof publishes exactly one contract event carrying timing.
         assert_eq!(env.events().all().events().len(), 1);
     }
@@ -5998,7 +6414,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         // Expired at registration time: rejected, so no event and no record.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &0);
+            client.register_proof(
+                &bytes(&env, 1),
+                &bytes(&env, 2),
+                &issuer,
+                &1,
+                &0,
+                &None,
+                &bytes(&env, 1),
+            );
         }));
         assert!(result.is_err());
         assert_eq!(env.events().all().events().len(), 0);

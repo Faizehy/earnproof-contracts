@@ -155,7 +155,11 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     }
     observed.record(
         "protocol-config oversized schema-status query",
-        code(initial_dep.config.try_get_schema_statuses(&oversized_schemas)),
+        code(
+            initial_dep
+                .config
+                .try_get_schema_statuses(&oversized_schemas),
+        ),
     );
 
     // --- issuer-registry -------------------------------------------------
@@ -187,7 +191,11 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     }
     observed.record(
         "issuer-registry oversized status query",
-        code(initial_dep.issuers.try_get_issuer_statuses(&oversized_issuers)),
+        code(
+            initial_dep
+                .issuers
+                .try_get_issuer_statuses(&oversized_issuers),
+        ),
     );
     observed.record(
         "issuer-registry set_issuer_metadata_commitment with all-zero digest",

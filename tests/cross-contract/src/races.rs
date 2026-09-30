@@ -65,21 +65,15 @@ fn apply(deployment: &Deployment, update: Update) {
                 .config
                 .approve_proof_type(&soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]));
         }
-        Update::SuspendIssuer => {
-            deployment
-                .issuers
-                .suspend_issuer(&deployment.issuer_id, &reason)
-        }
-        Update::ReactivateIssuer => {
-            deployment
-                .issuers
-                .reactivate_issuer(&deployment.issuer_id, &reason)
-        }
-        Update::RevokeIssuer => {
-            deployment
-                .issuers
-                .revoke_issuer(&deployment.issuer_id, &reason)
-        }
+        Update::SuspendIssuer => deployment
+            .issuers
+            .suspend_issuer(&deployment.issuer_id, &reason),
+        Update::ReactivateIssuer => deployment
+            .issuers
+            .reactivate_issuer(&deployment.issuer_id, &reason),
+        Update::RevokeIssuer => deployment
+            .issuers
+            .revoke_issuer(&deployment.issuer_id, &reason),
     }
 }
 

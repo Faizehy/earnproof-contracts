@@ -37,6 +37,7 @@ impl Deployment {
         let config = ProtocolConfigContractClient::new(&env, &config_id);
         config.initialize(&admin);
         config.approve_schema_version(&APPROVED_SCHEMA);
+        config.approve_proof_type(&hash(&env, 1));
 
         let issuers_id = env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);

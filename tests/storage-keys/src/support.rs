@@ -382,6 +382,15 @@ pub fn exercised_deployment() -> Deployment {
         &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
     );
     proofs.register_proof(
+        &bytes32(&env, 11),
+        &bytes32(&env, 12),
+        &rotated_issuer,
+        &1,
+        &1_000_000,
+        &Some(proof_id.clone()),
+        &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+    );
+    proofs.register_proof(
         &bytes32(&env, 7),
         &bytes32(&env, 8),
         &rotated_issuer,

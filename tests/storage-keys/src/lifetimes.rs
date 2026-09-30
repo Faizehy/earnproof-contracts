@@ -111,7 +111,7 @@ fn per_record_namespaces_hold_one_entry_per_record() {
 
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        16
+        19
     );
 
     // Three schema versions, their predecessor link, two approved proof types,
