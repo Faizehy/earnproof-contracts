@@ -1,7 +1,7 @@
 # scenario: initialized
-# revision: 11
+# revision: 12
 # reason: Reconciled upstream registry, schema lineage, payload limit, and proof timing state
-# body-digest: 919b6e28f55fc52165f81bbc01ff90d3a9d7e6ed8d8bde84054f38217b526ce9
+# body-digest: 4cda8f5b06c3b21a7a14357b582e0d13ce0813787a2d07ed5e4944a28c187195
 
 [ledger]
 sequence = 1000
@@ -19,6 +19,7 @@ issuer-registry instance [sym:ReactivationCooldown] = u64:0
 proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:Genesis] = {sym:genesis_id: bytes:87d5e19ffff41ef394bed747f4ca4dcdcbf818cec54eb466639248eb14dc82cd, sym:initialized_at_ledger: u32:1000}
+proof-registry instance [sym:InstanceLiveUntil] = u32:501000
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 proof-registry instance [sym:RegistryEpoch] = u32:0

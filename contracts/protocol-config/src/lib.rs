@@ -1,11 +1,12 @@
 #![no_std]
 
 use earnproof_shared::{
-    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, MigrationStatus,
-    InterfaceVersion, PauseScope, SchemaStatusResult, SchemaVersionState,
+    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
+    MigrationStatus, PauseScope, SchemaRateLimit, SchemaStatusResult, SchemaVersionState,
     CONFIG_HISTORY_CAPACITY,
-    DEFAULT_SCHEMA_PAYLOAD_LIMIT, MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH, MIGRATION_STATUS_VERSION,
+    DEFAULT_SCHEMA_PAYLOAD_LIMIT, DEFAULT_SCHEMA_RATE_LIMIT, DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
+    MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH, MAX_SCHEMA_LINEAGE_DEPTH,
+    MAX_SCHEMA_STATUS_BATCH, MIGRATION_STATUS_VERSION,
     PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
@@ -41,6 +42,8 @@ enum DataKey {
     Genesis,
     /// Governed per-schema-version auxiliary payload size bound (bytes).
     SchemaPayloadLimit(u32),
+    /// Governed registration-rate policy for a schema version.
+    SchemaRateLimit(u32),
     /// Ring-buffer slot holding one bounded change-history summary.
     ConfigHistoryRing(u32),
     /// Monotonic count of change-history entries ever appended.
@@ -233,6 +236,40 @@ impl ProtocolConfigContract {
         PROTOCOL_CONFIG_INTERFACE_VERSION
     }
 
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_principal(&new_admin)?;
+        Self::require_auth(&admin);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        AdminChanged { new_admin }.publish(&env);
+        Ok(())
+    }
+
+    pub fn keepalive_instance(env: Env) -> bool {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return false;
+        }
+        Self::extend_instance_ttl(env);
+        true
+    }
+
+    pub fn keepalive_schema_version(env: Env, version: u32) -> bool {
+        if version == 0 {
+            return false;
+        }
+        let key = DataKey::SchemaVersion(version);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+            true
+        } else {
+            false
+        }
+    }
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
@@ -269,7 +306,7 @@ impl ProtocolConfigContract {
         Self::append_config_history(
             env.clone(),
             ConfigChangeCategory::AdminRotation,
-            Self::commit(&env, new_admin.clone()),
+            Self::commit(&env, pending_admin.clone()),
         );
         AdminChanged {
             new_admin: new_admin.clone(),
@@ -417,31 +454,6 @@ impl ProtocolConfigContract {
         }
         .publish(&env);
         Ok(())
-    }
-
-    pub fn keepalive_instance(env: Env) -> bool {
-        if !env.storage().instance().has(&DataKey::Admin) {
-            return false;
-        }
-        Self::extend_instance_ttl(env);
-        true
-    }
-
-    pub fn keepalive_schema_version(env: Env, version: u32) -> bool {
-        if version == 0 {
-            return false;
-        }
-        let key = DataKey::SchemaVersion(version);
-        if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                TTL_THRESHOLD_LEDGERS,
-                TTL_EXTEND_TO_LEDGERS,
-            );
-            true
-        } else {
-            false
-        }
     }
 
     pub fn approve_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
@@ -723,6 +735,59 @@ impl ProtocolConfigContract {
             );
         }
         approved
+    }
+
+    /// Sets a bounded ledger-window registration limit for a schema. A zero
+    /// maximum intentionally pauses new registrations; a zero window is invalid.
+    pub fn set_schema_rate_limit(
+        env: Env,
+        version: u32,
+        limit: SchemaRateLimit,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+        if limit.window_ledgers == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaRateLimit(version), &limit);
+        env.storage().persistent().extend_ttl(
+            &DataKey::SchemaRateLimit(version),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        Self::bump_config_version(env);
+        Ok(())
+    }
+
+    /// Returns the configured schema rate policy or the unbounded compatibility default.
+    pub fn get_schema_rate_limit(env: Env, version: u32) -> SchemaRateLimit {
+        if version == 0 {
+            return SchemaRateLimit {
+                max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
+                window_ledgers: DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
+            };
+        }
+        let key = DataKey::SchemaRateLimit(version);
+        let value = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(SchemaRateLimit {
+                max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
+                window_ledgers: DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
+            });
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        value
     }
 
     pub fn get_config_version(env: Env) -> u32 {
@@ -1189,7 +1254,7 @@ mod test {
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
         ConfigChangeCategory, ContractError, SchemaStatusResult, SchemaVersionState,
-        MAX_SCHEMA_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
+        MAX_SCHEMA_STATUS_BATCH, SchemaRateLimit, TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Ledger as _},

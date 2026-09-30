@@ -29,7 +29,10 @@
 // deliberately unused.
 #![allow(dead_code)]
 
-use earnproof_shared::PauseScope;
+use earnproof_shared::{
+    InterfaceVersion, PauseScope, SchemaRateLimit, DEFAULT_SCHEMA_RATE_LIMIT,
+    DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
+};
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env};
 
 /// The interface version a compatible substitute reports. Every substitute
@@ -294,6 +297,13 @@ impl ConfigRequiringAuth {
     pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
         true
     }
+
+    pub fn get_schema_rate_limit(_env: Env, _version: u32) -> SchemaRateLimit {
+        SchemaRateLimit {
+            max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
+            window_ledgers: DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +341,13 @@ impl RecordingConfig {
 
     pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
         true
+    }
+
+    pub fn get_schema_rate_limit(_env: Env, _version: u32) -> SchemaRateLimit {
+        SchemaRateLimit {
+            max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
+            window_ledgers: DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
+        }
     }
 
     /// Whether the write performed during boundary 1 is still there.
@@ -377,6 +394,13 @@ impl SelfPausingConfig {
 
     pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
         true
+    }
+
+    pub fn get_schema_rate_limit(_env: Env, _version: u32) -> SchemaRateLimit {
+        SchemaRateLimit {
+            max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
+            window_ledgers: DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
+        }
     }
 
     /// The flag as it stands now.

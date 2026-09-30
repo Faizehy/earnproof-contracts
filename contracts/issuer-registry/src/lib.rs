@@ -1,12 +1,12 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, GenesisRecord, InterfaceVersion, IssuerError, IssuerQueryStatus, IssuerRecord, IssuerStatus,
-    IssuerStatusResult, MigrationStatus, TtlStatus, UpgradeApproval, UpgradeReceipt,
+    ContractError, GenesisRecord, InterfaceVersion, IssuerError, IssuerPolicyCommitments,
+    IssuerQueryStatus, IssuerRecord, IssuerStatus, IssuerStatusResult, MigrationStatus,
+    SigningKeyCommitment, TtlStatus, UpgradeApproval, UpgradeReceipt,
     ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
-    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS,
-    UPGRADE_TIMELOCK_LEDGERS,
+    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
@@ -34,15 +34,22 @@ enum DataKey {
     UpgradeApproval,
     /// Immutable deployment identity, written once at `initialize`.
     Genesis,
-    /// Monotonic mutation counter exposed in issuer events.
+    ActiveSigningKey(BytesN<32>),
+    PendingSigningKey(BytesN<32>),
+    SigningKeyHistory(BytesN<32>, u32),
+    SigningKeyHistoryCount(BytesN<32>),
+    IssuerPolicy(BytesN<32>),
+    /// Monotonic mutation counter exposed in issuer events and cache invalidation.
     IssuerEpoch,
-    /// Current number of active issuers.
-    ActiveIssuerCount,
-    /// Governed ceiling on the number of active issuers.
+    /// Governed ceiling on the number of simultaneously active issuers.
     MaxActiveIssuers,
-    /// Minimum delay between suspension and reactivation.
+    /// Current count of issuers with `IssuerStatus::Active`.
+    ActiveIssuerCount,
+    /// Governed cooldown, in seconds, a suspended issuer must wait before
+    /// reactivation is permitted.
     ReactivationCooldown,
-    /// Per-issuer timestamp before which reactivation is rejected.
+    /// Ledger timestamp at or after which a specific suspended issuer may be
+    /// reactivated. Fixed at suspension time from the cooldown then in force.
     ReactivatableAt(BytesN<32>),
 }
 
@@ -140,7 +147,6 @@ pub struct IssuerSuspended {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -154,7 +160,6 @@ pub struct IssuerReactivated {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -168,7 +173,6 @@ pub struct IssuerRevoked {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -643,6 +647,131 @@ impl IssuerRegistryContract {
         }
         .publish(&env);
         Ok(())
+    }
+
+    /// Begins a governed two-step signing-key rotation. The pending commitment
+    /// is not active until `activate_issuer_signing_key` commits it.
+    pub fn propose_issuer_signing_key(
+        env: Env,
+        issuer_id: BytesN<32>,
+        key_hash: BytesN<32>,
+        algorithm: u32,
+    ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+        if algorithm == 0 || Self::is_zero_hash(&env, &key_hash) {
+            return Err(IssuerError::InvalidMetadataCommitment);
+        }
+        Self::get_issuer(env.clone(), issuer_id.clone())?;
+        env.storage().persistent().set(
+            &DataKey::PendingSigningKey(issuer_id),
+            &SigningKeyCommitment {
+                key_hash,
+                algorithm,
+                activated_ledger: 0,
+            },
+        );
+        Ok(())
+    }
+
+    /// Activates a previously proposed key once. The pending entry is removed,
+    /// so a retired commitment cannot be replayed into the active position.
+    pub fn activate_issuer_signing_key(env: Env, issuer_id: BytesN<32>) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+        let pending_key = DataKey::PendingSigningKey(issuer_id.clone());
+        let mut next: SigningKeyCommitment = env
+            .storage()
+            .persistent()
+            .get(&pending_key)
+            .ok_or(IssuerError::InvalidTransition)?;
+        next.activated_ledger = env.ledger().sequence();
+        let active_key = DataKey::ActiveSigningKey(issuer_id.clone());
+        if let Some(previous) = env
+            .storage()
+            .persistent()
+            .get::<_, SigningKeyCommitment>(&active_key)
+        {
+            let count: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SigningKeyHistoryCount(issuer_id.clone()))
+                .unwrap_or(0);
+            if count < 4 {
+                env.storage().persistent().set(
+                    &DataKey::SigningKeyHistory(issuer_id.clone(), count),
+                    &previous,
+                );
+                env.storage().persistent().set(
+                    &DataKey::SigningKeyHistoryCount(issuer_id.clone()),
+                    &(count + 1),
+                );
+            }
+        }
+        env.storage().persistent().set(&active_key, &next);
+        env.storage().persistent().remove(&pending_key);
+        Ok(())
+    }
+
+    pub fn get_active_issuer_signing_key(
+        env: Env,
+        issuer_id: BytesN<32>,
+    ) -> Option<SigningKeyCommitment> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ActiveSigningKey(issuer_id))
+    }
+    pub fn get_prior_issuer_signing_keys(
+        env: Env,
+        issuer_id: BytesN<32>,
+    ) -> Vec<SigningKeyCommitment> {
+        let mut result = Vec::new(&env);
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SigningKeyHistoryCount(issuer_id.clone()))
+            .unwrap_or(0);
+        for index in 0..count {
+            if let Some(item) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SigningKeyHistory(issuer_id.clone(), index))
+            {
+                result.push_back(item);
+            }
+        }
+        result
+    }
+
+    pub fn set_issuer_policy_commitments(
+        env: Env,
+        issuer_id: BytesN<32>,
+        commitments: IssuerPolicyCommitments,
+    ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+        if commitments.encoding_version != 1
+            || Self::is_zero_hash(&env, &commitments.category_commitment)
+            || Self::is_zero_hash(&env, &commitments.jurisdiction_commitment)
+        {
+            return Err(IssuerError::InvalidMetadataCommitment);
+        }
+        Self::get_issuer(env.clone(), issuer_id.clone())?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::IssuerPolicy(issuer_id), &commitments);
+        Ok(())
+    }
+    pub fn get_issuer_policy_commitments(
+        env: Env,
+        issuer_id: BytesN<32>,
+    ) -> Option<IssuerPolicyCommitments> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::IssuerPolicy(issuer_id))
     }
 
     pub fn suspend_issuer(
@@ -1371,9 +1500,9 @@ impl IssuerRegistryContract {
         // status change is never stored without its effective ledger and
         // timestamp. Timing is sourced only from the host ledger environment.
         let effective_ledger = env.ledger().sequence();
+        let now = env.ledger().timestamp();
         record.status = status.clone();
         record.reason_commitment = Some(reason_commitment.clone());
-        let now = env.ledger().timestamp();
 
         // Enforce cooldown and capacity, and adjust the active-issuer count, per
         // transition. All checks that can reject the call run before any state
@@ -1427,7 +1556,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -1436,7 +1564,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -1445,7 +1572,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -2830,7 +2956,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.metadata_hash, bytes(&env, 2));
         // The URI commitment starts at the all-zero "unset" sentinel.
@@ -2843,7 +2974,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
 
         let content = bytes(&env, 0x11);
         let uri = bytes(&env, 0x22);
@@ -2862,7 +2998,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
         client.set_issuer_metadata_commitment(&issuer_id, &bytes(&env, 0x11), &bytes(&env, 0x22));
         assert_eq!(env.events().all().events().len(), 1);
     }
@@ -2872,7 +3013,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0),
@@ -2886,7 +3032,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0x11),
@@ -2911,8 +3062,13 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
-        client.revoke_issuer(&issuer_id);
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0x11),
@@ -2926,7 +3082,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
         client.update_issuer(&issuer_id, &bytes(&env, 3));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.metadata_hash, bytes(&env, 3));
@@ -2946,7 +3107,12 @@ mod test {
         });
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status_effective_ledger, 100);
         assert_eq!(record.status_effective_timestamp, 555);
@@ -2957,13 +3123,18 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 900;
             li.timestamp = 9_000;
         });
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(&issuer_id, &bytes(&env, 98));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Suspended);
         assert_eq!(record.status_effective_ledger, 900);
@@ -2975,27 +3146,32 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 10;
             li.timestamp = 100;
         });
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(&issuer_id, &bytes(&env, 98));
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 10);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 20;
             li.timestamp = 200;
         });
-        client.reactivate_issuer(&issuer_id);
+        client.reactivate_issuer(&issuer_id, &bytes(&env, 98));
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 20);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 30;
             li.timestamp = 300;
         });
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Revoked);
         assert_eq!(record.status_effective_ledger, 30);
@@ -3007,12 +3183,17 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
         env.ledger().with_mut(|li| {
             li.sequence_number = 40;
             li.timestamp = 400;
         });
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
         let before = client.get_issuer(&issuer_id);
 
         // A revoked issuer cannot be reactivated; the rejected call must not
@@ -3021,7 +3202,7 @@ mod test {
             li.sequence_number = 50;
             li.timestamp = 500;
         });
-        let result = client.try_reactivate_issuer(&issuer_id);
+        let result = client.try_reactivate_issuer(&issuer_id, &bytes(&env, 98));
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
         let after = client.get_issuer(&issuer_id);
         assert_eq!(

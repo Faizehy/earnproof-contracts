@@ -109,16 +109,14 @@ fn per_record_namespaces_hold_one_entry_per_record() {
         17
     );
 
-    // Three proofs (one revoked in place, one registered with a payload) plus
-    // one payload-metadata entry for the payload-bearing registration.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        4
+        16
     );
 
-    // Three schema versions, one predecessor link, two approved proof types,
-    // one schema payload limit, one scoped pause, and ten bounded config-history
-    // ring entries for the governance mutations exercised below.
+    // Three schema versions, their predecessor link, two approved proof types,
+    // one payload limit, one scoped pause, and ten bounded config-history
+    // entries for the governance mutations exercised below.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
         18

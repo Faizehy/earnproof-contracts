@@ -111,11 +111,16 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 308 | `IssuerInactive` | `ProofError` | proof-registry | returned | after-operator-action | 403 |
 | 309 | `UnsupportedSchema` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 310 | `MalformedInput` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
-| 311 | `CyclicSupersession` | `ProofError` | proof-registry | returned | never | 400 |
-| 312 | `CrossIssuerSupersession` | `ProofError` | proof-registry | returned | never | 403 |
-| 313 | `PredecessorNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
-| 314 | `TooManySuccessors` | `ProofError` | proof-registry | returned | never | 400 |
-| 315 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 311 | `InvalidBatchSize` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
+| 312 | `InvalidActivationTime` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
+| 313 | `DisputeAlreadyOpen` | `ProofError` | proof-registry | returned | never | 409 |
+| 314 | `DisputeNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
+| 315 | `DisputeNotOpen` | `ProofError` | proof-registry | returned | never | 400 |
+| 316 | `CyclicSupersession` | `ProofError` | proof-registry | returned | never | 400 |
+| 317 | `CrossIssuerSupersession` | `ProofError` | proof-registry | returned | never | 403 |
+| 318 | `PredecessorNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
+| 319 | `TooManySuccessors` | `ProofError` | proof-registry | returned | never | 400 |
+| 320 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 
 ## Details
 
@@ -356,10 +361,10 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Domain: issuer-registry
 - Status: returned
 - Retry: after-caller-change
-- Cause: set_issuer_metadata_commitment received an all-zero metadata or canonical-URI commitment, which is reserved as the no-value sentinel.
-- Remediation: Supply non-zero SHA-256 commitments for both the canonical metadata bytes and canonical URI bytes, using the documented domain-separation prefixes.
+- Cause: set_issuer_metadata_commitment was called with the all-zero digest for the content hash or the URI hash, which is reserved as the "no URI commitment recorded" sentinel.
+- Remediation: Compute a real SHA-256 commitment over the canonical document or URI bytes and resubmit; the all-zero digest is never accepted.
 - Suggested HTTP status: 400
-- Client message: "Invalid metadata commitment"
+- Client message: "Invalid identity digest"
 
 ### 300 - `ProofAlreadyRegistered`
 
@@ -471,40 +476,95 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Malformed proof input"
 
-### 311 - `CyclicSupersession`
+### 311 - `InvalidBatchSize`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: A batch registration or batch revocation call was given zero entries, or more entries than MAX_PROOF_BATCH_SIZE.
+- Remediation: Split the request into batches of between one and MAX_PROOF_BATCH_SIZE entries.
+- Suggested HTTP status: 400
+- Client message: "Invalid batch size"
+
+### 312 - `InvalidActivationTime`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: register_proof_with_activation was given an activates_at at or after expires_at, so the proof could never be valid.
+- Remediation: Choose an activation time strictly before the expiration.
+- Suggested HTTP status: 400
+- Client message: "Invalid activation time"
+
+### 313 - `DisputeAlreadyOpen`
 
 - Enum: `ProofError`
 - Domain: proof-registry
 - Status: returned
 - Retry: never
-- Cause: The proof identifier matches its own predecessor.
-- Remediation: A proof cannot supersede itself.
+- Cause: open_dispute was called for a proof that already has an Open dispute.
+- Remediation: Withdraw, resolve, or reject the existing dispute before opening a new one. Retrying the identical request will not help: the dispute is cleared by a different call (from the disputant or the admin), not by this one succeeding on its own.
+- Suggested HTTP status: 409
+- Client message: "A dispute is already open for this proof"
+
+### 314 - `DisputeNotFound`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: withdraw_dispute, resolve_dispute, or reject_dispute referenced a proof with no dispute record.
+- Remediation: Open a dispute first, or confirm the proof id.
+- Suggested HTTP status: 404
+- Client message: "No dispute found for this proof"
+
+### 315 - `DisputeNotOpen`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: A dispute transition was attempted on a dispute that is not Open (already withdrawn, resolved, or rejected).
+- Remediation: Read the dispute's current status; it is terminal once withdrawn, resolved, or rejected.
+- Suggested HTTP status: 400
+- Client message: "Dispute is not open"
+
+### 316 - `CyclicSupersession`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: The proof identifier matches its own predecessor or would create a supersession cycle.
+- Remediation: A proof cannot supersede itself or create a cycle. Register the renewal as a forward link from an existing proof.
 - Suggested HTTP status: 400
 - Client message: "Cyclic supersession detected"
 
-### 312 - `CrossIssuerSupersession`
+### 317 - `CrossIssuerSupersession`
 
 - Enum: `ProofError`
 - Domain: proof-registry
 - Status: returned
 - Retry: never
 - Cause: The predecessor proof was registered by a different issuer.
-- Remediation: Cross-issuer supersession is rejected.
+- Remediation: Cross-issuer supersession is rejected unless protocol policy explicitly supports it.
 - Suggested HTTP status: 403
 - Client message: "Cross-issuer supersession rejected"
 
-### 313 - `PredecessorNotFound`
+### 318 - `PredecessorNotFound`
 
 - Enum: `ProofError`
 - Domain: proof-registry
 - Status: returned
 - Retry: after-caller-change
 - Cause: The specified predecessor proof was not found.
-- Remediation: Ensure the predecessor proof exists.
+- Remediation: Ensure the predecessor proof exists and remains historically queryable.
 - Suggested HTTP status: 404
 - Client message: "Predecessor proof not found"
 
-### 314 - `TooManySuccessors`
+### 319 - `TooManySuccessors`
 
 - Enum: `ProofError`
 - Domain: proof-registry
@@ -515,7 +575,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Too many successors"
 
-### 315 - `UnsupportedProofType`
+### 320 - `UnsupportedProofType`
 
 - Enum: `ProofError`
 - Domain: proof-registry

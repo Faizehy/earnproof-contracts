@@ -7,12 +7,15 @@
 //! marked `Reserved` is asserted to be absent from all of those paths.
 
 use earnproof_shared::error_catalog::Status;
-use earnproof_shared::{ContractError, InterfaceVersion, IssuerError, ProofError, ERROR_CATALOG};
+use earnproof_shared::{
+    ContractError, InterfaceVersion, IssuerError, ProofError, ERROR_CATALOG,
+    MAX_ISSUER_STATUS_BATCH, MAX_SCHEMA_STATUS_BATCH,
+};
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
 use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
 use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 
 const FAR_FUTURE: u64 = 10_000_000;
 
@@ -146,6 +149,14 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         "protocol-config deprecate_schema_version(0)",
         code(initial_dep.config.try_deprecate_schema_version(&0)),
     );
+    let mut oversized_schemas = Vec::new(env);
+    for value in 0..=MAX_SCHEMA_STATUS_BATCH {
+        oversized_schemas.push_back(value);
+    }
+    observed.record(
+        "protocol-config oversized schema-status query",
+        code(initial_dep.config.try_get_schema_statuses(&oversized_schemas)),
+    );
 
     // --- issuer-registry -------------------------------------------------
     observed.record(
@@ -168,6 +179,22 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &initial_dep.issuer,
             &bytes32(env, 3),
             &bytes32(env, 99),
+        )),
+    );
+    let mut oversized_issuers = Vec::new(env);
+    for value in 0..=MAX_ISSUER_STATUS_BATCH {
+        oversized_issuers.push_back(bytes32(env, value as u8));
+    }
+    observed.record(
+        "issuer-registry oversized status query",
+        code(initial_dep.issuers.try_get_issuer_statuses(&oversized_issuers)),
+    );
+    observed.record(
+        "issuer-registry set_issuer_metadata_commitment with all-zero digest",
+        code(initial_dep.issuers.try_set_issuer_metadata_commitment(
+            &bytes32(env, 1),
+            &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            &bytes32(env, 3),
         )),
     );
     observed.record(
@@ -370,7 +397,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         )),
     );
 
-    // 311: CyclicSupersession - register a proof succeeding itself
+    // 316: CyclicSupersession - register a proof succeeding itself
     let deployment_cyclic = deployment();
     let env_cyclic = &deployment_cyclic.env;
     observed.record(
@@ -386,7 +413,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         )),
     );
 
-    // 312: CrossIssuerSupersession - register a proof succeeding one from another issuer
+    // 317: CrossIssuerSupersession - register a proof succeeding one from another issuer
     let deployment_cross = deployment();
     let env_cross = &deployment_cross.env;
     let issuer_cross = Address::generate(env_cross);
@@ -418,7 +445,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         )),
     );
 
-    // 313: PredecessorNotFound - register a proof succeeding one that doesn't exist
+    // 318: PredecessorNotFound - register a proof succeeding one that doesn't exist
     let deployment_missing = deployment();
     let env_missing = &deployment_missing.env;
     observed.record(
@@ -434,7 +461,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         )),
     );
 
-    // 314: TooManySuccessors - register a proof succeeding one that already has 5 successors
+    // 319: TooManySuccessors - register a proof succeeding one that already has 5 successors
     let deployment_many = deployment();
     let env_many = &deployment_many.env;
     deployment_many.proofs.register_proof(
@@ -470,7 +497,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         )),
     );
 
-    // 311: UnsupportedProofType — use an unapproved proof type.
+    // 320: UnsupportedProofType — use an unapproved proof type.
     let deployment5 = deployment();
     let env5 = &deployment5.env;
     observed.record(
@@ -484,6 +511,71 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &None,
             &soroban_sdk::BytesN::from_array(env5, &[99; 32]),
         )),
+    );
+
+    // 311: InvalidBatchSize — an empty batch is rejected before any
+    // cross-contract call is made, on both the registration and revocation
+    // paths.
+    let empty_registration_batch: soroban_sdk::Vec<earnproof_shared::ProofRegistrationInput> =
+        soroban_sdk::Vec::new(env);
+    observed.record(
+        "proof-registry registration batch with zero entries",
+        code(
+            initial_dep
+                .proofs
+                .try_register_proofs_batch(&empty_registration_batch, &initial_dep.issuer),
+        ),
+    );
+
+    let empty_revocation_batch: soroban_sdk::Vec<soroban_sdk::BytesN<32>> =
+        soroban_sdk::Vec::new(env);
+    observed.record(
+        "proof-registry revocation batch with zero entries",
+        code(
+            initial_dep
+                .proofs
+                .try_revoke_proofs_batch(&empty_revocation_batch),
+        ),
+    );
+
+    // 312: InvalidActivationTime — activation at or after expiry can never
+    // be valid.
+    observed.record(
+        "proof-registry activation at or after expiry",
+        code(initial_dep.proofs.try_register_proof_with_activation(
+            &bytes32(env, 70),
+            &bytes32(env, 71),
+            &initial_dep.issuer,
+            &1,
+            &FAR_FUTURE,
+            &FAR_FUTURE,
+        )),
+    );
+
+    // 313: DisputeAlreadyOpen — opening a second dispute while one is open.
+    initial_dep
+        .proofs
+        .open_dispute(&proof_id, &initial_dep.issuer, &bytes32(env, 80));
+    observed.record(
+        "proof-registry dispute already open",
+        code(initial_dep.proofs.try_open_dispute(
+            &proof_id,
+            &initial_dep.issuer,
+            &bytes32(env, 81),
+        )),
+    );
+
+    // 314: DisputeNotFound — no dispute exists for this proof.
+    observed.record(
+        "proof-registry dispute not found",
+        code(initial_dep.proofs.try_withdraw_dispute(&bytes32(env, 99))),
+    );
+
+    // 315: DisputeNotOpen — the dispute above is withdrawn, then acted on again.
+    initial_dep.proofs.withdraw_dispute(&proof_id);
+    observed.record(
+        "proof-registry dispute not open",
+        code(initial_dep.proofs.try_withdraw_dispute(&proof_id)),
     );
 
     // --- issuer-registry capacity and cooldown --------------------------
@@ -521,6 +613,14 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     observed.record(
         "issuer-registry reactivate before cooldown",
         code(cap.try_reactivate_issuer(&bytes32(env, 50), &bytes32(env, 98))),
+    );
+    observed.record(
+        "issuer-registry set metadata commitment empty",
+        code(cap.try_set_issuer_metadata_commitment(
+            &bytes32(env, 50),
+            &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            &bytes32(env, 53),
+        )),
     );
 
     // --- proof-registry incompatible dependency -------------------------

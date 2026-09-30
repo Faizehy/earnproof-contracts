@@ -169,6 +169,31 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
         ),
         (
             "ProofError",
+            "InvalidBatchSize",
+            ProofError::InvalidBatchSize as u32,
+        ),
+        (
+            "ProofError",
+            "InvalidActivationTime",
+            ProofError::InvalidActivationTime as u32,
+        ),
+        (
+            "ProofError",
+            "DisputeAlreadyOpen",
+            ProofError::DisputeAlreadyOpen as u32,
+        ),
+        (
+            "ProofError",
+            "DisputeNotFound",
+            ProofError::DisputeNotFound as u32,
+        ),
+        (
+            "ProofError",
+            "DisputeNotOpen",
+            ProofError::DisputeNotOpen as u32,
+        ),
+        (
+            "ProofError",
             "CyclicSupersession",
             ProofError::CyclicSupersession as u32,
         ),

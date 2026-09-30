@@ -141,6 +141,10 @@ pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
 }
 
+pub fn successors_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "Successors"), id.clone())
+}
+
 pub fn genesis_key() -> (Symbol,) {
     (symbol_short!("Genesis"),)
 }
@@ -168,9 +172,20 @@ pub fn config_history_ring_key(env: &Env, slot: u32) -> (Symbol, u32) {
     (Symbol::new(env, "ConfigHistoryRing"), slot)
 }
 
-#[allow(dead_code)]
 pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(env, "ProofTtl"), id.clone())
+}
+
+pub fn issuer_active_proof_count_key(env: &Env, issuer: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "IssuerActiveProofCount"), issuer.clone())
+}
+
+pub fn issuer_lifetime_proof_count_key(env: &Env, issuer: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "IssuerLifetimeProofCount"), issuer.clone())
+}
+
+pub fn schema_rate_usage_key(env: &Env, schema: u32, start: u32) -> (Symbol, u32, u32) {
+    (Symbol::new(env, "SchemaRateUsage"), schema, start)
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +391,15 @@ pub fn exercised_deployment() -> Deployment {
         &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
     );
     proofs.revoke_proof(&bytes32(&env, 7));
+    proofs.open_dispute(&proof_id, &rotated_issuer, &bytes32(&env, 30));
+    proofs.archive_proof(&bytes32(&env, 7));
+    proofs.pause_scope(&earnproof_shared::PauseScope::Updates);
+    proofs.unpause_scope(&earnproof_shared::PauseScope::Updates);
+    let wasm_hash_proofs = bytes32(&env, 0x93);
+    let pending_proofs = bytes32(&env, 0x96);
+    proofs.approve_upgrade(&wasm_hash_proofs, &2);
+    proofs.approve_upgrade(&pending_proofs, &3);
+
     proofs.register_proof_with_payload(
         &bytes32(&env, 9),
         &bytes32(&env, 10),

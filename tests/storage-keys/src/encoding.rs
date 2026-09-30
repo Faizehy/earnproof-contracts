@@ -12,12 +12,13 @@
 
 use super::support::{
     active_issuer_count_key, address_issuer_key, address_ttl_key, admin_key, bytes32,
-    config_history_ring_key,
-    config_history_total_key, config_version_key, contract_version_key, deployment, encoded,
-    encoded_keys_in, genesis_key, instance_live_until_key, issuer_epoch_key, issuer_key,
+    config_history_ring_key, config_history_total_key, config_version_key, contract_version_key,
+    deployment, encoded, encoded_keys_in, genesis_key, instance_live_until_key,
+    issuer_active_proof_count_key, issuer_epoch_key, issuer_key, issuer_lifetime_proof_count_key,
     issuer_registry_key, issuer_ttl_key, max_active_issuers_key, paused_key, proof_key,
-    proof_type_approved_key, protocol_config_key, reactivation_cooldown_key,
-    registry_epoch_key, schema_predecessor_key, schema_version_key,
+    proof_ttl_key, proof_type_approved_key, protocol_config_key, reactivation_cooldown_key,
+    registry_epoch_key, schema_predecessor_key, schema_rate_usage_key, schema_version_key,
+    successors_key,
 };
 use earnproof_shared::StorageClass;
 use soroban_sdk::testutils::Address as _;
@@ -98,13 +99,41 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, protocol_config_key(env)),
             encoded(env, genesis_key()),
             encoded(env, registry_epoch_key(env)),
+            encoded(env, instance_live_until_key(env)),
         ]),
         "proof-registry instance keys"
     );
 
+    let successor_id = bytes32(env, 7);
+    let proofs = proof_registry::ProofRegistryContractClient::new(env, &deployment.proofs_id);
+    proofs.register_proof(
+        &successor_id,
+        &bytes32(env, 8),
+        &deployment.issuer,
+        &1,
+        &1_000_000,
+        &Some(deployment.proof_id.clone()),
+        &bytes32(env, 1),
+    );
+
     assert_eq!(
         encoded_keys_in(env, &deployment.proofs_id, StorageClass::Persistent),
-        sorted(std::vec![encoded(env, proof_key(&deployment.proof_id)),]),
+        sorted(std::vec![
+            encoded(env, proof_key(&deployment.proof_id)),
+            encoded(env, proof_ttl_key(env, &deployment.proof_id)),
+            encoded(env, proof_key(&successor_id)),
+            encoded(env, proof_ttl_key(env, &successor_id)),
+            encoded(env, successors_key(env, &deployment.proof_id)),
+            encoded(
+                env,
+                issuer_active_proof_count_key(env, &deployment.issuer)
+            ),
+            encoded(
+                env,
+                issuer_lifetime_proof_count_key(env, &deployment.issuer)
+            ),
+            encoded(env, schema_rate_usage_key(env, 1, 0)),
+        ]),
         "proof-registry persistent keys"
     );
 }
@@ -125,6 +154,11 @@ fn keys_encode_as_a_discriminant_followed_by_the_payload() {
     assert_eq!(discriminant, symbol_short!("Proof"));
     let payload: BytesN<32> = composite.get(1).unwrap().into_val(&env);
     assert_eq!(payload, identifier);
+
+    let successors: SorobanVec<Val> = successors_key(&env, &identifier).into_val(&env);
+    assert_eq!(successors.len(), 2);
+    let discriminant: Symbol = successors.get(0).unwrap().into_val(&env);
+    assert_eq!(discriminant, Symbol::new(&env, "Successors"));
 }
 
 #[test]
@@ -191,6 +225,10 @@ fn no_two_distinct_keys_share_an_encoding() {
         keys.push((
             std::format!("Proof({value})"),
             encoded(&env, proof_key(&identifier)),
+        ));
+        keys.push((
+            std::format!("Successors({value})"),
+            encoded(&env, successors_key(&env, &identifier)),
         ));
     }
     for (index, address) in [&first, &second].into_iter().enumerate() {
@@ -307,7 +345,7 @@ fn identical_namespaces_in_different_contracts_address_different_entries() {
     // another: the issuer registry still holds only its fixed instance keys.
     assert_eq!(
         encoded_keys_in(env, &deployment.issuers_id, StorageClass::Instance).len(),
-        4
+        8
     );
 }
 

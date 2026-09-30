@@ -377,3 +377,48 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
         "a rejected call must not advance the registry epoch"
     );
 }
+
+#[test]
+fn proof_registry_emits_proof_registered_on_registration() {
+    // proof-registry publishes exactly one `proof_registered` event on a
+    // successful registration, carrying the on-chain creation timing so an
+    // indexer can record deterministic audit timestamps. Revocation
+    // publishes exactly one `proof_revoked` event of its own, carrying the
+    // advanced epoch and who revoked it.
+    let deployment = Deployment::new();
+
+    let register_events = deployment.capture(|| {
+        deployment.register_proof(0x11);
+    });
+    let from_registration: std::vec::Vec<_> = register_events
+        .iter()
+        .filter(|event| event.contract == deployment.proofs.address)
+        .collect();
+    assert_eq!(
+        from_registration.len(),
+        1,
+        "registration must emit exactly one proof-registry event"
+    );
+    assert!(
+        from_registration[0].is(&deployment.env, "proof_registered"),
+        "the registration event must be proof_registered"
+    );
+
+    let proof_id = deployment.register_proof(0x12);
+    let revoke_events = deployment.capture(|| {
+        deployment.proofs.admin_revoke_proof(&proof_id);
+    });
+    let from_revocation: std::vec::Vec<_> = revoke_events
+        .iter()
+        .filter(|event| event.contract == deployment.proofs.address)
+        .collect();
+    assert_eq!(
+        from_revocation.len(),
+        1,
+        "revocation must emit exactly one proof-registry event"
+    );
+    assert!(
+        from_revocation[0].is(&deployment.env, "proof_revoked"),
+        "the revocation event must be proof_revoked"
+    );
+}

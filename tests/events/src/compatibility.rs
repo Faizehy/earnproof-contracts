@@ -21,7 +21,11 @@ use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     // protocol-config
     ("initialized", &["admin"]),
-    ("admin_transfer_nominated", &["pending_admin", "nominated_by"]),
+    ("admin_changed", &["new_admin"]),
+    (
+        "admin_transfer_nominated",
+        &["pending_admin", "nominated_by"],
+    ),
     ("admin_transfer_accepted", &["new_admin"]),
     ("admin_transfer_cancelled", &["pending_admin", "cancelled_by"]),
     ("paused", &["paused"]),
@@ -119,6 +123,10 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "by_admin",
             "epoch",
         ],
+    ),
+    (
+        "proof_registered_with_payload",
+        &["proof_id_hash", "payload_len", "payload_hash", "epoch"],
     ),
 ];
 /// Looks up the declared payload fields for a topic.
@@ -343,5 +351,12 @@ fn proof_registry_declares_registration_and_revocation_events() {
         .filter(|name| name.starts_with("proof_"))
         .collect();
 
-    assert_eq!(proof_events, std::vec!["proof_registered", "proof_revoked"]);
+    assert_eq!(
+        proof_events,
+        std::vec![
+            "proof_registered",
+            "proof_revoked",
+            "proof_registered_with_payload"
+        ]
+    );
 }

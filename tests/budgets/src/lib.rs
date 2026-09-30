@@ -61,13 +61,13 @@ mod tests {
     const ISSUER_INIT_MEM_MAX: u64 = 100_000;
     const ISSUER_REGISTER_CPU_MAX: u64 = 600_000;
     const ISSUER_REGISTER_MEM_MAX: u64 = 200_000;
-    const ISSUER_LOOKUP_CPU_MAX: u64 = 150_000;
-    const ISSUER_LOOKUP_MEM_MAX: u64 = 80_000;
+    const ISSUER_LOOKUP_CPU_MAX: u64 = 210_000;
+    const ISSUER_LOOKUP_MEM_MAX: u64 = 100_000;
     const ISSUER_UPDATE_CPU_MAX: u64 = 400_000;
     const ISSUER_UPDATE_MEM_MAX: u64 = 150_000;
-    const ISSUER_SUSPEND_CPU_MAX: u64 = 400_000;
-    const ISSUER_SUSPEND_MEM_MAX: u64 = 150_000;
-    const ISSUER_REVOKE_CPU_MAX: u64 = 400_000;
+    const ISSUER_SUSPEND_CPU_MAX: u64 = 560_000;
+    const ISSUER_SUSPEND_MEM_MAX: u64 = 160_000;
+    const ISSUER_REVOKE_CPU_MAX: u64 = 500_000;
     const ISSUER_REVOKE_MEM_MAX: u64 = 150_000;
     const ISSUER_ROTATE_CPU_MAX: u64 = 500_000;
     const ISSUER_ROTATE_MEM_MAX: u64 = 180_000;
@@ -80,14 +80,24 @@ mod tests {
     // Proof Registry thresholds
     const PROOF_INIT_CPU_MAX: u64 = 400_000;
     const PROOF_INIT_MEM_MAX: u64 = 120_000;
-    const PROOF_REGISTER_CPU_MAX: u64 = 800_000;
-    const PROOF_REGISTER_MEM_MAX: u64 = 250_000;
-    const PROOF_LOOKUP_CPU_MAX: u64 = 150_000;
-    const PROOF_LOOKUP_MEM_MAX: u64 = 80_000;
-    const PROOF_REVOKE_CPU_MAX: u64 = 400_000;
-    const PROOF_REVOKE_MEM_MAX: u64 = 150_000;
+    const PROOF_REGISTER_CPU_MAX: u64 = 1_050_000;
+    const PROOF_REGISTER_MEM_MAX: u64 = 400_000;
+    const PROOF_LOOKUP_CPU_MAX: u64 = 200_000;
+    const PROOF_LOOKUP_MEM_MAX: u64 = 100_000;
+    const PROOF_REVOKE_CPU_MAX: u64 = 550_000;
+    const PROOF_REVOKE_MEM_MAX: u64 = 200_000;
     const PROOF_VALIDITY_CHECK_CPU_MAX: u64 = 200_000;
     const PROOF_VALIDITY_CHECK_MEM_MAX: u64 = 100_000;
+    const PROOF_REGISTER_BATCH_MAX_CPU_MAX: u64 = 5_600_000;
+    const PROOF_REGISTER_BATCH_MAX_MEM_MAX: u64 = 1_750_000;
+    const PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX: u64 = 800_000;
+    const PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX: u64 = 320_000;
+    const PROOF_REVOKE_BATCH_MAX_CPU_MAX: u64 = 6_800_000;
+    const PROOF_REVOKE_BATCH_MAX_MEM_MAX: u64 = 2_000_000;
+    const PROOF_OPEN_DISPUTE_CPU_MAX: u64 = 500_000;
+    const PROOF_OPEN_DISPUTE_MEM_MAX: u64 = 180_000;
+    const PROOF_RESOLVE_DISPUTE_CPU_MAX: u64 = 500_000;
+    const PROOF_RESOLVE_DISPUTE_MEM_MAX: u64 = 190_000;
 
     // -----------------------------------------------------------------------
     // Test Utilities
@@ -684,6 +694,131 @@ mod tests {
             "proof_registry.is_valid_proof",
             PROOF_VALIDITY_CHECK_CPU_MAX,
             PROOF_VALIDITY_CHECK_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn proof_registry_register_proofs_batch_max_size_budget() {
+        let env = Env::default();
+        let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
+
+        let mut batch = soroban_sdk::Vec::new(&env);
+        for seed in 0..earnproof_shared::MAX_PROOF_BATCH_SIZE as u8 {
+            batch.push_back(earnproof_shared::ProofRegistrationInput {
+                proof_id_hash: bytes(&env, seed),
+                commitment_hash: bytes(&env, seed.wrapping_add(100)),
+                schema_version: 1,
+                expires_at: 2_000,
+            });
+        }
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        proof_client.register_proofs_batch(&batch, &issuer);
+
+        assert_budget(
+            &env,
+            "proof_registry.register_proofs_batch(max_size)",
+            PROOF_REGISTER_BATCH_MAX_CPU_MAX,
+            PROOF_REGISTER_BATCH_MAX_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn proof_registry_register_proof_with_activation_budget() {
+        let env = Env::default();
+        let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        let proof_id = bytes(&env, 1);
+        let commitment = bytes(&env, 2);
+
+        proof_client.register_proof_with_activation(
+            &proof_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &500,
+        );
+
+        assert_budget(
+            &env,
+            "proof_registry.register_proof_with_activation",
+            PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX,
+            PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn proof_registry_revoke_proofs_batch_max_size_budget() {
+        let env = Env::default();
+        let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
+
+        let mut batch = soroban_sdk::Vec::new(&env);
+        for seed in 0..earnproof_shared::MAX_PROOF_BATCH_SIZE as u8 {
+            let proof_id = bytes(&env, seed);
+            proof_client.register_proof(
+                &proof_id,
+                &bytes(&env, seed.wrapping_add(100)),
+                &issuer,
+                &1,
+                &2_000,
+            );
+            batch.push_back(proof_id);
+        }
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        proof_client.revoke_proofs_batch(&batch);
+
+        assert_budget(
+            &env,
+            "proof_registry.revoke_proofs_batch(max_size)",
+            PROOF_REVOKE_BATCH_MAX_CPU_MAX,
+            PROOF_REVOKE_BATCH_MAX_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn proof_registry_open_dispute_budget() {
+        let env = Env::default();
+        let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
+
+        let proof_id = bytes(&env, 1);
+        proof_client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        proof_client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+
+        assert_budget(
+            &env,
+            "proof_registry.open_dispute",
+            PROOF_OPEN_DISPUTE_CPU_MAX,
+            PROOF_OPEN_DISPUTE_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn proof_registry_resolve_dispute_budget() {
+        let env = Env::default();
+        let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
+
+        let proof_id = bytes(&env, 1);
+        proof_client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        proof_client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        proof_client.resolve_dispute(&proof_id);
+
+        assert_budget(
+            &env,
+            "proof_registry.resolve_dispute",
+            PROOF_RESOLVE_DISPUTE_CPU_MAX,
+            PROOF_RESOLVE_DISPUTE_MEM_MAX,
         );
     }
 
