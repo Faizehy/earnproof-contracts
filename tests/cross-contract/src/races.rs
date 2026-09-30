@@ -87,7 +87,7 @@ fn permits_registration(update: Update) -> bool {
 /// Attempts a registration and reports whether it was accepted.
 fn attempt(deployment: &Deployment, discriminator: u8) -> bool {
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &hash(&deployment.env, discriminator),
             &commitment(&deployment.env, discriminator),
             &deployment.issuer,

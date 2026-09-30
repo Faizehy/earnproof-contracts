@@ -136,6 +136,21 @@ fn keys_encode_as_a_discriminant_followed_by_the_payload() {
     assert_eq!(discriminant, symbol_short!("Proof"));
     let payload: BytesN<32> = composite.get(1).unwrap().into_val(&env);
     assert_eq!(payload, identifier);
+
+    let context_key: SorobanVec<Val> = proof_context_key(&env, &identifier).into_val(&env);
+    assert_eq!(context_key.len(), 2);
+    let discriminant: Symbol = context_key.get(0).unwrap().into_val(&env);
+    assert_eq!(discriminant, Symbol::new(&env, "ProofContext"));
+    let payload: BytesN<32> = context_key.get(1).unwrap().into_val(&env);
+    assert_eq!(payload, identifier);
+
+    let pseudonym_key: SorobanVec<Val> =
+        proof_subject_pseudonym_key(&env, &identifier).into_val(&env);
+    assert_eq!(pseudonym_key.len(), 2);
+    let discriminant: Symbol = pseudonym_key.get(0).unwrap().into_val(&env);
+    assert_eq!(discriminant, Symbol::new(&env, "ProofSubjectPseudonym"));
+    let payload: BytesN<32> = pseudonym_key.get(1).unwrap().into_val(&env);
+    assert_eq!(payload, identifier);
 }
 
 #[test]

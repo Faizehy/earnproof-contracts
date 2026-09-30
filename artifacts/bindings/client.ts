@@ -47,6 +47,8 @@ import type {
   ProofStatus,
   IssuerRecord,
   ProofRecord,
+  ProofPolicySnapshot,
+  SchemaPolicy,
   // Protocol Config params
   InitializeProtocolConfigParams,
   InitializeProtocolConfigResult,
@@ -66,6 +68,14 @@ import type {
   DeprecateSchemaVersionResult,
   IsSchemaVersionApprovedParams,
   IsSchemaVersionApprovedResult,
+  SetSchemaPolicyParams,
+  SetSchemaPolicyResult,
+  GetSchemaPolicyParams,
+  GetSchemaPolicyResult,
+  SetCommitmentAlgorithmParams,
+  SetCommitmentAlgorithmResult,
+  IsAlgorithmSupportedParams,
+  IsAlgorithmSupportedResult,
   GetConfigVersionParams,
   GetConfigVersionResult,
   // Issuer Registry params
@@ -98,12 +108,16 @@ import type {
   InitializeProofRegistryResult,
   RegisterProofParams,
   RegisterProofResult,
+  RegisterProofWithPolicyParams,
+  RegisterProofWithPolicyResult,
   RevokeProofParams,
   RevokeProofResult,
   AdminRevokeProofParams,
   AdminRevokeProofResult,
   GetProofParams,
   GetProofResult,
+  GetProofPolicySnapshotParams,
+  GetProofPolicySnapshotResult,
   IsValidProofParams,
   IsValidProofResult,
   IsRevokedParams,
@@ -467,6 +481,61 @@ export class EarnProofClient {
     );
   }
 
+  async setSchemaPolicy(
+    params: SetSchemaPolicyParams
+  ): Promise<SetSchemaPolicyResult> {
+    return this.invoke(
+      this.protocolConfig,
+      this.config.protocolConfigId,
+      "set_schema_policy",
+      [
+        nativeToScVal(params.version, { type: "u32" }),
+        nativeToScVal(params.proof_types, { type: "vec", elementType: "u32" }),
+        nativeToScVal(params.max_validity_seconds, { type: "u64" }),
+      ],
+      () => undefined
+    );
+  }
+
+  async getSchemaPolicy(
+    params: GetSchemaPolicyParams
+  ): Promise<GetSchemaPolicyResult> {
+    return this.invoke(
+      this.protocolConfig,
+      this.config.protocolConfigId,
+      "get_schema_policy",
+      [nativeToScVal(params.version, { type: "u32" })],
+      (val) => scValToNative(val) as SchemaPolicy
+    );
+  }
+
+  async setCommitmentAlgorithm(
+    params: SetCommitmentAlgorithmParams
+  ): Promise<SetCommitmentAlgorithmResult> {
+    return this.invoke(
+      this.protocolConfig,
+      this.config.protocolConfigId,
+      "set_commitment_algorithm",
+      [
+        nativeToScVal(params.algorithm, { type: "u32" }),
+        nativeToScVal(params.supported, { type: "bool" }),
+      ],
+      () => undefined
+    );
+  }
+
+  async isAlgorithmSupported(
+    params: IsAlgorithmSupportedParams
+  ): Promise<IsAlgorithmSupportedResult> {
+    return this.invoke(
+      this.protocolConfig,
+      this.config.protocolConfigId,
+      "is_algorithm_supported",
+      [nativeToScVal(params.algorithm, { type: "u32" })],
+      (val) => scValToNative(val) as boolean
+    );
+  }
+
   /**
    * Get current protocol configuration version
    */
@@ -729,6 +798,26 @@ export class EarnProofClient {
     );
   }
 
+  async registerProofWithPolicy(
+    params: RegisterProofWithPolicyParams
+  ): Promise<RegisterProofWithPolicyResult> {
+    return this.invoke(
+      this.proofRegistry,
+      this.config.proofRegistryId,
+      "register_proof_with_policy",
+      [
+        nativeToScVal(this.hexToBytes(params.proof_id_hash), { type: "bytes" }),
+        nativeToScVal(this.hexToBytes(params.commitment_hash), { type: "bytes" }),
+        nativeToScVal(params.issuer_address, { type: "address" }),
+        nativeToScVal(params.schema_version, { type: "u32" }),
+        nativeToScVal(params.expires_at, { type: "u64" }),
+        nativeToScVal(params.proof_type, { type: "u32" }),
+        nativeToScVal(params.commitment_algorithm, { type: "u32" }),
+      ],
+      () => undefined
+    );
+  }
+
   /**
    * Revoke a proof (by issuer)
    * Requires issuer authorization
@@ -771,6 +860,18 @@ export class EarnProofClient {
       "get_proof",
       [nativeToScVal(this.hexToBytes(params.proof_id_hash), { type: "bytes" })],
       (val) => scValToNative(val) as ProofRecord
+    );
+  }
+
+  async getProofPolicySnapshot(
+    params: GetProofPolicySnapshotParams
+  ): Promise<GetProofPolicySnapshotResult> {
+    return this.invoke(
+      this.proofRegistry,
+      this.config.proofRegistryId,
+      "get_proof_policy_snapshot",
+      [nativeToScVal(this.hexToBytes(params.proof_id_hash), { type: "bytes" })],
+      (val) => scValToNative(val) as ProofPolicySnapshot
     );
   }
 
@@ -855,6 +956,8 @@ export type {
   ProofStatus,
   IssuerRecord,
   ProofRecord,
+  ProofPolicySnapshot,
+  SchemaPolicy,
   // Protocol Config
   InitializeProtocolConfigParams,
   InitializeProtocolConfigResult,
@@ -874,6 +977,14 @@ export type {
   DeprecateSchemaVersionResult,
   IsSchemaVersionApprovedParams,
   IsSchemaVersionApprovedResult,
+  SetSchemaPolicyParams,
+  SetSchemaPolicyResult,
+  GetSchemaPolicyParams,
+  GetSchemaPolicyResult,
+  SetCommitmentAlgorithmParams,
+  SetCommitmentAlgorithmResult,
+  IsAlgorithmSupportedParams,
+  IsAlgorithmSupportedResult,
   GetConfigVersionParams,
   GetConfigVersionResult,
   // Issuer Registry
@@ -906,12 +1017,16 @@ export type {
   InitializeProofRegistryResult,
   RegisterProofParams,
   RegisterProofResult,
+  RegisterProofWithPolicyParams,
+  RegisterProofWithPolicyResult,
   RevokeProofParams,
   RevokeProofResult,
   AdminRevokeProofParams,
   AdminRevokeProofResult,
   GetProofParams,
   GetProofResult,
+  GetProofPolicySnapshotParams,
+  GetProofPolicySnapshotResult,
   IsValidProofParams,
   IsValidProofResult,
   IsRevokedParams,

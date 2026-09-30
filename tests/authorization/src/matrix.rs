@@ -575,7 +575,7 @@ fn matrix() -> std::vec::Vec<Case> {
                 match identity {
                     Identity::Missing => d
                         .proofs
-                        .try_register_proof(
+                        .try_register_proof_with_type_identifier(
                             &proof_id,
                             &commitment,
                             &d.issuer,
@@ -596,7 +596,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             args.clone(),
                         );
                         d.proofs
-                            .try_register_proof(
+                            .try_register_proof_with_type_identifier(
                                 &proof_id,
                                 &commitment,
                                 &d.issuer,
@@ -609,7 +609,7 @@ fn matrix() -> std::vec::Vec<Case> {
                     Identity::Authorized => {
                         authorize(&d.env, &d.issuer, &d.proofs_address, "register_proof", args);
                         d.proofs
-                            .try_register_proof(
+                            .try_register_proof_with_type_identifier(
                                 &proof_id,
                                 &commitment,
                                 &d.issuer,

@@ -121,6 +121,22 @@ pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
 }
 
+pub fn proof_context_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofContext"), id.clone())
+}
+
+pub fn proof_subject_pseudonym_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofSubjectPseudonym"), id.clone())
+}
+
+pub fn genesis_key() -> (Symbol,) {
+    (symbol_short!("Genesis"),)
+}
+
+pub fn registry_epoch_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "RegistryEpoch"),)
+}
+
 pub fn issuer_epoch_key(env: &Env) -> (Symbol,) {
     (Symbol::new(env, "IssuerEpoch"),)
 }
@@ -265,7 +281,7 @@ pub fn deployment() -> Deployment {
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
     proofs.initialize(&admin, &issuers_id, &config_id);
-    proofs.register_proof(
+    proofs.register_proof_with_type_identifier(
         &proof_id,
         &bytes32(&env, 6),
         &issuer,
@@ -321,9 +337,17 @@ pub fn exercised_deployment() -> Deployment {
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
+    issuers.grant_governance_role(
+        &bytes32(&env, 0x21),
+        &earnproof_shared::GovernanceRole::IssuerManagement,
+        &Address::generate(&env),
+        &env.ledger().sequence(),
+        &None,
+    );
     issuers.register_issuer(&issuer_id, &issuer, &bytes32(&env, 2), &bytes32(&env, 99));
     issuers.update_issuer(&issuer_id, &bytes32(&env, 3));
     issuers.rotate_issuer_address(&issuer_id, &rotated_issuer);
+    issuers.accept_issuer_address_rotation(&issuer_id);
     issuers.register_issuer(
         &bytes32(&env, 10),
         &suspended_issuer,
@@ -338,6 +362,7 @@ pub fn exercised_deployment() -> Deployment {
         &bytes32(&env, 10),
         &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
+    issuers.rotate_issuer_address(&bytes32(&env, 10), &Address::generate(&env));
     issuers.register_issuer(
         &bytes32(&env, 20),
         &revoked_issuer,
@@ -352,7 +377,7 @@ pub fn exercised_deployment() -> Deployment {
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
     proofs.initialize(&admin, &issuers_id, &config_id);
-    proofs.register_proof(
+    proofs.register_proof_with_type_identifier(
         &proof_id,
         &bytes32(&env, 6),
         &rotated_issuer,
@@ -360,7 +385,7 @@ pub fn exercised_deployment() -> Deployment {
         &1_000_000,
         &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
     );
-    proofs.register_proof(
+    proofs.register_proof_with_type_identifier(
         &bytes32(&env, 7),
         &bytes32(&env, 8),
         &rotated_issuer,
@@ -378,7 +403,7 @@ pub fn exercised_deployment() -> Deployment {
     proofs.approve_upgrade(&wasm_hash_proofs, &2);
     proofs.approve_upgrade(&pending_proofs, &3);
 
-    proofs.register_proof_with_payload(
+    proofs.register_proof_with_type_identifier_and_payload(
         &bytes32(&env, 9),
         &bytes32(&env, 10),
         &rotated_issuer,

@@ -177,7 +177,7 @@ fn apply_to_contracts(deployment: &Deployment, op: Op, step: usize) -> bool {
             let discriminator = 0x40u8.wrapping_add(step as u8);
             deployment
                 .proofs
-                .try_register_proof(
+                .try_register_proof_with_type_identifier(
                     &hash(&deployment.env, discriminator),
                     &hash(&deployment.env, discriminator ^ 0xFF),
                     &deployment.issuer,
@@ -359,7 +359,7 @@ fn a_stale_caller_cannot_register_against_a_deprecated_schema() {
     assert!(
         deployment
             .proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &hash(&deployment.env, 0xE1),
                 &hash(&deployment.env, 0xE2),
                 &deployment.issuer,
@@ -400,7 +400,7 @@ fn cross_contract_disagreement_resolves_in_favour_of_containment() {
 
         let accepted = deployment
             .proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &hash(&deployment.env, 0xF1),
                 &hash(&deployment.env, 0xF2),
                 &deployment.issuer,

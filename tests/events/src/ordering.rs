@@ -190,7 +190,7 @@ fn cross_contract_rejection_publishes_nothing_from_either_contract() {
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x91),
             &hash(&deployment.env, 0x92),
             &deployment.issuer,

@@ -59,7 +59,7 @@
 //!     let current_timestamp = env.ledger().timestamp();
 //!     let expires_at = current_timestamp + 86400u64;
 //!
-//!     proof_client.register_proof(
+//!     proof_client.register_proof_with_type_identifier(
 //!         &proof_id_hash,
 //!         &commitment_hash,
 //!         &issuer,
@@ -123,7 +123,7 @@
 //!     let current_timestamp = env.ledger().timestamp();
 //!     let expires_at = current_timestamp + 86400u64;
 //!
-//!     proof_client.register_proof(
+//!     proof_client.register_proof_with_type_identifier(
 //!         &proof_id_hash,
 //!         &commitment_hash,
 //!         &issuer,
@@ -182,7 +182,7 @@
 //!     let current_timestamp = env.ledger().timestamp();
 //!     let expires_at = current_timestamp + 86400u64;
 //!
-//!     proof_client.register_proof(
+//!     proof_client.register_proof_with_type_identifier(
 //!         &proof_id_hash,
 //!         &commitment_hash,
 //!         &issuer,
@@ -237,7 +237,7 @@
 //!     let current_timestamp = env.ledger().timestamp();
 //!     let expires_at = current_timestamp + 86400u64;
 //!
-//!     proof_client.register_proof(
+//!     proof_client.register_proof_with_type_identifier(
 //!         &proof_id_hash,
 //!         &commitment_hash,
 //!         &issuer,

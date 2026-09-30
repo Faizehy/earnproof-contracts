@@ -153,7 +153,7 @@ fn register_with_root_auth_only(deployment: &Deployment, proof_id: &BytesN<32>) 
     }]);
 
     outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             proof_id,
             &commitment_hash,
             &deployment.issuer,
@@ -252,7 +252,7 @@ fn a_successful_pause_read_gates_the_registration_correctly() {
     let proof_id = hash(&deployment.env, 0x33);
 
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &commitment(&deployment.env, 0xC0),
             &deployment.issuer,
@@ -309,7 +309,7 @@ fn a_successful_schema_read_gates_the_registration_correctly() {
     let proof_id = hash(&deployment.env, 0x43);
 
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &commitment(&deployment.env, 0xC0),
             &deployment.issuer,
@@ -387,7 +387,7 @@ fn a_successful_issuer_read_gates_the_registration_correctly() {
     let proof_id = hash(&deployment.env, 0x53);
 
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &commitment(&deployment.env, 0xC0),
             &deployment.issuer,
@@ -448,7 +448,7 @@ fn a_duplicate_proof_id_is_rejected_before_writing() {
 
     // Try to register the same proof id again
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &commitment(&deployment.env, 0xC0),
             &deployment.issuer,

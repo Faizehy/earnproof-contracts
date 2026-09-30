@@ -613,7 +613,7 @@ mod tests {
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
 
-        proof_client.register_proof(
+        proof_client.register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &issuer,
@@ -637,7 +637,7 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(
+        proof_client.register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &issuer,
@@ -665,7 +665,7 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(
+        proof_client.register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &issuer,
@@ -693,7 +693,7 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(
+        proof_client.register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &issuer,
@@ -778,7 +778,7 @@ mod tests {
         let mut batch = soroban_sdk::Vec::new(&env);
         for seed in 0..earnproof_shared::MAX_PROOF_BATCH_SIZE as u8 {
             let proof_id = bytes(&env, seed);
-            proof_client.register_proof(
+            proof_client.register_proof_with_type_identifier(
                 &proof_id,
                 &bytes(&env, seed.wrapping_add(100)),
                 &issuer,
@@ -807,7 +807,7 @@ mod tests {
         let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
 
         let proof_id = bytes(&env, 1);
-        proof_client.register_proof(
+        proof_client.register_proof_with_type_identifier(
             &proof_id,
             &bytes(&env, 2),
             &issuer,
@@ -834,7 +834,7 @@ mod tests {
         let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
 
         let proof_id = bytes(&env, 1);
-        proof_client.register_proof(
+        proof_client.register_proof_with_type_identifier(
             &proof_id,
             &bytes(&env, 2),
             &issuer,

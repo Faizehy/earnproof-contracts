@@ -257,6 +257,16 @@ fn rotate_issuer_address_emits_both_old_and_new_address() {
             .issuers
             .rotate_issuer_address(&deployment.issuer_id, &replacement)
     });
+    let event = expect_single(&deployment.env, &events, "issuer_rotation_nominated");
+
+    let nominated_new: Address = event.field(&deployment.env, "new_address").unwrap();
+    assert_eq!(nominated_new, replacement);
+
+    let events = deployment.capture(|| {
+        deployment
+            .issuers
+            .accept_issuer_address_rotation(&deployment.issuer_id)
+    });
     let event = expect_single(&deployment.env, &events, "issuer_address_rotated");
 
     let announced_old: Address = event.field(&deployment.env, "old_address").unwrap();
@@ -286,7 +296,7 @@ fn register_proof_emits_proof_registered_with_the_advanced_epoch() {
     let expires_at = deployment.env.ledger().timestamp() + 100_000;
 
     let events = deployment.capture(|| {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &proof_id,
             &hash(&deployment.env, 0xEE),
             &deployment.issuer,
@@ -355,7 +365,7 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
     let expires_at = deployment.env.ledger().timestamp() + 100_000;
 
     let events = deployment.capture(|| {
-        let _ = deployment.proofs.try_register_proof(
+        let _ = deployment.proofs.try_register_proof_with_type_identifier(
             &hash(&deployment.env, 0x31),
             &hash(&deployment.env, 0x32),
             &deployment.issuer,

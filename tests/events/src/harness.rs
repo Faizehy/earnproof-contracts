@@ -179,7 +179,7 @@ impl Deployment<'_> {
     /// Registers a proof and returns its id hash.
     pub fn register_proof(&self, discriminator: u8) -> BytesN<32> {
         let proof_id = hash(&self.env, discriminator);
-        self.proofs.register_proof(
+        self.proofs.register_proof_with_type_identifier(
             &proof_id,
             &hash(&self.env, discriminator ^ 0xFF),
             &self.issuer,

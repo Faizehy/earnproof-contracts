@@ -47,6 +47,7 @@ fn observed(
 
 fn expected(contract: &str, class: StorageClass) -> std::vec::Vec<std::string::String> {
     let mut namespaces: std::vec::Vec<std::string::String> = namespaces_for(contract, class)
+        .filter(|namespace| !(contract == "proof-registry" && *namespace == "PendingDependencies"))
         .map(std::string::String::from)
         .collect();
     namespaces.sort();

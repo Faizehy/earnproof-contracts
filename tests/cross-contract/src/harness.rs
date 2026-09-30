@@ -295,7 +295,7 @@ impl Deployment<'_> {
     /// Attempts a registration expected to succeed, and returns its proof id.
     pub fn register(&self, discriminator: u8) -> BytesN<32> {
         let proof_id = hash(&self.env, discriminator);
-        self.proofs.register_proof(
+        self.proofs.register_proof_with_type_identifier(
             &proof_id,
             &commitment(&self.env, discriminator),
             &self.issuer,
@@ -327,7 +327,7 @@ impl Deployment<'_> {
         let before = self.footprint(proof_id);
 
         let rejection = outcome_of(|| {
-            self.proofs.try_register_proof(
+            self.proofs.try_register_proof_with_type_identifier(
                 proof_id,
                 &commitment(&self.env, 0xC0),
                 issuer,

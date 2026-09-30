@@ -17,6 +17,15 @@ Privileged entry points span:
 Success-path tests do not prove every unauthorized identity is side-effect free.
 This matrix does.
 
+Critical-action governance adds an optional second authorization mode for
+schema policy and dependency-replacement changes. When disabled, existing
+admin authorization remains in effect. When enabled, direct mutation is
+rejected; the admin proposes the exact action and configured signers approve
+that contract-scoped proposal. Proposal approval and execution authorization
+are covered by the contract-local governance tests, outside the fixed
+`DOCUMENTED_MUTATIONS` matrix count below. Emergency pause controls remain
+immediate admin mutations in either mode.
+
 ## Identity categories
 
 | Label | Meaning |

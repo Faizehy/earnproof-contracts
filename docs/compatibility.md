@@ -41,6 +41,7 @@ Keys in `DataKey` and the types they hold.
 |---|---|
 | Adding a new key variant | **Additive** |
 | Adding a field to a stored struct | **Breaking** |
+| Adding a separate optional sidecar key without changing the stored struct | **Additive** |
 | Removing or renaming a key variant | **Breaking** |
 | Changing a stored type | **Breaking** |
 | Changing a TTL constant | **Semantic** |

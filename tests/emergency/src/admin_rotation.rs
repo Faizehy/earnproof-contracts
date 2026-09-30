@@ -258,6 +258,9 @@ fn rotating_an_issuer_address_during_pause_releases_the_old_mapping() {
     deployment
         .issuers
         .rotate_issuer_address(&issuer_id, &replacement);
+    deployment
+        .issuers
+        .accept_issuer_address_rotation(&issuer_id);
 
     assert!(deployment.issuers.is_active_address(&replacement));
     assert!(
@@ -311,7 +314,7 @@ fn a_revoked_issuer_cannot_register_new_proofs_after_unpause() {
     assert!(
         deployment
             .proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &crate::harness::hash(&deployment.env, 0xA1),
                 &crate::harness::hash(&deployment.env, 0xA2),
                 &deployment.issuer,

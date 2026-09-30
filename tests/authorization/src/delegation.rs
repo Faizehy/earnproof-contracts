@@ -58,7 +58,7 @@ fn register_proof_demands_exactly_the_named_issuer() {
     let commitment = hash(&d.env, 0xA2);
     let expires_at = d.env.ledger().timestamp() + 100_000;
 
-    d.proofs.register_proof(
+    d.proofs.register_proof_with_type_identifier(
         &proof_id,
         &commitment,
         &d.issuer,
@@ -218,7 +218,7 @@ fn registration_auth_is_not_forwardable_to_another_issuer() {
     );
     assert!(
         d.proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &proof_id,
                 &commitment,
                 &d.issuer,
@@ -246,7 +246,7 @@ fn cross_contract_reads_leave_the_callees_untouched_on_rejection() {
     // No authorization at all.
     assert!(d
         .proofs
-        .try_register_proof(
+        .try_register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &d.issuer,
