@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 30] = [
+pub const ERROR_CATALOG: [ErrorSpec; 32] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -239,6 +239,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 30] = [
         remediation: "Correct the argument. Retrying the identical request will fail identically.",
         http_status: 400,
         client_message: "Invalid input provided",
+    },
+    ErrorSpec {
+        code: 62,
+        name: "BatchTooLarge",
+        enum_name: "ContractError",
+        domain: Domain::Common,
+        status: Status::Returned,
+        cause: "A protocol-config batch schema-status query supplied more than MAX_SCHEMA_STATUS_BATCH versions.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Split the requested versions into batches no larger than MAX_SCHEMA_STATUS_BATCH.",
+        http_status: 400,
+        client_message: "Batch contains too many items",
     },
     ErrorSpec {
         code: 80,
@@ -335,6 +347,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 30] = [
         remediation: "Read the current status and choose a permitted transition.",
         http_status: 400,
         client_message: "Invalid status transition",
+    },
+    ErrorSpec {
+        code: 208,
+        name: "BatchTooLarge",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "An issuer-registry batch status query supplied more than MAX_ISSUER_STATUS_BATCH identifiers.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Split the requested identifiers into batches no larger than MAX_ISSUER_STATUS_BATCH.",
+        http_status: 400,
+        client_message: "Batch contains too many items",
     },
     ErrorSpec {
         code: 300,

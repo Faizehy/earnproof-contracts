@@ -86,6 +86,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 41 | `NotFound` | `ContractError` | common | reserved | after-caller-change | 404 |
 | 42 | `InvalidState` | `ContractError` | common | reserved | never | 400 |
 | 60 | `InvalidInput` | `ContractError` | common | returned | after-caller-change | 400 |
+| 62 | `BatchTooLarge` | `ContractError` | common | returned | after-caller-change | 400 |
 | 80 | `ProtocolPaused` | `ContractError` | common | reserved | after-operator-action | 503 |
 | 200 | `IssuerAlreadyRegistered` | `IssuerError` | issuer-registry | returned | never | 409 |
 | 201 | `IssuerNotFound` | `IssuerError` | issuer-registry | returned | after-caller-change | 404 |
@@ -94,6 +95,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 204 | `IssuerRevoked` | `IssuerError` | issuer-registry | returned | never | 403 |
 | 205 | `IssuerInactive` | `IssuerError` | issuer-registry | reserved | after-operator-action | 403 |
 | 206 | `InvalidTransition` | `IssuerError` | issuer-registry | returned | never | 400 |
+| 208 | `BatchTooLarge` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 300 | `ProofAlreadyRegistered` | `ProofError` | proof-registry | returned | never | 409 |
 | 301 | `ProofNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 302 | `ProofAlreadyRevoked` | `ProofError` | proof-registry | returned | never | 400 |
@@ -108,7 +110,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 312 | `CrossIssuerSupersession` | `ProofError` | proof-registry | returned | never | 403 |
 | 313 | `PredecessorNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 314 | `TooManySuccessors` | `ProofError` | proof-registry | returned | never | 400 |
-| 311 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 315 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 
 ## Details
 
@@ -188,6 +190,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Correct the argument. Retrying the identical request will fail identically.
 - Suggested HTTP status: 400
 - Client message: "Invalid input provided"
+
+### 62 - `BatchTooLarge`
+
+- Enum: `ContractError`
+- Domain: common
+- Status: returned
+- Retry: after-caller-change
+- Cause: A protocol-config batch schema-status query supplied more than MAX_SCHEMA_STATUS_BATCH versions.
+- Remediation: Split the requested versions into batches no larger than MAX_SCHEMA_STATUS_BATCH.
+- Suggested HTTP status: 400
+- Client message: "Batch contains too many items"
 
 ### 80 - `ProtocolPaused`
 
@@ -276,6 +289,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Read the current status and choose a permitted transition.
 - Suggested HTTP status: 400
 - Client message: "Invalid status transition"
+
+### 208 - `BatchTooLarge`
+
+- Enum: `IssuerError`
+- Domain: issuer-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: An issuer-registry batch status query supplied more than MAX_ISSUER_STATUS_BATCH identifiers.
+- Remediation: Split the requested identifiers into batches no larger than MAX_ISSUER_STATUS_BATCH.
+- Suggested HTTP status: 400
+- Client message: "Batch contains too many items"
 
 ### 300 - `ProofAlreadyRegistered`
 
@@ -388,7 +412,6 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Client message: "Malformed proof input"
 
 ### 311 - `CyclicSupersession`
-### 311 - `UnsupportedProofType`
 
 - Enum: `ProofError`
 - Domain: proof-registry
@@ -431,6 +454,12 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: A predecessor can only have a bounded number of successors.
 - Suggested HTTP status: 400
 - Client message: "Too many successors"
+
+### 315 - `UnsupportedProofType`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
 - Retry: after-operator-action
 - Cause: The proof type identifier is not supported by the protocol config.
 - Remediation: Call is_proof_type_approved on the protocol config contract to verify the proof type is approved. An operator must approve the proof type before it can be used for proof registration.

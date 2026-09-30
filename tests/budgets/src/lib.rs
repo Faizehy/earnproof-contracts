@@ -14,10 +14,11 @@
 
 #[cfg(test)]
 mod tests {
+    use earnproof_shared::{MAX_ISSUER_STATUS_BATCH, MAX_SCHEMA_STATUS_BATCH};
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
-    use soroban_sdk::{Address, BytesN, Env};
+    use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, Vec};
 
     // -----------------------------------------------------------------------
     // Threshold Constants
@@ -46,6 +47,11 @@ mod tests {
     const PROTOCOL_MIGRATION_STEP_MEM_MAX: u64 = 80_000;
     const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 250_000;
     const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 90_000;
+    // Worst-case bounded batch schema status query: a full
+    // MAX_SCHEMA_STATUS_BATCH of approved versions, each requiring a persistent
+    // read. Thresholds include ~20% headroom over the measured baseline.
+    const PROTOCOL_SCHEMA_BATCH_STATUS_CPU_MAX: u64 = 2_200_000;
+    const PROTOCOL_SCHEMA_BATCH_STATUS_MEM_MAX: u64 = 700_000;
 
     // Issuer Registry thresholds
     const ISSUER_INIT_CPU_MAX: u64 = 300_000;
@@ -62,6 +68,11 @@ mod tests {
     const ISSUER_REVOKE_MEM_MAX: u64 = 150_000;
     const ISSUER_ROTATE_CPU_MAX: u64 = 500_000;
     const ISSUER_ROTATE_MEM_MAX: u64 = 180_000;
+    // Worst-case bounded batch status query: a full MAX_ISSUER_STATUS_BATCH of
+    // registered identifiers, each requiring a persistent read and a TTL
+    // extension. Thresholds include ~20% headroom over the measured baseline.
+    const ISSUER_BATCH_STATUS_CPU_MAX: u64 = 4_200_000;
+    const ISSUER_BATCH_STATUS_MEM_MAX: u64 = 1_500_000;
 
     // Proof Registry thresholds
     const PROOF_INIT_CPU_MAX: u64 = 400_000;
@@ -193,7 +204,6 @@ mod tests {
         client.initialize(&admin);
         client.begin_migration(&2, &earnproof_shared::MAX_MIGRATION_BATCH);
         env.cost_estimate().budget().reset_unlimited();
-
         client.advance_migration(&0, &earnproof_shared::MAX_MIGRATION_BATCH);
 
         assert_budget(
@@ -201,6 +211,57 @@ mod tests {
             "protocol_config.advance_migration(max_batch)",
             PROTOCOL_MIGRATION_STEP_CPU_MAX,
             PROTOCOL_MIGRATION_STEP_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn protocol_config_batch_schema_status_budget() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ProtocolConfigContract, ());
+        let client = ProtocolConfigContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+
+        let mut request: Vec<u32> = Vec::new(&env);
+        for version in 1..=MAX_SCHEMA_STATUS_BATCH {
+            client.approve_schema_version(&version);
+            request.push_back(version);
+        }
+        env.cost_estimate().budget().reset_unlimited();
+        let results = client.get_schema_statuses(&request);
+        assert_eq!(results.len(), MAX_SCHEMA_STATUS_BATCH);
+        assert_budget(
+            &env,
+            "protocol_config.get_schema_statuses",
+            PROTOCOL_SCHEMA_BATCH_STATUS_CPU_MAX,
+            PROTOCOL_SCHEMA_BATCH_STATUS_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn protocol_config_batch_schema_status_edge_cases_within_budget() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ProtocolConfigContract, ());
+        let client = ProtocolConfigContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+        client.approve_schema_version(&1);
+        client.approve_schema_version(&2);
+        client.deprecate_schema_version(&2);
+        env.cost_estimate().budget().reset_unlimited();
+
+        let empty: Vec<u32> = Vec::new(&env);
+        assert_eq!(client.get_schema_statuses(&empty).len(), 0);
+        let mixed = vec![&env, 1u32, 1u32, 2u32, 99u32, 0u32];
+        let results = client.get_schema_statuses(&mixed);
+        assert_eq!(results.len(), 5);
+        assert_budget(
+            &env,
+            "protocol_config.get_schema_statuses.edge_cases",
+            PROTOCOL_SCHEMA_BATCH_STATUS_CPU_MAX,
+            PROTOCOL_SCHEMA_BATCH_STATUS_MEM_MAX,
         );
     }
 
@@ -386,6 +447,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn issuer_registry_batch_status_budget() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+
+        // Register the maximum number of issuers so the worst-case batch reads a
+        // real record and extends a TTL for every entry.
+        let mut request: Vec<BytesN<32>> = Vec::new(&env);
+        for index in 0..MAX_ISSUER_STATUS_BATCH {
+            let issuer_id = bytes(&env, index as u8);
+            let issuer_address = Address::generate(&env);
+            client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 200));
+            request.push_back(issuer_id);
+        }
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        let results = client.get_issuer_statuses(&request);
+        assert_eq!(results.len(), MAX_ISSUER_STATUS_BATCH);
+
+        assert_budget(
+            &env,
+            "issuer_registry.get_issuer_statuses",
+            ISSUER_BATCH_STATUS_CPU_MAX,
+            ISSUER_BATCH_STATUS_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn issuer_registry_batch_status_edge_cases_within_budget() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+
+        let known = bytes(&env, 1);
+        client.register_issuer(&known, &Address::generate(&env), &bytes(&env, 2));
+        let missing = bytes(&env, 99);
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        // Minimum (single item), duplicates, and a missing identifier in one
+        // ordered request — the smallest meaningful batch stays well inside the
+        // worst-case budget.
+        let request = vec![&env, known.clone(), known.clone(), missing.clone()];
+        let results = client.get_issuer_statuses(&request);
+        assert_eq!(results.len(), 3);
+
+        assert_budget(
+            &env,
+            "issuer_registry.get_issuer_statuses.edge_cases",
+            ISSUER_BATCH_STATUS_CPU_MAX,
+            ISSUER_BATCH_STATUS_MEM_MAX,
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Proof Registry Budget Tests
     // -----------------------------------------------------------------------
@@ -456,7 +579,6 @@ mod tests {
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
 
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &None, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
         proof_client.register_proof(
             &proof_id,
             &commitment,
@@ -482,7 +604,6 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &None, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
         proof_client.register_proof(
             &proof_id,
             &commitment,
@@ -512,7 +633,6 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &None, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
         proof_client.register_proof(
             &proof_id,
             &commitment,
@@ -542,7 +662,6 @@ mod tests {
 
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
-        proof_client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000, &None, &soroban_sdk::BytesN::from_array(&env, &[1; 32]));
         proof_client.register_proof(
             &proof_id,
             &commitment,

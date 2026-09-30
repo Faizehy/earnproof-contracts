@@ -44,6 +44,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
         ),
         (
             "ContractError",
+            "BatchTooLarge",
+            ContractError::BatchTooLarge as u32
+        ),
+        (
+            "ContractError",
             "ProtocolPaused",
             ContractError::ProtocolPaused as u32
         ),
@@ -81,6 +86,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "IssuerError",
             "InvalidTransition",
             IssuerError::InvalidTransition as u32
+        ),
+        (
+            "IssuerError",
+            "BatchTooLarge",
+            IssuerError::BatchTooLarge as u32
         ),
         (
             "ProofError",

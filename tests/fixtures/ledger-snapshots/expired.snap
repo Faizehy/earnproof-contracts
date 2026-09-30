@@ -1,10 +1,7 @@
 # scenario: expired
-# revision: 8
-# reason: Added reason_commitment and predecessor_id_hash fields
-# body-digest: 0c3ba0413d441366848db49af1a9d59ff8367e58ab75aa5b4a21f31cff029360
-# revision: 9
-# reason: Added proof_type and reason_commitment
-# body-digest: 7d4a5aee2335b29b7ba8dd14851d5519866ff7b91c86503b826a7fe0832e276f
+# revision: 10
+# reason: Merged proof revocation timing with supersession and schema lineage storage
+# body-digest: 75e8c738c484a448cd8cfbdd72b9596c5414c53ca66642925b651537cfdf7adf
 
 [ledger]
 sequence = 1000
@@ -22,8 +19,7 @@ proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
-proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:predecessor_id_hash: void, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
-proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:proof_type: bytes:0101010101010101010101010101010101010101010101010101010101010101, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
+proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:predecessor_id_hash: void, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:proof_type: bytes:0101010101010101010101010101010101010101010101010101010101010101, sym:revoked_at: u64:0, sym:revoked_ledger: u32:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
 protocol-config instance [sym:Admin] = addr:admin
 protocol-config instance [sym:ConfigVersion] = u32:3
 protocol-config instance [sym:ContractVersion] = u32:1

@@ -1,9 +1,6 @@
 # scenario: initialized
-# revision: 8
-# reason: Added reason_commitment and predecessor_id_hash fields
-# body-digest: 2afb4dd02cefed5049b6c79f3245b3aba69fb6980a5d06b22347d271acac8f6d
-# revision: 9
-# reason: Added proof_type and reason_commitment
+# revision: 10
+# reason: Merged proof revocation timing with supersession and schema lineage storage
 # body-digest: f57f83c376a01deba0b1b41c039a04b0024097e249ddfeb6c092cc8c2a13e66e
 
 [ledger]

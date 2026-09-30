@@ -89,6 +89,10 @@ pub fn schema_ttl_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaTtl"), version)
 }
 
+pub fn schema_predecessor_key(env: &Env, version: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaPredecessor"), version)
+}
+
 pub fn issuer_registry_key(env: &Env) -> (Symbol,) {
     (Symbol::new(env, "IssuerRegistry"),)
 }
@@ -197,6 +201,8 @@ pub fn deployment() -> Deployment {
     config.initialize(&admin);
     config.approve_schema_version(&1);
     config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+    // Approve a successor version so the SchemaPredecessor namespace is written.
+    config.approve_schema_with_predecessor(&2, &1);
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -251,6 +257,8 @@ pub fn exercised_deployment() -> Deployment {
     config.approve_schema_version(&2);
     config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[2; 32]));
     config.deprecate_schema_version(&2);
+    // Approve a successor with a lineage link so SchemaPredecessor is exercised.
+    config.approve_schema_with_predecessor(&3, &1);
     config.pause();
     config.unpause();
     config.nominate_admin(&rotated_admin);

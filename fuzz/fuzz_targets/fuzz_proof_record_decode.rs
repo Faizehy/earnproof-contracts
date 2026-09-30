@@ -118,6 +118,7 @@ fuzz_target!(|data: &[u8]| {
         created_at,
         revoked_at,
         proof_type,
+        revoked_ledger: 0,
     };
 
     // Verify invariants (test should not reach here if invariants are violated)
