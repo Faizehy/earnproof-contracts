@@ -1237,8 +1237,8 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
-        ConfigChangeCategory, ContractError, SchemaRateLimit, SchemaStatusResult,
-        SchemaVersionState, MAX_SCHEMA_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
+        ConfigChangeCategory, ContractError, SchemaStatusResult, SchemaVersionState,
+        MAX_SCHEMA_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Ledger as _},

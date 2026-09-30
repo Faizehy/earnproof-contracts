@@ -5,10 +5,10 @@ use earnproof_shared::{
     is_interface_compatible, ApprovalQuery, ApprovalStatus, ArchivedProofRecord, ContractError,
     DisputeActorClass, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
     MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofRecord,
-    ProofRegistrationInput, ProofStatus, ProofValidity, SchemaRateLimit, SchemaRateLimitUsage,
-    TtlStatus, UpgradeApproval, UpgradeApprovalMetadata, UpgradeApprovalRecord,
-    UpgradeHistoryRecord, UpgradeReceipt, MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE,
-    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaRateLimit,
+    SchemaRateLimitUsage, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
+    UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt, MAX_MIGRATION_BATCH,
+    MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
     UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{
