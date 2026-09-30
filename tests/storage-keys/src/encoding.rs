@@ -14,10 +14,10 @@ use super::support::{
     active_issuer_count_key, address_issuer_key, address_ttl_key, admin_key, bytes32,
     config_history_ring_key, config_history_total_key, config_version_key, contract_version_key,
     deployment, encoded, encoded_keys_in, genesis_key, instance_live_until_key,
-    issuer_active_proof_count_key, issuer_epoch_key, issuer_key, issuer_lifetime_proof_count_key,
-    issuer_registry_key, issuer_ttl_key, max_active_issuers_key, paused_key, proof_key,
-    proof_ttl_key, protocol_config_key, reactivation_cooldown_key, registry_epoch_key,
-    schema_rate_usage_key, schema_version_key,
+    issuer_active_proof_count_key, issuer_epoch_key, issuer_index_count_key, issuer_index_key,
+    issuer_key, issuer_lifetime_proof_count_key, issuer_registry_key, issuer_ttl_key,
+    max_active_issuers_key, paused_key, proof_key, proof_ttl_key, protocol_config_key,
+    reactivation_cooldown_key, registry_epoch_key, schema_rate_usage_key, schema_version_key,
 };
 use earnproof_shared::StorageClass;
 use soroban_sdk::testutils::Address as _;
@@ -67,6 +67,7 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, instance_live_until_key(env)),
             encoded(env, genesis_key()),
             encoded(env, issuer_epoch_key(env)),
+            encoded(env, issuer_index_count_key(env)),
             encoded(env, max_active_issuers_key(env)),
             encoded(env, active_issuer_count_key(env)),
             encoded(env, reactivation_cooldown_key(env)),
@@ -78,6 +79,7 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
         encoded_keys_in(env, &deployment.issuers_id, StorageClass::Persistent),
         sorted(std::vec![
             encoded(env, issuer_key(&deployment.issuer_id)),
+            encoded(env, issuer_index_key(env, 0)),
             encoded(env, issuer_ttl_key(env, &deployment.issuer_id)),
             encoded(env, address_issuer_key(env, &deployment.issuer)),
             encoded(env, address_ttl_key(env, &deployment.issuer)),
@@ -104,10 +106,7 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
         sorted(std::vec![
             encoded(env, proof_key(&deployment.proof_id)),
             encoded(env, proof_ttl_key(env, &deployment.proof_id)),
-            encoded(
-                env,
-                issuer_active_proof_count_key(env, &deployment.issuer)
-            ),
+            encoded(env, issuer_active_proof_count_key(env, &deployment.issuer)),
             encoded(
                 env,
                 issuer_lifetime_proof_count_key(env, &deployment.issuer)

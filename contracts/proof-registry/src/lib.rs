@@ -1850,7 +1850,7 @@ impl ProofRegistryContract {
             );
         }
 
-        #[cfg(not(any(test, feature = "testutils")))]
+        #[cfg(not(test))]
         env.deployer()
             .update_current_contract_wasm(wasm_hash.clone());
 
@@ -2031,12 +2031,18 @@ impl ProofRegistryContract {
     ) -> Result<(), ContractError> {
         let issuer_version =
             IssuerRegistryContractClient::new(env, issuer_registry).interface_version();
-        if !earnproof_shared::is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &issuer_version) {
+        if !earnproof_shared::is_interface_compatible(
+            &REQUIRED_ISSUER_REGISTRY_VERSION,
+            &issuer_version,
+        ) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
         let config_version =
             ProtocolConfigContractClient::new(env, protocol_config).interface_version();
-        if !earnproof_shared::is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &config_version) {
+        if !earnproof_shared::is_interface_compatible(
+            &REQUIRED_PROTOCOL_CONFIG_VERSION,
+            &config_version,
+        ) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
         Ok(())

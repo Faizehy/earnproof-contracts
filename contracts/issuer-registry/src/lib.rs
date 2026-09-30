@@ -38,6 +38,10 @@ enum DataKey {
     SigningKeyHistory(BytesN<32>, u32),
     SigningKeyHistoryCount(BytesN<32>),
     IssuerPolicy(BytesN<32>),
+    /// Monotonic registration-order index of issuers for bounded discovery.
+    IssuerIndex(u32),
+    /// Total number of issuer entries currently in the registration-order index.
+    IssuerIndexCount,
     /// Monotonic epoch, advanced once per externally visible issuer mutation.
     /// Off-chain consumers poll it as a cheap cache-invalidation signal.
     IssuerEpoch,
@@ -262,6 +266,9 @@ impl IssuerRegistryContract {
         env.storage().instance().set(&DataKey::IssuerEpoch, &0_u64);
         env.storage()
             .instance()
+            .set(&DataKey::IssuerIndexCount, &0_u32);
+        env.storage()
+            .instance()
             .set(&DataKey::MaxActiveIssuers, &u32::MAX);
         env.storage()
             .instance()
@@ -286,6 +293,11 @@ impl IssuerRegistryContract {
 
         if !env.storage().instance().has(&DataKey::IssuerEpoch) {
             env.storage().instance().set(&DataKey::IssuerEpoch, &0_u64);
+        }
+        if !env.storage().instance().has(&DataKey::IssuerIndexCount) {
+            env.storage()
+                .instance()
+                .set(&DataKey::IssuerIndexCount, &0_u32);
         }
         if !env.storage().instance().has(&DataKey::MaxActiveIssuers) {
             env.storage()
@@ -509,6 +521,7 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .set(&address_key, &issuer_id_hash);
+        Self::append_issuer_index(env.clone(), issuer_id_hash.clone());
         Self::extend_issuer_ttl(env.clone(), issuer_id_hash.clone());
         Self::extend_address_ttl(env.clone(), issuer_address.clone());
 
@@ -875,6 +888,139 @@ impl IssuerRegistryContract {
             .ok_or(IssuerError::IssuerNotFound)?;
         Self::extend_issuer_key_ttl(env, &key);
         Ok(record)
+    }
+
+    /// Returns a bounded page of public issuer entries in registration order.
+    /// The cursor is the absolute index in the stable issuer index, not a
+    /// filtered tally; this keeps ordering stable across status changes.
+    pub fn get_issuer_index(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index_filtered(env, cursor, limit, None)
+    }
+
+    pub fn get_issuer_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index(env, cursor, limit)
+    }
+
+    pub fn list_issuers(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index(env, cursor, limit)
+    }
+
+    pub fn enumerate_issuers(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index(env, cursor, limit)
+    }
+
+    pub fn get_issuer_index_by_status(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        status: IssuerStatus,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index_filtered(env, cursor, limit, Some(status))
+    }
+
+    pub fn get_issuer_status_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        status: IssuerStatus,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index_by_status(env, cursor, limit, status)
+    }
+
+    pub fn get_issuer_index_filtered(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        status: Option<IssuerStatus>,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        let total = Self::get_issuer_index_count(env.clone());
+        let capped_limit = limit.min(earnproof_shared::MAX_ISSUER_PAGE);
+        let mut page = Vec::new(&env);
+        if cursor >= total {
+            return page;
+        }
+
+        let mut kept = 0_u32;
+        for index in cursor..total {
+            if let Some(issuer_id) = env
+                .storage()
+                .persistent()
+                .get::<_, BytesN<32>>(&DataKey::IssuerIndex(index))
+            {
+                let record: IssuerRecord = match env
+                    .storage()
+                    .persistent()
+                    .get::<_, IssuerRecord>(&DataKey::Issuer(issuer_id.clone()))
+                {
+                    Some(record) => record,
+                    None => continue,
+                };
+                if status
+                    .as_ref()
+                    .is_some_and(|wanted| record.status != *wanted)
+                {
+                    continue;
+                }
+                if kept >= capped_limit {
+                    break;
+                }
+                page.push_back(earnproof_shared::IssuerDiscoveryEntry {
+                    issuer_id_hash: issuer_id,
+                    issuer_address: record.issuer_address,
+                    status: record.status,
+                    updated_at: record.updated_at,
+                });
+                kept += 1;
+            }
+        }
+        page
+    }
+
+    pub fn get_issuer_index_cursor(env: Env) -> u32 {
+        Self::get_issuer_index_count(env)
+    }
+
+    pub fn get_issuer_count(env: Env) -> u32 {
+        Self::get_issuer_index_count(env)
+    }
+
+    pub fn get_issuer_count_by_status(env: Env, status: IssuerStatus) -> u32 {
+        let total = Self::get_issuer_index_count(env.clone());
+        let mut count = 0_u32;
+        for index in 0..total {
+            if let Some(issuer_id) = env
+                .storage()
+                .persistent()
+                .get::<_, BytesN<32>>(&DataKey::IssuerIndex(index))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, IssuerRecord>(&DataKey::Issuer(issuer_id))
+                {
+                    if record.status == status {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
     }
 
     pub fn is_active_issuer(env: Env, issuer_id_hash: BytesN<32>) -> bool {
@@ -1445,7 +1591,6 @@ impl IssuerRegistryContract {
         // timestamp. Timing is sourced only from the host ledger environment.
         let now = env.ledger().timestamp();
         let effective_ledger = env.ledger().sequence();
-        let now = env.ledger().timestamp();
         record.status = status.clone();
         record.reason_commitment = Some(reason_commitment.clone());
 
@@ -1536,6 +1681,30 @@ impl IssuerRegistryContract {
         env.storage().instance().set(&DataKey::IssuerEpoch, &next);
         Self::extend_instance_ttl(env.clone());
         next
+    }
+
+    fn append_issuer_index(env: Env, issuer_id_hash: BytesN<32>) {
+        let total = Self::get_issuer_index_count(env.clone());
+        let next_index = total;
+        env.storage()
+            .persistent()
+            .set(&DataKey::IssuerIndex(next_index), &issuer_id_hash);
+        env.storage().persistent().extend_ttl(
+            &DataKey::IssuerIndex(next_index),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::IssuerIndexCount, &(total.saturating_add(1)));
+        Self::extend_instance_ttl(env);
+    }
+
+    fn get_issuer_index_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::IssuerIndexCount)
+            .unwrap_or(0)
     }
 
     /// Reserves one active-issuer slot, rejecting if the governed capacity is
@@ -2689,6 +2858,85 @@ mod test {
             client.get_address_ttl_status(&issuer_address).health,
             earnproof_shared::TtlHealth::Healthy
         );
+    }
+
+    #[test]
+    fn issuer_index_tracks_registration_order_and_status_filters() {
+        let (env, client, _admin) = setup();
+        let one = bytes(&env, 0x10);
+        let two = bytes(&env, 0x20);
+        let three = bytes(&env, 0x30);
+        let addr_one = Address::from_str(&env, ISSUER_ONE);
+        let addr_two = Address::from_str(&env, ISSUER_TWO);
+        let addr_three = Address::generate(&env);
+
+        client.register_issuer(&one, &addr_one, &bytes(&env, 0x1), &bytes(&env, 0x99));
+        client.register_issuer(&two, &addr_two, &bytes(&env, 0x2), &bytes(&env, 0x98));
+        client.register_issuer(&three, &addr_three, &bytes(&env, 0x3), &bytes(&env, 0x97));
+
+        client.suspend_issuer(&two, &bytes(&env, 0x61));
+        client.rotate_issuer_address(&three, &Address::generate(&env));
+        client.revoke_issuer(&three, &bytes(&env, 0x62));
+
+        let all = client.get_issuer_index(&0, &10);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all.get(0).unwrap().issuer_id_hash, one);
+        assert_eq!(all.get(1).unwrap().issuer_id_hash, two);
+        assert_eq!(all.get(2).unwrap().issuer_id_hash, three);
+        assert_eq!(all.get(1).unwrap().status, IssuerStatus::Suspended);
+        assert_eq!(all.get(2).unwrap().status, IssuerStatus::Revoked);
+
+        let active = client.get_issuer_index_by_status(&0, &10, &IssuerStatus::Active);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.get(0).unwrap().issuer_id_hash, one);
+
+        let revoked = client.get_issuer_index_by_status(&0, &10, &IssuerStatus::Revoked);
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked.get(0).unwrap().issuer_id_hash, three);
+
+        let bounded = client.get_issuer_index(&0, &(earnproof_shared::MAX_ISSUER_PAGE + 5));
+        assert_eq!(bounded.len(), 3);
+        assert!(bounded.len() <= earnproof_shared::MAX_ISSUER_PAGE);
+    }
+
+    #[test]
+    fn issuer_index_cursor_pages_stably_across_status_updates() {
+        let (env, client, _admin) = setup();
+        let first = bytes(&env, 0x41);
+        let second = bytes(&env, 0x42);
+        let third = bytes(&env, 0x43);
+
+        client.register_issuer(
+            &first,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 0x1),
+            &bytes(&env, 0x99),
+        );
+        client.register_issuer(
+            &second,
+            &Address::from_str(&env, ISSUER_TWO),
+            &bytes(&env, 0x2),
+            &bytes(&env, 0x98),
+        );
+        client.register_issuer(
+            &third,
+            &Address::generate(&env),
+            &bytes(&env, 0x3),
+            &bytes(&env, 0x97),
+        );
+
+        let page_one = client.get_issuer_index(&0, &2);
+        let page_two = client.get_issuer_index(&2, &2);
+        assert_eq!(page_one.len(), 2);
+        assert_eq!(page_two.len(), 1);
+        assert_eq!(page_one.get(0).unwrap().issuer_id_hash, first);
+        assert_eq!(page_one.get(1).unwrap().issuer_id_hash, second);
+        assert_eq!(page_two.get(0).unwrap().issuer_id_hash, third);
+
+        client.revoke_issuer(&second, &bytes(&env, 0x66));
+        let refreshed = client.get_issuer_index(&0, &2);
+        assert_eq!(refreshed.get(1).unwrap().issuer_id_hash, second);
+        assert_eq!(refreshed.get(1).unwrap().status, IssuerStatus::Revoked);
     }
 
     // ── genesis identity (issue #192) ────────────────────────────────────────

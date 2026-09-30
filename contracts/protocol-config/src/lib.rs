@@ -949,10 +949,7 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{ConfigChangeCategory, TTL_THRESHOLD_LEDGERS};
-    use soroban_sdk::{
-        testutils::{storage::Persistent as _, Ledger as _},
-        Address, BytesN, Env,
-    };
+    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const OTHER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";

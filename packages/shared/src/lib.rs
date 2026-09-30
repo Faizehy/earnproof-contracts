@@ -56,6 +56,13 @@ pub const MAX_MIGRATION_BATCH: u32 = 100;
 /// both the registration and revocation paths.
 pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
 
+/// Maximum number of issuer entries a single bounded discovery page may return.
+/// The cap is intentionally strict and shared across the registry's public
+/// discovery APIs so callers cannot force large reads into the contract.
+pub const MAX_ISSUER_PAGE: u32 = 20;
+pub const MAX_ISSUER_DISCOVERY_PAGE: u32 = 20;
+pub const MAX_ISSUER_ENUM_PAGE: u32 = 20;
+
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -520,6 +527,20 @@ pub enum IssuerStatus {
     Suspended,
     Revoked,
 }
+
+/// Public issuer summary intended for bounded discovery pages. It excludes the
+/// private metadata commitments and policy values, while still exposing the
+/// stable identifier and current status needed for indexing and filtering.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerDiscoveryEntry {
+    pub issuer_id_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub status: IssuerStatus,
+    pub updated_at: u64,
+}
+
+pub type IssuerSummary = IssuerDiscoveryEntry;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
