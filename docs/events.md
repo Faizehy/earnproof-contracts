@@ -54,9 +54,9 @@ lineage link and `schema_approved` for the approval itself. A predecessor-less
 |---|---|---|
 | `issuer_registered` | `register_issuer` | `issuer_id_hash`, `issuer_address`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `provenance_commitment`, `created_at`, `epoch` |
 | `issuer_metadata_updated` | `update_issuer`, `set_issuer_metadata_commitment` | `issuer_id_hash`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `updated_at`, `epoch` |
-| `issuer_suspended` | `suspend_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `reason_commitment`, `updated_at`, `epoch` |
-| `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `reason_commitment`, `updated_at`, `epoch` |
-| `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `reason_commitment`, `updated_at`, `epoch` |
+| `issuer_suspended` | `suspend_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at`, `epoch` |
+| `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at`, `epoch` |
+| `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at`, `epoch` |
 | `issuer_address_rotated` | `rotate_issuer_address` | `issuer_id_hash`, `old_address`, `new_address`, `updated_at`, `epoch` |
 
 `issuer_address_rotated` carries both addresses so an indexer can update its

@@ -3,10 +3,9 @@
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
     MigrationStatus, PauseScope, SchemaRateLimit, SchemaStatusResult, SchemaVersionState,
-    CONFIG_HISTORY_CAPACITY,
-    DEFAULT_SCHEMA_PAYLOAD_LIMIT, DEFAULT_SCHEMA_RATE_LIMIT, DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
-    MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH, MAX_SCHEMA_LINEAGE_DEPTH,
-    MAX_SCHEMA_STATUS_BATCH, MIGRATION_STATUS_VERSION,
+    CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT, DEFAULT_SCHEMA_RATE_LIMIT,
+    DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH,
+    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH, MIGRATION_STATUS_VERSION,
     PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
@@ -306,11 +305,6 @@ impl ProtocolConfigContract {
             ConfigChangeCategory::AdminRotation,
             Self::commit(&env, pending_admin.clone()),
         );
-        AdminChanged {
-            new_admin: new_admin.clone(),
-        }
-        .publish(&env);
-
         AdminTransferAccepted { new_admin }.publish(&env);
         Ok(())
     }
@@ -1252,7 +1246,7 @@ mod test {
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
         ConfigChangeCategory, ContractError, SchemaStatusResult, SchemaVersionState,
-        MAX_SCHEMA_STATUS_BATCH, SchemaRateLimit, TTL_THRESHOLD_LEDGERS,
+        MAX_SCHEMA_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Ledger as _},
