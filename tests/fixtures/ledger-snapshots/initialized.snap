@@ -1,9 +1,7 @@
 # scenario: initialized
-# revision: 6
-# reason: records now carry proof created_ledger and issuer metadata_uri_hash, metadata_revision, and status effective ledger metadata, and proof-registry emits proof_registered
-# body-digest: fd686c9a61fb59263b1659bfe34e10856998725fbb0d11b66de85703a4da1cf3
-# reason: Update ledger snapshots for merged feature branch
-# body-digest: 2afb4dd02cefed5049b6c79f3245b3aba69fb6980a5d06b22347d271acac8f6d
+# revision: 10
+# reason: Regenerate after merging develop's issuer-epoch/capacity fields into PR 237
+# body-digest: cf85e069bd9c38779f3c20bde5b41faa5521d65c5215ec99ac3dadf232ef0dd7
 
 [ledger]
 sequence = 1000
@@ -15,9 +13,13 @@ issuer-registry instance [sym:Admin] = addr:admin
 issuer-registry instance [sym:ContractVersion] = u32:1
 issuer-registry instance [sym:Genesis] = {sym:genesis_id: bytes:1bb3d1dc4dc8313672e6dc56c6b7051f74fd611eb1b8d59faa5d787789e4e115, sym:initialized_at_ledger: u32:1000}
 issuer-registry instance [sym:InstanceLiveUntil] = u32:501000
+issuer-registry instance [sym:IssuerEpoch] = u64:0
+issuer-registry instance [sym:MaxActiveIssuers] = u32:4294967295
+issuer-registry instance [sym:ReactivationCooldown] = u64:0
 proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:Genesis] = {sym:genesis_id: bytes:87d5e19ffff41ef394bed747f4ca4dcdcbf818cec54eb466639248eb14dc82cd, sym:initialized_at_ledger: u32:1000}
+proof-registry instance [sym:InstanceLiveUntil] = u32:501000
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 proof-registry instance [sym:RegistryEpoch] = u32:0

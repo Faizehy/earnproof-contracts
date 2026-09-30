@@ -20,6 +20,7 @@
 208	IssuerCapacityExceeded	IssuerError	issuer-registry	returned	after-operator-action	409
 209	MaxBelowActiveUsage	IssuerError	issuer-registry	returned	after-caller-change	400
 210	ReactivationCooldownActive	IssuerError	issuer-registry	returned	after-caller-change	400
+211	InvalidMetadataCommitment	IssuerError	issuer-registry	returned	after-caller-change	400
 300	ProofAlreadyRegistered	ProofError	proof-registry	returned	never	409
 301	ProofNotFound	ProofError	proof-registry	returned	after-caller-change	404
 302	ProofAlreadyRevoked	ProofError	proof-registry	returned	never	400
@@ -30,3 +31,8 @@
 308	IssuerInactive	ProofError	proof-registry	returned	after-operator-action	403
 309	UnsupportedSchema	ProofError	proof-registry	returned	after-operator-action	400
 310	MalformedInput	ProofError	proof-registry	returned	after-caller-change	400
+311	InvalidBatchSize	ProofError	proof-registry	returned	after-caller-change	400
+312	InvalidActivationTime	ProofError	proof-registry	returned	after-caller-change	400
+313	DisputeAlreadyOpen	ProofError	proof-registry	returned	never	409
+314	DisputeNotFound	ProofError	proof-registry	returned	after-caller-change	404
+315	DisputeNotOpen	ProofError	proof-registry	returned	never	400

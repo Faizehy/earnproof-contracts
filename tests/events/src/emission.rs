@@ -257,6 +257,16 @@ fn rotate_issuer_address_emits_both_old_and_new_address() {
             .issuers
             .rotate_issuer_address(&deployment.issuer_id, &replacement)
     });
+    let event = expect_single(&deployment.env, &events, "issuer_rotation_nominated");
+
+    let nominated_new: Address = event.field(&deployment.env, "new_address").unwrap();
+    assert_eq!(nominated_new, replacement);
+
+    let events = deployment.capture(|| {
+        deployment
+            .issuers
+            .accept_issuer_address_rotation(&deployment.issuer_id)
+    });
     let event = expect_single(&deployment.env, &events, "issuer_address_rotated");
 
     let announced_old: Address = event.field(&deployment.env, "old_address").unwrap();
@@ -372,11 +382,16 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
         deployment.proofs.get_registry_epoch(),
         epoch_before,
         "a rejected call must not advance the registry epoch"
+    );
+}
+
+#[test]
 fn proof_registry_emits_proof_registered_on_registration() {
     // proof-registry publishes exactly one `proof_registered` event on a
     // successful registration, carrying the on-chain creation timing so an
-    // indexer can record deterministic audit timestamps. Revocation remains
-    // silent (state is stored but not announced).
+    // indexer can record deterministic audit timestamps. Revocation
+    // publishes exactly one `proof_revoked` event of its own, carrying the
+    // advanced epoch and who revoked it.
     let deployment = Deployment::new();
 
     let register_events = deployment.capture(|| {
@@ -396,7 +411,6 @@ fn proof_registry_emits_proof_registered_on_registration() {
         "the registration event must be proof_registered"
     );
 
-    // Revocation does not announce a typed event.
     let proof_id = deployment.register_proof(0x12);
     let revoke_events = deployment.capture(|| {
         deployment.proofs.admin_revoke_proof(&proof_id);
@@ -405,9 +419,13 @@ fn proof_registry_emits_proof_registered_on_registration() {
         .iter()
         .filter(|event| event.contract == deployment.proofs.address)
         .collect();
+    assert_eq!(
+        from_revocation.len(),
+        1,
+        "revocation must emit exactly one proof-registry event"
+    );
     assert!(
-        from_revocation.is_empty(),
-        "revocation remains silent; adding an event there requires updating \
-         tests/fixtures/events/proof-registry/ and docs/events.md"
+        from_revocation[0].is(&deployment.env, "proof_revoked"),
+        "the revocation event must be proof_revoked"
     );
 }

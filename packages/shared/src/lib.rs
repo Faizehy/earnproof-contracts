@@ -53,6 +53,15 @@ pub const MIGRATION_STATUS_VERSION: u32 = 1;
 /// Maximum number of records a single migration invocation may commit.
 pub const MAX_MIGRATION_BATCH: u32 = 100;
 
+/// Maximum number of proofs a single batch registration or batch revocation
+/// call may contain. Bounded not just by CPU/memory but by Soroban's
+/// per-invocation ledger footprint limit (100 entries in this environment):
+/// each proof touches a persistent data entry and its TTL entry, and a
+/// batch revocation touching state written by prior calls was measured to
+/// exceed that footprint limit at 25. 20 leaves comfortable headroom on
+/// both the registration and revocation paths.
+pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
+
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,6 +83,29 @@ pub const GENESIS_ID_VERSION: u32 = 1;
 /// Fallback maximum auxiliary payload size (in bytes) applied to a schema
 /// version that has no explicit override configured in protocol-config.
 pub const DEFAULT_SCHEMA_PAYLOAD_LIMIT: u32 = 4096;
+
+/// Default deterministic ledger window used when a schema has no governed rate
+/// limit. A zero maximum means registrations are paused for that schema.
+pub const DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS: u32 = 1_000;
+pub const DEFAULT_SCHEMA_RATE_LIMIT: u32 = u32::MAX;
+
+/// Governed, fixed-size issuance policy for one schema version.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaRateLimit {
+    pub max_registrations: u32,
+    pub window_ledgers: u32,
+}
+
+/// Observable usage for the current deterministic schema window.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaRateLimitUsage {
+    pub window_start_ledger: u32,
+    pub reset_ledger: u32,
+    pub registrations: u32,
+    pub remaining: u32,
+}
 
 /// Computes a deterministic, domain-separated genesis identifier for a
 /// contract instance.
@@ -120,6 +152,26 @@ pub struct ProofPayloadRecord {
     pub payload_len: u32,
     /// SHA-256 hash of the auxiliary payload.
     pub payload_hash: BytesN<32>,
+}
+
+/// Per-schema registration policy. Proof-type identifiers are stable numeric
+/// values defined by the integrating application; the legacy identifier `0`
+/// is reserved for the original registration API.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaPolicy {
+    pub proof_types: soroban_sdk::Vec<u32>,
+    pub max_validity_seconds: u64,
+}
+
+/// Immutable registration metadata kept separately from `ProofRecord` so
+/// existing persisted proof records remain decodable across upgrades.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofPolicySnapshot {
+    pub proof_type: u32,
+    pub commitment_algorithm: u32,
+    pub max_validity_seconds: u64,
 }
 
 pub fn protocol_config_digest(
@@ -282,7 +334,43 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceRole {
+    ProtocolPause,
+    SchemaManagement,
+    IssuerManagement,
+    ProofAdministration,
+    DependencyManagement,
+    UpgradeManagement,
+    Recovery,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceRoleAssignment {
+    pub role: GovernanceRole,
+    pub address: Address,
+    pub activation_ledger: u32,
+    pub expiration_ledger: Option<u32>,
+    pub proposal_id: BytesN<32>,
+}
+
+impl GovernanceRoleAssignment {
+    pub fn is_active_at(&self, ledger: u32) -> bool {
+        ledger >= self.activation_ledger
+            && self
+                .expiration_ledger
+                .map(|expiration| ledger < expiration)
+                .unwrap_or(true)
+    }
+
+    pub fn is_pending_at(&self, ledger: u32) -> bool {
+        ledger < self.activation_ledger
+    }
+}
 
 /// Returns true when `actual` is compatible with the `required` minimum.
 ///
@@ -415,182 +503,28 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
-    /// Network passphrase or asset identifier is not in canonical form.
-    InvalidProofContext = 311,
-}
-
-/// Versioned asset identifier accepted by context-aware proof registration.
-/// Issued asset codes are case-sensitive ASCII alphanumeric strings of 1-12
-/// characters; the variant tag keeps native XLM distinct from an issued asset
-/// whose code happens to be `XLM`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProofAssetIdentifier {
-    Native,
-    Issued(String, Address),
-}
-
-/// Public commitments that bind a proof claim to the network and asset policy
-/// used by the backend. The raw network passphrase and asset identifier are
-/// never stored in proof-registry.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProofContextCommitments {
-    pub version: u32,
-    pub network_commitment: BytesN<32>,
-    pub asset_commitment: BytesN<32>,
-    pub proof_context_commitment: BytesN<32>,
-}
-
-/// Context options supplied by an issuer during context-aware proof
-/// registration. A payload is optional and follows the existing bounded
-/// payload-storage path.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProofRegistrationContext {
-    pub network_passphrase: String,
-    pub asset: ProofAssetIdentifier,
-    pub payload: Option<Bytes>,
-    /// Fixed-size opaque commitment. All-zero bytes mean no pseudonym was
-    /// supplied; non-zero values are stored as opaque bytes only.
-    pub subject_pseudonym_commitment: BytesN<32>,
-}
-
-/// Computes a versioned, issuer- and purpose-scoped subject pseudonym
-/// commitment. The raw pseudonym is used only as input to this off-chain
-/// helper and is not part of the proof-registration ABI.
-///
-/// The domain must be 1-64 visible ASCII bytes with no whitespace. Issuer
-/// addresses are encoded as canonical account StrKeys to keep this separate
-/// from wallet identifiers and contract addresses.
-pub fn compute_subject_pseudonym_commitment(
-    env: &Env,
-    issuer_address: &Address,
-    domain: &String,
-    subject_pseudonym: &BytesN<32>,
-) -> Option<BytesN<32>> {
-    if !is_valid_account_address(issuer_address) {
-        return None;
-    }
-    let domain_bytes = domain.to_bytes();
-    let domain_len = domain_bytes.len();
-    if domain_len == 0 || domain_len > 64 {
-        return None;
-    }
-    for index in 0..domain_len {
-        let byte = domain_bytes.get(index)?;
-        if !(0x21..=0x7e).contains(&byte) {
-            return None;
-        }
-    }
-
-    let mut preimage = Bytes::from_slice(env, b"earnproof.subject-pseudonym.v1\0");
-    preimage.append(&Bytes::from_array(env, &[domain_len as u8]));
-    preimage.append(&domain_bytes);
-    preimage.append(&issuer_address.to_string().to_bytes());
-    preimage.append(&subject_pseudonym.to_bytes());
-    Some(env.crypto().sha256(&preimage).to_bytes())
-}
-
-/// Interprets the all-zero commitment sentinel as explicit absence.
-pub fn optional_subject_pseudonym_commitment(commitment: &BytesN<32>) -> Option<BytesN<32>> {
-    if commitment.to_array() == [0; 32] {
-        None
-    } else {
-        Some(commitment.clone())
-    }
-}
-
-/// Computes version-1 network, asset, and claim-context commitments.
-///
-/// Network passphrases must be 1-128 visible ASCII bytes with no leading or
-/// trailing spaces. Issued asset identifiers use the exact case-sensitive
-/// ASCII code and a valid Stellar account address as issuer.
-pub fn compute_proof_context_commitments(
-    env: &Env,
-    claim_commitment: &BytesN<32>,
-    network_passphrase: &String,
-    asset: &ProofAssetIdentifier,
-) -> Option<ProofContextCommitments> {
-    let network_bytes = network_passphrase.to_bytes();
-    let network_len = network_bytes.len();
-    if network_len == 0 || network_len > 128 {
-        return None;
-    }
-    for index in 0..network_len {
-        let byte = network_bytes.get(index)?;
-        if !(0x20..=0x7e).contains(&byte)
-            || (index == 0 || index == network_len - 1) && byte == b' '
-        {
-            return None;
-        }
-    }
-    if env.crypto().sha256(&network_bytes).to_bytes() != env.ledger().network_id() {
-        return None;
-    }
-
-    let mut network_preimage = Bytes::from_slice(env, b"earnproof.network.v1\0");
-    network_preimage.append(&network_bytes);
-    let network_commitment = env.crypto().sha256(&network_preimage).to_bytes();
-
-    let mut asset_preimage = Bytes::from_slice(env, b"earnproof.asset.v1\0");
-    match asset {
-        ProofAssetIdentifier::Native => asset_preimage.append(&Bytes::from_slice(env, b"native")),
-        ProofAssetIdentifier::Issued(code, issuer) => {
-            let code_bytes = code.to_bytes();
-            let code_len = code_bytes.len();
-            if code_len == 0 || code_len > 12 || !is_valid_account_address(issuer) {
-                return None;
-            }
-            for index in 0..code_len {
-                let byte = code_bytes.get(index)?;
-                if !byte.is_ascii_alphanumeric() {
-                    return None;
-                }
-            }
-            asset_preimage.append(&Bytes::from_slice(env, b"issued\0"));
-            asset_preimage.append(&Bytes::from_array(env, &[code_len as u8]));
-            asset_preimage.append(&code_bytes);
-            asset_preimage.append(&issuer.to_string().to_bytes());
-        }
-    };
-    let asset_commitment = env.crypto().sha256(&asset_preimage).to_bytes();
-
-    let mut context_preimage = Bytes::from_slice(env, b"earnproof.proof-context.v1\0");
-    context_preimage.append(&Bytes::from_slice(
-        env,
-        claim_commitment.to_array().as_slice(),
-    ));
-    context_preimage.append(&network_commitment.to_bytes());
-    context_preimage.append(&asset_commitment.to_bytes());
-    let proof_context_commitment = env.crypto().sha256(&context_preimage).to_bytes();
-
-    Some(ProofContextCommitments {
-        version: 1,
-        network_commitment,
-        asset_commitment,
-        proof_context_commitment,
-    })
-}
-
-/// Returns true for a non-zero Stellar account address, excluding contract
-/// addresses that cannot issue a classic Stellar asset.
-pub fn is_valid_account_address(address: &Address) -> bool {
-    is_valid_principal_address(address) && address.to_string().to_bytes().get(0) == Some(b'G')
-}
-
-/// Derives a storage identifier for a context-bound proof record. Reusing the
-/// same caller claim ID with a different network or asset yields a distinct
-/// record key.
-pub fn derive_contextual_proof_id(
-    env: &Env,
-    claim_id: &BytesN<32>,
-    context_commitment: &BytesN<32>,
-) -> BytesN<32> {
-    let mut preimage = Bytes::from_slice(env, b"earnproof.proof-record.v1\0");
-    preimage.append(&claim_id.to_bytes());
-    preimage.append(&context_commitment.to_bytes());
-    env.crypto().sha256(&preimage).to_bytes()
+    /// A batch operation was given zero entries or more than
+    /// `MAX_PROOF_BATCH_SIZE` entries.
+    /// Recovery: split the batch into chunks of at most `MAX_PROOF_BATCH_SIZE`.
+    InvalidBatchSize = 311,
+    /// `register_proof_with_activation` was given an `activates_at` at or
+    /// after `expires_at`, so the proof could never be valid.
+    /// Recovery: choose an activation time strictly before the expiration.
+    InvalidActivationTime = 312,
+    /// `open_dispute` was called for a proof that already has an `Open`
+    /// dispute. Recovery: withdraw, resolve, or reject the existing dispute
+    /// before opening a new one — retrying the identical request will not
+    /// help, since the dispute is cleared by a different call, not by this
+    /// one succeeding on its own.
+    DisputeAlreadyOpen = 313,
+    /// `withdraw_dispute`, `resolve_dispute`, or `reject_dispute` referenced
+    /// a proof with no dispute record.
+    /// Recovery: open a dispute first, or confirm the proof id.
+    DisputeNotFound = 314,
+    /// A dispute transition was attempted on a dispute that is not `Open`
+    /// (already withdrawn, resolved, or rejected).
+    /// Recovery: read the dispute's current status; it is terminal.
+    DisputeNotOpen = 315,
 }
 
 /// Fixed capacity of the protocol-config change-history ring. Once this many
@@ -616,69 +550,8 @@ pub enum ConfigChangeCategory {
     SchemaApproval,
     SchemaDeprecation,
     SchemaPayloadLimit,
-    ApprovalPolicyUpdate,
-}
-
-/// Critical protocol actions that may be gated by a configured signer
-/// threshold. Emergency pause actions are intentionally not represented.
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum CriticalActionCategory {
-    SchemaApproval,
-    SchemaDeprecation,
-    SchemaPayloadLimit,
-    IssuerRegistryReplacement,
-    ProtocolConfigReplacement,
-    ApprovalPolicyUpdate,
-}
-
-/// Canonical parameters for a threshold-governed protocol action.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CriticalAction {
-    SchemaApproval(u32),
-    SchemaDeprecation(u32),
-    SchemaPayloadLimit(u32, u32),
-    IssuerRegistryReplacement(Address),
-    ProtocolConfigReplacement(Address),
-    ApprovalPolicyUpdate(CriticalActionPolicy),
-}
-
-impl CriticalAction {
-    pub fn category(&self) -> CriticalActionCategory {
-        match self {
-            Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
-            Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
-            Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
-            Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
-            Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
-            Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
-        }
-    }
-}
-
-/// Optional multi-party approval policy. `enabled == false` preserves the
-/// existing single-admin mutation path for the critical actions.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CriticalActionPolicy {
-    pub enabled: bool,
-    pub threshold: u32,
-    pub signers: Vec<Address>,
-}
-
-/// Persisted proposal, including unique signer approvals and its validity
-/// window. The proposal ID commits to the contract, action, and nonce.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CriticalActionProposal {
-    pub action: CriticalAction,
-    pub category: CriticalActionCategory,
-    pub policy: CriticalActionPolicy,
-    pub proposer: Address,
-    pub approvals: Vec<Address>,
-    pub created_at: u32,
-    pub expires_at: u32,
+    SchemaPolicy,
+    CommitmentAlgorithmPolicy,
 }
 
 /// One bounded, on-chain summary of a governance change, as stored in the
@@ -706,6 +579,7 @@ pub enum PauseScope {
     Updates,
     Revocation,
     Upgrades,
+    Disputes,
 }
 
 #[contracttype]
@@ -723,33 +597,6 @@ pub enum ProofStatus {
     Revoked,
 }
 
-/// Structured proof validity outcome.
-///
-/// A single boolean (`is_valid_proof`) cannot distinguish why a proof is
-/// invalid. `ProofValidity` maps every invalid state to exactly one primary
-/// reason, evaluated in a documented, deterministic order (see
-/// `ProofRegistryContract::proof_validity`):
-///
-/// 1. `Unknown`         — no record exists for the given id.
-/// 2. `Revoked`         — the record's status is `Revoked`.
-/// 3. `Expired`         — the record's `expires_at` is at or before now.
-/// 4. `IssuerInactive`  — the issuing address is no longer active.
-/// 5. `SchemaDeprecated`— the record's schema version is no longer approved.
-/// 6. `Valid`           — none of the above; the proof is currently valid.
-///
-/// When several invalid conditions hold at once, the earliest one in this
-/// order is the primary reason. The variants are ordered so the canonical
-/// precedence is also the declaration order.
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProofValidity {
-    Valid,
-    Unknown,
-    Revoked,
-    Expired,
-    IssuerInactive,
-    SchemaDeprecated,
-}
 /// Stores temporal metadata for an upgrade approval.
 ///
 /// # Timing invariants
@@ -772,6 +619,25 @@ pub struct UpgradeApproval {
     pub expires_at: u32,
     /// Address that created this approval
     pub approved_by: Address,
+}
+
+/// Privacy-safe issuer signing-key commitment. Only a key digest and algorithm
+/// identifier are persisted; raw public or private keys are never accepted.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SigningKeyCommitment {
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub activated_ledger: u32,
+}
+
+/// Versioned opaque commitments for issuer classification policy documents.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerPolicyCommitments {
+    pub encoding_version: u32,
+    pub category_commitment: BytesN<32>,
+    pub jurisdiction_commitment: BytesN<32>,
 }
 
 #[contracttype]
@@ -811,6 +677,7 @@ pub struct IssuerRecord {
 pub struct ProofRecord {
     pub proof_id_hash: BytesN<32>,
     pub commitment_hash: BytesN<32>,
+    pub disclosure_policy_hash: BytesN<32>,
     pub issuer_address: Address,
     pub status: ProofStatus,
     pub schema_version: u32,
@@ -820,6 +687,133 @@ pub struct ProofRecord {
     /// Ledger sequence at which this proof was created (registered).
     /// [`LEDGER_SEQUENCE_UNSET`] marks a legacy record predating this field.
     pub created_ledger: u32,
+    /// Ledger timestamp at or after which this proof is considered active.
+    /// `0` means the proof was registered without a delay and is active
+    /// immediately (subject to `status` and `expires_at` as before). This
+    /// field is fixed at registration and is never mutated afterward — there
+    /// is no operation that moves it, earlier or later.
+    pub activates_at: u64,
+}
+
+/// The full validity state of a proof, distinguishing every reason a proof
+/// might not currently verify from the single boolean `is_valid_proof`
+/// returns.
+///
+/// Two independent queries return this type, each populating a different
+/// subset of variants:
+///
+/// - [`ProofRegistryContract::get_proof_validity`] performs only
+///   locally-checkable comparisons against the stored record (status,
+///   `activates_at`, `expires_at`) and reports one of `Active`, `Pending`,
+///   `Revoked`, `Expired`, or `NotFound`.
+/// - [`ProofRegistryContract::proof_validity`] additionally resolves the
+///   issuer-registry and protocol-config dependencies to check whether the
+///   issuer is still active and the schema version still approved,
+///   evaluated in a documented, deterministic order so that when several
+///   invalid conditions hold at once the earliest is the reported primary
+///   reason: `Unknown` (no record), `Revoked`, `Expired`,
+///   `IssuerInactive`, `SchemaDeprecated`, then `Valid`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProofValidity {
+    /// `status == Active`, `activates_at` has been reached, and `expires_at`
+    /// has not.
+    Active,
+    /// Registered and not revoked, but the ledger has not yet reached
+    /// `activates_at`. Carries that timestamp (`Pending(activates_at)`) so a
+    /// caller can know when to check again.
+    Pending(u64),
+    /// `status == Revoked`. Terminal: a revoked proof never becomes valid
+    /// again, including one revoked while still pending.
+    Revoked,
+    /// Active and past its activation time, but at or after `expires_at`.
+    Expired,
+    /// No record exists for this proof id.
+    NotFound,
+    /// Returned by `proof_validity` instead of [`Self::NotFound`] when no
+    /// record exists, or when the contract's dependency addresses cannot be
+    /// resolved and validity cannot be asserted.
+    Unknown,
+    /// Returned by `proof_validity`: the record exists, is unexpired and
+    /// unrevoked, but its issuing address is no longer active.
+    IssuerInactive,
+    /// Returned by `proof_validity`: the record exists, is unexpired and
+    /// unrevoked, and its issuer is active, but its schema version is no
+    /// longer approved.
+    SchemaDeprecated,
+    /// Returned by `proof_validity`: none of the above conditions hold.
+    Valid,
+}
+
+/// One entry of a bounded batch registration request.
+///
+/// Mirrors the per-proof arguments of `register_proof` minus `issuer_address`,
+/// since a batch registers proofs for a single authorized issuer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofRegistrationInput {
+    pub proof_id_hash: BytesN<32>,
+    pub commitment_hash: BytesN<32>,
+    pub schema_version: u32,
+    pub expires_at: u64,
+}
+
+/// Lifecycle state of a proof dispute. Terminal once `Withdrawn`, `Resolved`,
+/// or `Rejected`: none of those transitions back to `Open`, and a new
+/// dispute can only be opened once the previous one has reached one of them.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DisputeStatus {
+    /// Under review. The only status a proof may have at most one of at a
+    /// time.
+    Open,
+    /// Withdrawn by whoever opened it, before any resolution.
+    Withdrawn,
+    /// Resolved by the admin in the disputant's favor.
+    Resolved,
+    /// Rejected by the admin as without merit.
+    Rejected,
+}
+
+/// Coarse category of who took a dispute action, recorded alongside the
+/// address itself so an indexer can distinguish "the issuer disputed their
+/// own proof" from "a third party disputed it" without re-deriving it from
+/// other contract state.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DisputeActorClass {
+    /// The address is the proof's own recorded issuer.
+    Issuer,
+    /// The address is the proof-registry contract's admin.
+    Admin,
+    /// Any other address.
+    ThirdParty,
+}
+
+/// Bounded, on-chain dispute state for one proof.
+///
+/// Deliberately does not store raw evidence or a free-form reason: only a
+/// commitment hash to evidence held off-chain, mirroring how issuer-registry
+/// records a `reason_commitment` rather than the reason text itself. Dispute
+/// status is tracked independently of `ProofRecord.status`: opening,
+/// resolving, or rejecting a dispute never changes a proof's validity or
+/// revocation state, and revoking or expiring a proof never changes its
+/// dispute state.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRecord {
+    pub proof_id_hash: BytesN<32>,
+    /// Hash of off-chain evidence. Never the evidence itself.
+    pub evidence_commitment: BytesN<32>,
+    pub status: DisputeStatus,
+    pub opened_by: Address,
+    pub opened_by_class: DisputeActorClass,
+    pub opened_at: u64,
+    /// Address that produced the current `status` — the opener while still
+    /// `Open`, or whoever withdrew/resolved/rejected it.
+    pub updated_by: Address,
+    pub updated_by_class: DisputeActorClass,
+    pub updated_at: u64,
 }
 
 #[contracttype]
@@ -839,6 +833,45 @@ pub struct UpgradeReceipt {
     pub old_version: u32,
     pub new_version: u32,
     pub upgraded_at: u64,
+    pub upgraded_by: Address,
+}
+
+/// Bounded, on-chain record of a proof that has been archived after
+/// expiring or being revoked. Kept separate from `ProofRecord` storage so
+/// live-proof lookups never have to filter out archived entries.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArchivedProofRecord {
+    pub proof_id_hash: BytesN<32>,
+    pub commitment_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub was_revoked: bool,
+    pub schema_version: u32,
+    pub expired_at: u64,
+    pub archived_at: u64,
+}
+
+/// On-chain record of an approved-but-not-yet-executed contract upgrade,
+/// keyed by the approved WASM hash. Distinct from `UpgradeApprovalMetadata`,
+/// which is the off-chain-facing query result derived from this record.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeApprovalRecord {
+    pub new_version: u32,
+    pub target_contract: Address,
+    pub contract_role: Symbol,
+}
+
+/// One entry in a contract's append-only upgrade history log.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeHistoryRecord {
+    pub old_wasm_hash: BytesN<32>,
+    pub new_wasm_hash: BytesN<32>,
+    pub old_version: u32,
+    pub new_version: u32,
+    pub ledger_sequence: u32,
+    pub ledger_timestamp: u64,
     pub upgraded_by: Address,
 }
 // ── Upgrade Approval Metadata ──────────────────────────────────────────────────
