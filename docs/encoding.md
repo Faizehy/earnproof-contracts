@@ -11,6 +11,8 @@ The canonical fixture is [vectors.json](../tests/fixtures/encoding/vectors.json)
 - `proof_id_hash`, `commitment_hash`, `issuer_id_hash`, and `metadata_hash` are SHA-256 digests represented as exactly 32 bytes. The hex form is lowercase for transport only.
 - `schema_version` is an unsigned 32-bit integer encoded big-endian when serialized outside Soroban. `expiration` is an unsigned 64-bit ledger timestamp, also big-endian. No signed, little-endian, truncated, or overflowing value is valid.
 - `BytesN<32>` is the digest bytes, not the ASCII bytes of its hexadecimal display.
+- A disclosure policy is serialized as RFC 8785 canonical JSON, encoded as UTF-8 without a byte-order mark or trailing newline, then hashed with SHA-256. Object keys are canonicalized by the RFC; array order is significant. Reject duplicate object keys and non-JSON values before canonicalization. `disclosure-policy-basic` and `disclosure-policy-eligibility` in `vectors.tsv` are normative byte-for-byte examples.
+- The all-zero disclosure-policy hash means “no policy commitment supplied” and is accepted only by the legacy registration endpoints. The policy-aware registration endpoints reject that sentinel. The contract stores only the fixed-size hash, never policy bytes.
 
 ## Proof commitment algorithms
 

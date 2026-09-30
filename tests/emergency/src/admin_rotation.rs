@@ -258,6 +258,9 @@ fn rotating_an_issuer_address_during_pause_releases_the_old_mapping() {
     deployment
         .issuers
         .rotate_issuer_address(&issuer_id, &replacement);
+    deployment
+        .issuers
+        .accept_issuer_address_rotation(&issuer_id);
 
     assert!(deployment.issuers.is_active_address(&replacement));
     assert!(

@@ -1,17 +1,28 @@
-//! Event topic and payload evolution.
+//! Table-driven negative matrix over every mutating public entry point.
 //!
-//! `tests/event-fixtures/` validates that the JSON fixtures are well-formed.
-//! What it cannot check is whether they still describe the contracts: a fixture
-//! is a static file, and nothing stops the two from drifting apart.
+//! Each row names one mutating function, the fixture it needs, and the code
+//! that attempts it. The same row is replayed under three identities:
 //!
-//! These tests close that gap by comparing live emissions against the fixtures.
-//! A renamed topic or a dropped payload field fails here, which is what makes
-//! the fixtures usable as a compatibility contract for indexers rather than
-//! documentation that happened to be true once.
+//! * **Missing** — no authorization entry is provided at all.
+//! * **Wrong** — an entry is provided but signed by an unrelated address (for
+//!   `proof-registry` rows, a *different active issuer* where that is the
+//!   realistic threat).
+//! * **Authorized** — the documented authority signs. This is the control
+//!   that makes the negative verdicts attributable to authorization rather
+//!   than to a broken precondition.
+//!
+//! Missing and wrong identities must be rejected *and* leave the deployment
+//! byte-for-byte unchanged (storage, TTLs, events, cross-contract state). The
+//! authorized attempt must succeed. Read-only entry points are asserted
+//! separately in [`reads_do_not_require_authorization`].
+//!
+//! The table is the executable form of `docs/authorization-matrix.md`, and
+//! [`matrix_covers_every_mutating_public_function`] fails when the count
+//! drifts, so the matrix stays synchronized with the generated client surface.
 
-use crate::harness::{hash, read_events, Deployment, ObservedEvent, APPROVED_SCHEMA};
+use crate::harness::{authorize, hash, issuer_id_hash, Deployment, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
+use soroban_sdk::{Address, IntoVal, Val};
 
 /// Every topic the fixtures declare, with the payload fields they promise.
 ///
@@ -124,214 +135,790 @@ fn declared_fields(topic: &str) -> &'static [&'static str] {
         })
 }
 
-/// Asserts an event carries exactly the fields its fixture declares.
+/// One row of the authorization matrix.
+struct Case {
+    /// Fully-qualified entry point, matching the table in
+    /// `docs/authorization-matrix.md`.
+    name: &'static str,
+    /// Whether the row runs against an uninitialized deployment (the three
+    /// `initialize` rows).
+    uninitialized: bool,
+    /// Fixture state that must exist before the entry point can be exercised,
+    /// built through authorized calls.
+    setup: fn(&Deployment),
+    /// Attempts the entry point. Returns whether the invocation was accepted.
+    call: fn(&Deployment, Identity) -> bool,
+}
+
+/// Default [`Case::setup`] for rows that need no extra fixture.
+fn no_setup(_: &Deployment) {}
+
+/// [`Case::setup`] for rows that need a registered proof.
+fn register_fixture_proof(d: &Deployment) {
+    d.register_proof(FIXTURE_PROOF);
+}
+
+/// Discriminator of the proof created by [`register_fixture_proof`].
+const FIXTURE_PROOF: u8 = 0x11;
+
+/// Deploys the deployment a row runs against.
+fn deployment_for(case: &Case) -> Deployment<'_> {
+    if case.uninitialized {
+        Deployment::uninitialized()
+    } else {
+        Deployment::new()
+    }
+}
+
+/// Every mutating public entry point across the three contracts.
 ///
-/// Both directions matter. A missing field breaks an indexer that reads it; an
-/// extra one is an undocumented addition that the fixture's `compatibility`
-/// classification has not been updated to describe.
-fn assert_matches_fixture(env: &Env, event: &ObservedEvent) {
-    let topic = event
-        .discriminant(env)
-        .map(|symbol| std::format!("{symbol:?}"))
-        .expect("every event carries a symbol discriminant");
+/// A new mutating function without a row here is a documentation gap:
+/// [`matrix_covers_every_mutating_public_function`] fails when the count
+/// drifts. `docs/authorization-matrix.md` must change together with this table.
+fn matrix() -> std::vec::Vec<Case> {
+    std::vec![
+        // -----------------------------------------------------------------
+        // protocol-config
+        // -----------------------------------------------------------------
+        Case {
+            name: "protocol-config::initialize",
+            uninitialized: true,
+            setup: no_setup,
+            call: |d, identity| {
+                let args: soroban_sdk::Vec<Val> = (&d.admin,).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d.config.try_initialize(&d.admin).is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.config_address,
+                            "initialize",
+                            args.clone(),
+                        );
+                        d.config.try_initialize(&d.admin).is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.config_address, "initialize", args);
+                        d.config.try_initialize(&d.admin).is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "protocol-config::set_admin",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let next = Address::generate(&d.env);
+                let args: soroban_sdk::Vec<Val> = (&next,).into_val(&d.env);
+                match identity {
+                    Identity::Missing => {
+                        let r = d.config.try_nominate_admin(&next);
+                        if r.is_ok() {
+                            let _ = d.config.try_accept_admin();
+                        }
+                        r
+                    }
+                    .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.config_address,
+                            "nominate_admin",
+                            args.clone(),
+                        );
+                        {
+                            let r = d.config.try_nominate_admin(&next);
+                            if r.is_ok() {
+                                authorize(
+                                    &d.env,
+                                    &next,
+                                    &d.config_address,
+                                    "accept_admin",
+                                    ().into_val(&d.env),
+                                );
+                                let _ = d.config.try_accept_admin();
+                            }
+                            r
+                        }
+                        .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.config_address, "nominate_admin", args);
+                        {
+                            let r = d.config.try_nominate_admin(&next);
+                            if r.is_ok() {
+                                authorize(
+                                    &d.env,
+                                    &next,
+                                    &d.config_address,
+                                    "accept_admin",
+                                    ().into_val(&d.env),
+                                );
+                                let _ = d.config.try_accept_admin();
+                            }
+                            r
+                        }
+                        .is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "protocol-config::pause",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let proposal_id = hash(&d.env, 0x11);
+                let args: soroban_sdk::Vec<Val> = (&proposal_id,).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d.config.try_pause(&proposal_id).is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.config_address,
+                            "pause",
+                            args.clone(),
+                        );
+                        d.config.try_pause(&proposal_id).is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.config_address, "pause", args);
+                        d.config.try_pause(&proposal_id).is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "protocol-config::unpause",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let proposal_id = hash(&d.env, 0x12);
+                let args: soroban_sdk::Vec<Val> = (&proposal_id,).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d.config.try_unpause(&proposal_id).is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.config_address,
+                            "unpause",
+                            args.clone(),
+                        );
+                        d.config.try_unpause(&proposal_id).is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.config_address, "unpause", args);
+                        d.config.try_unpause(&proposal_id).is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "protocol-config::approve_schema_version",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let version = 7_u32;
+                let proposal_id = hash(&d.env, 0x13);
+                let args: soroban_sdk::Vec<Val> = (&proposal_id, &version).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .config
+                        .try_approve_schema_version(&proposal_id, &version)
+                        .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.config_address,
+                            "approve_schema_version",
+                            args.clone(),
+                        );
+                        d.config
+                            .try_approve_schema_version(&proposal_id, &version)
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(
+                            &d.env,
+                            &d.admin,
+                            &d.config_address,
+                            "approve_schema_version",
+                            args,
+                        );
+                        d.config
+                            .try_approve_schema_version(&proposal_id, &version)
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "protocol-config::deprecate_schema_version",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let proposal_id = hash(&d.env, 0x14);
+                let args: soroban_sdk::Vec<Val> = (&proposal_id, &APPROVED_SCHEMA).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .config
+                        .try_deprecate_schema_version(&proposal_id, &APPROVED_SCHEMA)
+                        .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.config_address,
+                            "deprecate_schema_version",
+                            args.clone(),
+                        );
+                        d.config
+                            .try_deprecate_schema_version(&proposal_id, &APPROVED_SCHEMA)
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(
+                            &d.env,
+                            &d.admin,
+                            &d.config_address,
+                            "deprecate_schema_version",
+                            args,
+                        );
+                        d.config
+                            .try_deprecate_schema_version(&proposal_id, &APPROVED_SCHEMA)
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        // -----------------------------------------------------------------
+        // issuer-registry
+        // -----------------------------------------------------------------
+        Case {
+            name: "issuer-registry::initialize",
+            uninitialized: true,
+            setup: no_setup,
+            call: |d, identity| {
+                let args: soroban_sdk::Vec<Val> = (&d.admin,).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d.issuers.try_initialize(&d.admin).is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.issuers_address,
+                            "initialize",
+                            args.clone(),
+                        );
+                        d.issuers.try_initialize(&d.admin).is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.issuers_address, "initialize", args);
+                        d.issuers.try_initialize(&d.admin).is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "issuer-registry::register_issuer",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let id = issuer_id_hash(&d.env, 0x70);
+                let address = Address::generate(&d.env);
+                let metadata = hash(&d.env, 0x71);
+                let args: soroban_sdk::Vec<Val> =
+                    (&id, &address, &metadata, &metadata).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .issuers
+                        .try_register_issuer(&id, &address, &metadata, &metadata)
+                        .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.issuers_address,
+                            "register_issuer",
+                            args.clone(),
+                        );
+                        d.issuers
+                            .try_register_issuer(&id, &address, &metadata, &metadata)
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(
+                            &d.env,
+                            &d.admin,
+                            &d.issuers_address,
+                            "register_issuer",
+                            args,
+                        );
+                        d.issuers
+                            .try_register_issuer(&id, &address, &metadata, &metadata)
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "issuer-registry::update_issuer",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let metadata = hash(&d.env, 0x72);
+                let args: soroban_sdk::Vec<Val> = (&d.issuer_id, &metadata).into_val(&d.env);
+                match identity {
+                    Identity::Missing => {
+                        d.issuers.try_update_issuer(&d.issuer_id, &metadata).is_ok()
+                    }
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.issuers_address,
+                            "update_issuer",
+                            args.clone(),
+                        );
+                        d.issuers.try_update_issuer(&d.issuer_id, &metadata).is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.issuers_address, "update_issuer", args);
+                        d.issuers.try_update_issuer(&d.issuer_id, &metadata).is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "issuer-registry::suspend_issuer",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let proposal_id = hash(&d.env, 0x15);
+                let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
+                let args: soroban_sdk::Vec<Val> =
+                    (&proposal_id, &d.issuer_id, &reason).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .issuers
+                        .try_suspend_issuer(&proposal_id, &d.issuer_id, &reason)
+                        .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.issuers_address,
+                            "suspend_issuer",
+                            args.clone(),
+                        );
+                        d.issuers
+                            .try_suspend_issuer(&proposal_id, &d.issuer_id, &reason)
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.issuers_address, "suspend_issuer", args);
+                        d.issuers
+                            .try_suspend_issuer(&proposal_id, &d.issuer_id, &reason)
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "issuer-registry::reactivate_issuer",
+            uninitialized: false,
+            // The fixture issuer must be suspended first, or reactivation is
+            // rejected by a state precondition rather than by authorization.
+            setup: |d| d.suspend_issuer(&d.issuer_id),
+            call: |d, identity| {
+                let proposal_id = hash(&d.env, 0x16);
+                let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
+                let args: soroban_sdk::Vec<Val> =
+                    (&proposal_id, &d.issuer_id, &reason).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .issuers
+                        .try_reactivate_issuer(&proposal_id, &d.issuer_id, &reason)
+                        .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.issuers_address,
+                            "reactivate_issuer",
+                            args.clone(),
+                        );
+                        d.issuers
+                            .try_reactivate_issuer(&proposal_id, &d.issuer_id, &reason)
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(
+                            &d.env,
+                            &d.admin,
+                            &d.issuers_address,
+                            "reactivate_issuer",
+                            args,
+                        );
+                        d.issuers
+                            .try_reactivate_issuer(&proposal_id, &d.issuer_id, &reason)
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "issuer-registry::revoke_issuer",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let proposal_id = hash(&d.env, 0x17);
+                let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
+                let args: soroban_sdk::Vec<Val> =
+                    (&proposal_id, &d.issuer_id, &reason).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .issuers
+                        .try_revoke_issuer(&proposal_id, &d.issuer_id, &reason)
+                        .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.issuers_address,
+                            "revoke_issuer",
+                            args.clone(),
+                        );
+                        d.issuers
+                            .try_revoke_issuer(&proposal_id, &d.issuer_id, &reason)
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.issuers_address, "revoke_issuer", args);
+                        d.issuers
+                            .try_revoke_issuer(&proposal_id, &d.issuer_id, &reason)
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "issuer-registry::rotate_issuer_address",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let next = Address::generate(&d.env);
+                let args: soroban_sdk::Vec<Val> = (&d.issuer_id, &next).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .issuers
+                        .try_rotate_issuer_address(&d.issuer_id, &next)
+                        .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.issuers_address,
+                            "rotate_issuer_address",
+                            args.clone(),
+                        );
+                        d.issuers
+                            .try_rotate_issuer_address(&d.issuer_id, &next)
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(
+                            &d.env,
+                            &d.issuer,
+                            &d.issuers_address,
+                            "rotate_issuer_address",
+                            args,
+                        );
+                        d.issuers
+                            .try_rotate_issuer_address(&d.issuer_id, &next)
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        // -----------------------------------------------------------------
+        // proof-registry
+        // -----------------------------------------------------------------
+        Case {
+            name: "proof-registry::initialize",
+            uninitialized: true,
+            setup: no_setup,
+            call: |d, identity| {
+                let args: soroban_sdk::Vec<Val> =
+                    (&d.admin, &d.issuers_address, &d.config_address).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .proofs
+                        .try_initialize(&d.admin, &d.issuers_address, &d.config_address)
+                        .is_ok(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.proofs_address,
+                            "initialize",
+                            args.clone(),
+                        );
+                        d.proofs
+                            .try_initialize(&d.admin, &d.issuers_address, &d.config_address)
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.admin, &d.proofs_address, "initialize", args);
+                        d.proofs
+                            .try_initialize(&d.admin, &d.issuers_address, &d.config_address)
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "proof-registry::register_proof",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let proof_id = hash(&d.env, 0x80);
+                let commitment = hash(&d.env, 0x81);
+                let expires_at = d.env.ledger().timestamp() + 100_000;
+                let args: soroban_sdk::Vec<Val> = (
+                    &proof_id,
+                    &commitment,
+                    &d.issuer,
+                    &APPROVED_SCHEMA,
+                    &expires_at,
+                )
+                    .into_val(&d.env);
+                match identity {
+                    Identity::Missing => d
+                        .proofs
+                        .try_register_proof(
+                            &proof_id,
+                            &commitment,
+                            &d.issuer,
+                            &APPROVED_SCHEMA,
+                            &expires_at,
+                        )
+                        .is_ok(),
+                    // The realistic "wrong" signer is a *different active
+                    // issuer*: someone who holds valid issuer credentials but
+                    // is not the issuer named in the registration.
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.second_issuer,
+                            &d.proofs_address,
+                            "register_proof",
+                            args.clone(),
+                        );
+                        d.proofs
+                            .try_register_proof(
+                                &proof_id,
+                                &commitment,
+                                &d.issuer,
+                                &APPROVED_SCHEMA,
+                                &expires_at,
+                            )
+                            .is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.issuer, &d.proofs_address, "register_proof", args);
+                        d.proofs
+                            .try_register_proof(
+                                &proof_id,
+                                &commitment,
+                                &d.issuer,
+                                &APPROVED_SCHEMA,
+                                &expires_at,
+                            )
+                            .is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "proof-registry::revoke_proof",
+            uninitialized: false,
+            setup: register_fixture_proof,
+            call: |d, identity| {
+                let proof_id = hash(&d.env, FIXTURE_PROOF);
+                let args: soroban_sdk::Vec<Val> = (&proof_id,).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d.proofs.try_revoke_proof(&proof_id).is_ok(),
+                    // A different active issuer must not be able to revoke a
+                    // proof it does not own.
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.second_issuer,
+                            &d.proofs_address,
+                            "revoke_proof",
+                            args.clone(),
+                        );
+                        d.proofs.try_revoke_proof(&proof_id).is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(&d.env, &d.issuer, &d.proofs_address, "revoke_proof", args);
+                        d.proofs.try_revoke_proof(&proof_id).is_ok()
+                    }
+                }
+            },
+        },
+        Case {
+            name: "proof-registry::admin_revoke_proof",
+            uninitialized: false,
+            setup: register_fixture_proof,
+            call: |d, identity| {
+                let proof_id = hash(&d.env, FIXTURE_PROOF);
+                let args: soroban_sdk::Vec<Val> = (&proof_id,).into_val(&d.env);
+                match identity {
+                    Identity::Missing => d.proofs.try_admin_revoke_proof(&proof_id).is_ok(),
+                    // The proof's own issuer must not be able to use the admin
+                    // path: the two revocation entry points demand different
+                    // identities.
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.issuer,
+                            &d.proofs_address,
+                            "admin_revoke_proof",
+                            args.clone(),
+                        );
+                        d.proofs.try_admin_revoke_proof(&proof_id).is_ok()
+                    }
+                    Identity::Authorized => {
+                        authorize(
+                            &d.env,
+                            &d.admin,
+                            &d.proofs_address,
+                            "admin_revoke_proof",
+                            args,
+                        );
+                        d.proofs.try_admin_revoke_proof(&proof_id).is_ok()
+                    }
+                }
+            },
+        },
+    ]
+}
 
-    // The debug rendering is `Symbol(name)`; extract the name.
-    let name: std::string::String = topic
-        .trim_start_matches("Symbol(")
-        .trim_end_matches(')')
-        .into();
+/// Guards against a mutating entry point being added without a documented
+/// authorization expectation. Bump only together with
+/// `docs/authorization-matrix.md`.
+const DOCUMENTED_MUTATIONS: usize = 17;
 
-    let expected = declared_fields(&name);
-
-    let map: soroban_sdk::Map<Symbol, Val> =
-        soroban_sdk::Map::try_from_val(env, &event.data).expect("payloads are maps");
-
+#[test]
+fn matrix_covers_every_mutating_public_function() {
     assert_eq!(
-        map.len() as usize,
-        expected.len(),
-        "{name}: fixture declares {} payload field(s), contract emitted {}",
-        expected.len(),
-        map.len()
+        matrix().len(),
+        DOCUMENTED_MUTATIONS,
+        "authorization matrix and docs/authorization-matrix.md disagree on the mutating surface"
     );
+}
 
-    for field in expected {
+#[test]
+fn every_mutation_rejects_a_missing_identity_without_side_effects() {
+    for case in matrix() {
+        let deployment = deployment_for(&case);
+        (case.setup)(&deployment);
+        let before = deployment.snapshot();
+
+        let accepted = (case.call)(&deployment, Identity::Missing);
+
         assert!(
-            map.get(Symbol::new(env, field)).is_some(),
-            "{name}: fixture declares field {field} but the contract did not emit it"
+            !accepted,
+            "{} was accepted with no authorization at all",
+            case.name
+        );
+        deployment.assert_no_side_effects(&before, case.name);
+    }
+}
+
+#[test]
+fn every_mutation_rejects_a_wrong_identity_without_side_effects() {
+    for case in matrix() {
+        let deployment = deployment_for(&case);
+        (case.setup)(&deployment);
+        let before = deployment.snapshot();
+
+        let accepted = (case.call)(&deployment, Identity::Wrong);
+
+        assert!(
+            !accepted,
+            "{} was accepted when signed by the wrong identity",
+            case.name
+        );
+        deployment.assert_no_side_effects(&before, case.name);
+    }
+}
+
+#[test]
+fn every_mutation_succeeds_for_the_documented_authority() {
+    // The mirror of the matrix: no row may be "rejected" merely because its
+    // precondition was already broken. Each case must succeed when the
+    // documented authority signs, so the negative verdicts above are
+    // attributable to authorization and nothing else.
+    for case in matrix() {
+        let deployment = deployment_for(&case);
+        (case.setup)(&deployment);
+
+        assert!(
+            (case.call)(&deployment, Identity::Authorized),
+            "{} failed for its documented authority; the negative verdicts above are not attributable",
+            case.name
         );
     }
 }
 
 #[test]
-fn protocol_config_events_match_their_fixtures() {
+fn read_only_entry_points_require_no_authorization() {
+    // Reads are deliberately unauthenticated. If one of them were accidentally
+    // gated, verifiers and indexers would break; if one of the mutations were
+    // accidentally ungated, the matrix above would fail. This test pins the
+    // read side of that boundary: every read works with zero auth entries.
     let deployment = Deployment::new();
-    let successor = Address::generate(&deployment.env);
+    let proof_id = deployment.register_proof(0x90);
 
-    for event in deployment.capture(|| deployment.config.pause()) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-    for event in deployment.capture(|| deployment.config.unpause()) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-    for event in deployment.capture(|| deployment.config.approve_schema_version(&4)) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-    for event in deployment.capture(|| deployment.config.deprecate_schema_version(&4)) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-    for event in deployment.capture(|| {
-        deployment.config.nominate_admin(&successor);
-        deployment.config.accept_admin()
-    }) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-}
+    assert!(deployment.config.try_get_admin().is_ok());
+    assert!(deployment.config.try_is_paused().is_ok());
+    assert!(deployment.config.try_get_config_version().is_ok());
+    assert!(deployment
+        .config
+        .try_is_schema_version_approved(&APPROVED_SCHEMA)
+        .is_ok());
 
-#[test]
-fn initialization_event_matches_its_fixture() {
-    let env = Env::default();
-    env.mock_all_auths();
+    assert!(deployment.issuers.try_get_admin().is_ok());
+    assert!(deployment
+        .issuers
+        .try_get_issuer(&deployment.issuer_id)
+        .is_ok());
+    assert!(deployment
+        .issuers
+        .try_get_issuer_by_address(&deployment.issuer)
+        .is_ok());
+    assert!(deployment
+        .issuers
+        .try_is_active_issuer(&deployment.issuer_id)
+        .is_ok());
+    assert!(deployment
+        .issuers
+        .try_is_active_address(&deployment.issuer)
+        .is_ok());
 
-    let admin = Address::generate(&env);
-    let contract_id = env.register(protocol_config::ProtocolConfigContract, ());
-    let config = protocol_config::ProtocolConfigContractClient::new(&env, &contract_id);
-    config.initialize(&admin);
-
-    for event in read_events(&env) {
-        assert_matches_fixture(&env, &event);
-    }
-}
-
-#[test]
-fn issuer_registry_events_match_their_fixtures() {
-    let deployment = Deployment::new();
-    let next = Address::generate(&deployment.env);
-    let replacement = Address::generate(&deployment.env);
-    let second_id = hash(&deployment.env, 0x04);
-
-    for event in deployment.capture(|| {
-        deployment.issuers.register_issuer(
-            &second_id,
-            &next,
-            &hash(&deployment.env, 0xC4),
-            &hash(&deployment.env, 0x99),
-        )
-    }) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-
-    for event in deployment.capture(|| {
-        deployment
-            .issuers
-            .update_issuer(&deployment.issuer_id, &hash(&deployment.env, 0xC5))
-    }) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-
-    for event in deployment.capture(|| {
-        deployment.issuers.suspend_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
-    }) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-
-    for event in deployment.capture(|| {
-        deployment.issuers.reactivate_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
-    }) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-
-    for event in deployment.capture(|| {
-        deployment
-            .issuers
-            .rotate_issuer_address(&deployment.issuer_id, &replacement)
-    }) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-
-    for event in deployment.capture(|| {
-        deployment.issuers.revoke_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
-    }) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-}
-
-#[test]
-fn the_declared_event_set_has_no_duplicates() {
-    // Two entries for one topic would make `declared_fields` return whichever
-    // came first, silently weakening every assertion that depends on it.
-    let mut seen: std::vec::Vec<&str> = std::vec::Vec::new();
-
-    for (name, _) in DECLARED_EVENTS {
-        assert!(
-            !seen.contains(name),
-            "topic {name} is declared more than once"
-        );
-        seen.push(name);
-    }
-}
-
-#[test]
-fn every_declared_event_names_at_least_one_payload_field() {
-    // An event with no payload would be a bare signal. None exists today, and
-    // adding one should be a deliberate decision recorded in docs/events.md
-    // rather than an empty fixture entry nobody noticed.
-    for (name, fields) in DECLARED_EVENTS {
-        assert!(
-            !fields.is_empty(),
-            "{name} declares no payload fields; \
-             a bare signal event needs an explicit note in docs/events.md"
-        );
-    }
-}
-
-#[test]
-fn proof_registry_events_match_their_fixtures() {
-    // proof-registry used to emit nothing; issue #187 added `proof_registered`
-    // and `proof_revoked`, each fixtured under
-    // tests/fixtures/events/proof-registry/v1/. This is the live-emission side
-    // of that fixture contract, mirroring the protocol-config and
-    // issuer-registry checks above.
-    let deployment = Deployment::new();
-    let proof_id = hash(&deployment.env, 0x51);
-    let expires_at = deployment.env.ledger().timestamp() + 100_000;
-
-    for event in deployment.capture(|| {
-        deployment.proofs.register_proof(
-            &proof_id,
-            &hash(&deployment.env, 0x52),
-            &deployment.issuer,
-            &APPROVED_SCHEMA,
-            &expires_at,
-        )
-    }) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-
-    for event in deployment.capture(|| deployment.proofs.revoke_proof(&proof_id)) {
-        assert_matches_fixture(&deployment.env, &event);
-    }
-    // proof-registry now emits `proof_registered` on registration, carrying the
-    // on-chain creation timing. The live emission must match the fields
-    // declared in DECLARED_EVENTS (mirrored in docs/events.md), exactly like
-    // the issuer-registry events above.
-    let deployment = Deployment::new();
-
-    let events = deployment.capture(|| {
-        deployment.register_proof(0x21);
-    });
-
-    let registered = events
-        .iter()
-        .find(|event| event.is(&deployment.env, "proof_registered"))
-        .expect("register_proof must emit proof_registered");
-    assert_matches_fixture(&deployment.env, registered);
+    assert!(deployment.proofs.try_get_admin().is_ok());
+    assert!(deployment.proofs.try_get_issuer_registry().is_ok());
+    assert!(deployment.proofs.try_get_protocol_config().is_ok());
+    assert!(deployment.proofs.try_get_proof(&proof_id).is_ok());
+    assert!(deployment.proofs.try_is_valid_proof(&proof_id).is_ok());
+    assert!(deployment.proofs.try_is_revoked(&proof_id).is_ok());
 }

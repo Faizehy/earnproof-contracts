@@ -476,7 +476,12 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let bad_registry = env.register(BadVersionRegistry, ());
     observed.record(
         "proof-registry bind incompatible issuer registry",
-        code(initial_dep.proofs.try_set_issuer_registry(&bad_registry)),
+        code(initial_dep.proofs.try_propose_dependency_replacement(
+            &bytes32(env, 0x13),
+            &bad_registry,
+            &initial_dep.proofs.get_protocol_config(),
+            &(env.ledger().sequence() + 10),
+        )),
     );
 
     // Every catalogued `Returned` code must appear at least once above.

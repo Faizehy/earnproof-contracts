@@ -1,7 +1,8 @@
 //! Invalid, stale, and version-incompatible dependency references.
 //!
-//! `proof-registry` fixes both dependency addresses at `initialize` and exposes
-//! no way to change them. `initialize` does not check that anything is deployed
+//! `proof-registry` binds both dependency addresses at `initialize`; governed
+//! replacement validates and activates the pair together. `initialize` checks
+//! that the dependencies implement compatible interfaces, but does not check
 //! at either address, or that what *is* deployed answers the calls
 //! `register_proof` will make. Every one of those mistakes therefore surfaces
 //! for the first time inside a registration, which is the worst moment for it
@@ -194,6 +195,9 @@ fn a_stale_issuer_address_fails_closed_after_rotation() {
     deployment
         .issuers
         .rotate_issuer_address(&deployment.issuer_id, &rotated_to);
+    deployment
+        .issuers
+        .accept_issuer_address_rotation(&deployment.issuer_id);
 
     let rejection = deployment.assert_rejected_and_atomic_with(
         &hash(&deployment.env, 0xA7),
@@ -210,6 +214,48 @@ fn a_stale_issuer_address_fails_closed_after_rotation() {
         &hash(&deployment.env, 0xA8),
         &commitment(&deployment.env, 0xA8),
         &rotated_to,
+        &APPROVED_SCHEMA,
+        &deployment.expiry(),
+    );
+}
+
+#[test]
+fn governed_dependency_pair_migration_keeps_registration_operational() {
+    let deployment = Deployment::new();
+    let env = &deployment.env;
+
+    let config_id = env.register(ProtocolConfigContract, ());
+    let config = ProtocolConfigContractClient::new(env, &config_id);
+    config.initialize(&deployment.admin);
+    config.approve_schema_version(&hash(env, 0x21), &APPROVED_SCHEMA);
+
+    let issuers_id = env.register(IssuerRegistryContract, ());
+    let issuers = IssuerRegistryContractClient::new(env, &issuers_id);
+    issuers.initialize(&deployment.admin);
+    issuers.register_issuer(
+        &deployment.issuer_id,
+        &deployment.issuer,
+        &hash(env, 0x22),
+        &hash(env, 0x23),
+    );
+
+    let proposal_id = hash(env, 0x24);
+    deployment.proofs.propose_dependency_replacement(
+        &proposal_id,
+        &issuers_id,
+        &config_id,
+        &(env.ledger().sequence() + 100),
+    );
+    deployment
+        .proofs
+        .activate_dependency_replacement(&proposal_id);
+    assert_eq!(deployment.proofs.get_issuer_registry(), issuers_id);
+    assert_eq!(deployment.proofs.get_protocol_config(), config_id);
+
+    deployment.proofs.register_proof(
+        &hash(env, 0x25),
+        &commitment(env, 0x25),
+        &deployment.issuer,
         &APPROVED_SCHEMA,
         &deployment.expiry(),
     );

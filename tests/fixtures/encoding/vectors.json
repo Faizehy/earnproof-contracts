@@ -7,7 +7,9 @@
     {"id":"issuer-1","kind":"sha256","source":"issuer:example:1","hex":"053b8e36043a20ef299e4f154b78a44f7d2583556f39a6722d2adcbd56f5aaab"},
     {"id":"metadata-1","kind":"sha256","source":"metadata:example:1","hex":"e92b184606982856761714e76aa125ef86ab5c2dcad7947fe8cd1e5c60c0b558"},
     {"id":"schema-7","kind":"u32-be","source":"7","hex":"00000007"},
-    {"id":"expiration-1700000000","kind":"u64-be","source":"1700000000","hex":"000000006553f100"}
+    {"id":"expiration-1700000000","kind":"u64-be","source":"1700000000","hex":"000000006553f100"},
+    {"id":"disclosure-policy-basic","kind":"policy-json-sha256","source":"{\"fields\":[\"amount\",\"date\"],\"version\":1}","hex":"508f1ecf8ffe53de7d1e6330072bf756696f995d2e368896db023f46943cb902"},
+    {"id":"disclosure-policy-eligibility","kind":"policy-json-sha256","source":"{\"fields\":[\"amount\"],\"purpose\":\"eligibility\",\"version\":1}","hex":"dffbb4fc507d601e82b54c769ff56b983180d92838bc0628dfcb0b8310306dbb"}
   ],
   "invalid": ["empty string", "malformed hex", "wrong byte length", "signed or little-endian integer", "unpaired UTF-16 surrogate"]
 }

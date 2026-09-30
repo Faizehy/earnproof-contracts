@@ -41,6 +41,7 @@ enum DataKey {
     ConfigHistoryRing(u32),
     /// Monotonic count of change-history entries ever appended.
     ConfigHistoryTotal,
+    GovernanceAssignment(GovernanceRole, Address),
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -71,26 +72,31 @@ pub struct Initialized {
 
 #[contractevent]
 pub struct AdminChanged {
+    pub proposal_id: BytesN<32>,
     pub new_admin: Address,
 }
 
 #[contractevent]
 pub struct Paused {
+    pub proposal_id: BytesN<32>,
     pub paused: bool,
 }
 
 #[contractevent]
 pub struct Unpaused {
+    pub proposal_id: BytesN<32>,
     pub paused: bool,
 }
 
 #[contractevent]
 pub struct SchemaApproved {
+    pub proposal_id: BytesN<32>,
     pub version: u32,
 }
 
 #[contractevent]
 pub struct SchemaDeprecated {
+    pub proposal_id: BytesN<32>,
     pub version: u32,
 }
 
@@ -139,6 +145,7 @@ pub struct CommitmentAlgorithmPolicySet {
 /// Emitted when the admin adds a WASM hash to the upgrade allowlist.
 #[contractevent]
 pub struct UpgradeAllowlisted {
+    pub proposal_id: BytesN<32>,
     pub wasm_hash: BytesN<32>,
     pub new_contract_version: u32,
     pub approved_by: Address,
@@ -148,6 +155,7 @@ pub struct UpgradeAllowlisted {
 /// applying it (e.g. rolling back an approved-but-not-yet-applied hash).
 #[contractevent]
 pub struct UpgradeRevoked {
+    pub proposal_id: BytesN<32>,
     pub wasm_hash: BytesN<32>,
     pub revoked_by: Address,
 }
@@ -478,7 +486,7 @@ impl ProtocolConfigContract {
     pub fn deprecate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
+        Self::require_role_or_admin(&env, &admin, GovernanceRole::SchemaManagement)?;
         Self::ensure_nonzero_version(version)?;
         env.storage()
             .persistent()
@@ -490,7 +498,11 @@ impl ProtocolConfigContract {
             ConfigChangeCategory::SchemaDeprecation,
             Self::commit(&env, version),
         );
-        SchemaDeprecated { version }.publish(&env);
+        SchemaDeprecated {
+            proposal_id,
+            version,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -1115,7 +1127,7 @@ mod test {
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{ConfigChangeCategory, TTL_THRESHOLD_LEDGERS};
     use soroban_sdk::{
-        testutils::{storage::Persistent as _, Ledger as _},
+        testutils::{storage::Persistent as _, Address as _, Ledger as _},
         Address, BytesN, Env,
     };
 
@@ -1158,36 +1170,40 @@ mod test {
         assert_eq!(client.get_contract_version(), 1);
     }
 
+    fn p(env: &Env, val: u8) -> BytesN<32> {
+        BytesN::from_array(env, &[val; 32])
+    }
+
     #[test]
     fn pause_and_unpause_bump_config_version() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
 
-        client.pause();
+        client.pause(&p(&env, 1));
         assert!(client.is_paused());
         assert_eq!(client.get_config_version(), 2);
 
-        client.unpause();
+        client.unpause(&p(&env, 2));
         assert!(!client.is_paused());
         assert_eq!(client.get_config_version(), 3);
     }
 
     #[test]
     fn schema_versions_can_be_approved_and_deprecated() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
 
-        client.approve_schema_version(&1);
+        client.approve_schema_version(&p(&env, 1), &1);
         assert!(client.is_schema_version_approved(&1));
 
-        client.deprecate_schema_version(&1);
+        client.deprecate_schema_version(&p(&env, 2), &1);
         assert!(!client.is_schema_version_approved(&1));
     }
 
     #[test]
     fn rejects_zero_schema_version() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
         use earnproof_shared::ContractError;
 
-        let result = client.try_approve_schema_version(&0);
+        let result = client.try_approve_schema_version(&p(&env, 1), &0);
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
@@ -1195,7 +1211,7 @@ mod test {
     fn extends_schema_storage_ttl() {
         let (env, client, _admin) = setup();
 
-        client.approve_schema_version(&7);
+        client.approve_schema_version(&p(&env, 1), &7);
 
         env.as_contract(&client.address, || {
             assert!(
@@ -1215,7 +1231,7 @@ mod test {
         let hash = bytes(&env, 0xab);
 
         assert!(!client.is_upgrade_allowed(&hash));
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&p(&env, 1), &hash, &2);
         assert!(client.is_upgrade_allowed(&hash));
     }
 
@@ -1224,10 +1240,10 @@ mod test {
         let (env, client, _admin) = setup();
         let hash = bytes(&env, 0xcd);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&p(&env, 1), &hash, &2);
         assert!(client.is_upgrade_allowed(&hash));
 
-        client.revoke_upgrade(&hash);
+        client.revoke_upgrade(&p(&env, 2), &hash);
         assert!(!client.is_upgrade_allowed(&hash));
     }
 
@@ -1268,7 +1284,7 @@ mod test {
         env.mock_all_auths();
         client.initialize(&admin);
         let hash = BytesN::from_array(&env, &[0xde; 32]);
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&p(&env, 1), &hash, &2);
         env.set_auths(&[]);
 
         // Attempt upgrade without auth — must panic.
@@ -1287,7 +1303,7 @@ mod test {
         let hash = bytes(&env, 0x42);
 
         assert_eq!(client.get_contract_version(), 1);
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&p(&env, 1), &hash, &2);
         assert!(client.is_upgrade_allowed(&hash));
 
         client.upgrade_contract(&hash);
@@ -1319,15 +1335,17 @@ mod test {
         let (env, client, _admin) = setup();
 
         // Write some state before the upgrade.
-        client.approve_schema_version(&3);
-        client.pause();
-        assert!(client.is_paused());
-        assert!(client.is_schema_version_approved(&3));
+        client.approve_schema_version(&p(&env, 1), &3);
+        let hash = bytes(&env, 0x77);
+        client.approve_upgrade(&p(&env, 2), &hash, &2);
 
         // Perform upgrade.
         let hash = bytes(&env, 0x77);
         client.approve_upgrade(&hash, &2);
         client.upgrade_contract(&hash);
+
+        // Pause after upgrade.
+        client.pause(&p(&env, 3));
 
         // State must be intact after upgrade.
         assert!(client.is_paused());
@@ -1341,6 +1359,7 @@ mod test {
     #[should_panic(expected = "new_version must be greater than current contract version")]
     fn cannot_re_approve_old_version_after_upgrade() {
         let (env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
         let hash_v2 = bytes(&env, 0x01);
         let old_hash = bytes(&env, 0x02);
 
@@ -1374,13 +1393,14 @@ mod test {
                 fn_name: "approve_upgrade",
                 args: soroban_sdk::vec![
                     &env,
+                    soroban_sdk::IntoVal::into_val(&BytesN::from_array(&env, &[0x11; 32]), &env),
                     soroban_sdk::IntoVal::into_val(&BytesN::from_array(&env, &[0xaa; 32]), &env),
                     soroban_sdk::IntoVal::into_val(&2_u32, &env),
                 ],
                 sub_invokes: &[],
             },
         }]);
-        client.approve_upgrade(&BytesN::from_array(&env, &[0xaa; 32]), &2);
+        client.approve_upgrade(&p(&env, 0x11), &BytesN::from_array(&env, &[0xaa; 32]), &2);
     }
 
     // ── numeric boundary tests ────────────────────────────────────────────────
@@ -1389,7 +1409,7 @@ mod test {
     /// Schema versions must be >= MIN_SCHEMA_VERSION (1).
     #[test]
     fn schema_version_boundary_values() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
 
         // Valid: minimum allowed schema version
         client.approve_schema_version(&1);
@@ -1399,7 +1419,7 @@ mod test {
         client.approve_schema_version(&2);
         assert!(client.is_schema_version_approved(&2));
 
-        client.approve_schema_version(&100);
+        client.approve_schema_version(&p(&env, 3), &100);
         assert!(client.is_schema_version_approved(&100));
 
         // Valid: u32 maximum
@@ -1412,7 +1432,7 @@ mod test {
         let (_env, client, _admin) = setup();
         // Version 0 must be rejected with a typed error.
         use earnproof_shared::ContractError;
-        let result = client.try_approve_schema_version(&0);
+        let result = client.try_approve_schema_version(&p(&env, 1), &0);
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
@@ -1468,20 +1488,20 @@ mod test {
     /// This tests the checked_add protection against overflow.
     #[test]
     fn config_version_increments_on_mutations() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
         assert_eq!(client.get_config_version(), 1);
 
         // Each mutation bumps config version
         client.pause();
         assert_eq!(client.get_config_version(), 2);
 
-        client.unpause();
+        client.unpause(&p(&env, 2));
         assert_eq!(client.get_config_version(), 3);
 
-        client.approve_schema_version(&1);
+        client.approve_schema_version(&p(&env, 3), &1);
         assert_eq!(client.get_config_version(), 4);
 
-        client.deprecate_schema_version(&1);
+        client.deprecate_schema_version(&p(&env, 4), &1);
         assert_eq!(client.get_config_version(), 5);
     }
 
@@ -1489,7 +1509,7 @@ mod test {
     /// approaching u32::MAX (bumping is protected by checked_add).
     #[test]
     fn config_version_safe_near_u32_max() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
 
         // Manually set config version to a value near max by simulating
         // many mutations. We'll do a smaller simulation here.
@@ -1511,7 +1531,7 @@ mod test {
                 "pause must bump config version exactly once"
             );
 
-            client.unpause();
+            client.unpause(&p(&env, 10 + i * 2 + 1));
             let after_unpause = client.get_config_version();
             assert_eq!(
                 after_unpause,
@@ -1526,14 +1546,14 @@ mod test {
     /// must not modify state or emit events.
     #[test]
     fn failed_schema_version_zero_leaves_state_unchanged() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
 
         let config_before = client.get_config_version();
         let approved_before = client.is_schema_version_approved(&999);
 
         // Attempt to approve version 0 — should panic
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.approve_schema_version(&0);
+            client.approve_schema_version(&BytesN::from_array(&env, &[1u8; 32]), &0);
         }));
 
         // Must have panicked
@@ -1558,7 +1578,7 @@ mod test {
 
         // Attempt to allowlist a downgrade (current version is 1, trying version 0)
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.approve_upgrade(&hash, &0);
+            client.approve_upgrade(&hash, &BytesN::from_array(&env, &[1u8; 32]), &0);
         }));
 
         // Must have panicked
@@ -1851,7 +1871,7 @@ mod test {
     /// and correct before any subsequent mutations.
     #[test]
     fn initialization_state_stable_before_mutations() {
-        let (_env, client, admin) = setup();
+        let (env, client, admin) = setup();
 
         // State immediately after initialization must be as documented
         assert_eq!(client.get_admin(), admin);
@@ -2048,10 +2068,10 @@ mod test {
     fn schema_payload_limit_survives_deprecation() {
         // Deprecating a schema version does not clear its configured limit;
         // the policy and the approval flag are independent.
-        let (_env, client, _admin) = setup();
-        client.approve_schema_version(&1);
+        let (env, client, _admin) = setup();
+        client.approve_schema_version(&p(&env, 1), &1);
         client.set_schema_payload_limit(&1, &1_024);
-        client.deprecate_schema_version(&1);
+        client.deprecate_schema_version(&p(&env, 2), &1);
         assert_eq!(client.get_schema_payload_limit(&1), 1_024);
     }
 
@@ -2158,10 +2178,10 @@ mod test {
 
     #[test]
     fn change_history_records_ordering_and_category() {
-        let (_env, client, _admin) = setup();
-        client.pause();
-        client.unpause();
-        client.approve_schema_version(&9);
+        let (env, client, _admin) = setup();
+        client.pause(&p(&env, 1));
+        client.unpause(&p(&env, 2));
+        client.approve_schema_version(&p(&env, 3), &9);
 
         assert_eq!(client.get_config_history_cursor(), 3);
         let page = client.get_config_history(&0, &10);
@@ -2187,12 +2207,12 @@ mod test {
 
     #[test]
     fn failed_changes_do_not_append_history() {
-        let (_env, client, _admin) = setup();
-        client.pause();
+        let (env, client, _admin) = setup();
+        client.pause(&p(&env, 1));
         let cursor_before = client.get_config_history_cursor();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.approve_schema_version(&0);
+            client.approve_schema_version(&p(&env, 2), &0);
         }));
         assert!(result.is_err());
 
@@ -2201,12 +2221,12 @@ mod test {
 
     #[test]
     fn change_history_ring_rolls_over_deterministically() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
         let capacity = earnproof_shared::CONFIG_HISTORY_CAPACITY;
 
         // Overrun the ring by a handful of entries.
         for version in 1..=(capacity + 3) {
-            client.approve_schema_version(&version);
+            client.approve_schema_version(&p(&env, version as u8), &version);
         }
         let total = client.get_config_history_cursor();
         assert_eq!(total, capacity + 3);
@@ -2221,15 +2241,15 @@ mod test {
         let oldest_surviving_version = 4u32;
         assert_eq!(
             page.get(0).unwrap().proposal_commitment,
-            ProtocolConfigContract::commit_for_test(&_env, oldest_surviving_version)
+            ProtocolConfigContract::commit_for_test(&env, oldest_surviving_version)
         );
     }
 
     #[test]
     fn change_history_page_size_is_capped() {
-        let (_env, client, _admin) = setup();
+        let (env, client, _admin) = setup();
         for version in 1..=(earnproof_shared::MAX_CONFIG_HISTORY_PAGE + 5) {
-            client.approve_schema_version(&version);
+            client.approve_schema_version(&p(&env, version as u8), &version);
         }
         // Requesting more than the cap returns at most the cap.
         let page = client.get_config_history(&0, &(earnproof_shared::MAX_CONFIG_HISTORY_PAGE + 5));
@@ -2238,8 +2258,8 @@ mod test {
 
     #[test]
     fn change_history_survives_migration() {
-        let (_env, client, admin) = setup();
-        client.pause();
+        let (env, client, admin) = setup();
+        client.pause(&p(&env, 1));
         let cursor_before = client.get_config_history_cursor();
 
         client.begin_migration(&2, &1);
@@ -2248,6 +2268,91 @@ mod test {
 
         assert_eq!(client.get_config_history_cursor(), cursor_before);
         assert_eq!(client.get_config_history(&0, &10).len(), cursor_before);
+    }
+
+    #[test]
+    fn governance_role_expires_at_boundary_and_removal_is_immediate() {
+        let (env, client, _admin) = setup();
+        let delegate = Address::generate(&env);
+        let activation = env.ledger().sequence();
+        let expiration = activation + 2;
+        client.grant_governance_role(
+            &p(&env, 0xC1),
+            &GovernanceRole::ProtocolPause,
+            &delegate,
+            &activation,
+            &Some(expiration),
+        );
+        let assignment = client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &delegate)
+            .unwrap();
+        assert!(assignment.is_active_at(activation));
+        assert!(!assignment.is_active_at(expiration));
+        client.pause_by_role(&p(&env, 0xC2), &delegate);
+
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number = expiration);
+        assert_eq!(
+            client.try_pause_by_role(&p(&env, 0xC3), &delegate),
+            Err(Ok(ContractError::Unauthorized))
+        );
+        client.remove_governance_role(&GovernanceRole::ProtocolPause, &delegate);
+        assert!(client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &delegate)
+            .is_none());
+    }
+
+    #[test]
+    fn overlapping_roles_can_be_renewed_and_survive_migration() {
+        let (env, client, _admin) = setup();
+        let first_delegate = Address::generate(&env);
+        let second_delegate = Address::generate(&env);
+        let now = env.ledger().sequence();
+        client.grant_governance_role(
+            &p(&env, 0xC4),
+            &GovernanceRole::ProtocolPause,
+            &first_delegate,
+            &(now + 1),
+            &Some(now + 6),
+        );
+        client.grant_governance_role(
+            &p(&env, 0xC5),
+            &GovernanceRole::ProtocolPause,
+            &second_delegate,
+            &(now + 3),
+            &Some(now + 8),
+        );
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number = now + 4);
+        assert!(client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &first_delegate)
+            .unwrap()
+            .is_active_at(now + 4));
+        assert!(client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &second_delegate)
+            .unwrap()
+            .is_active_at(now + 4));
+
+        client.grant_governance_role(
+            &p(&env, 0xC6),
+            &GovernanceRole::ProtocolPause,
+            &first_delegate,
+            &(now + 4),
+            &Some(now + 10),
+        );
+        let renewed = client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &first_delegate)
+            .unwrap();
+        assert_eq!(renewed.expiration_ledger, Some(now + 10));
+
+        client.begin_migration(&2, &1);
+        client.advance_migration(&0, &1);
+        assert_eq!(
+            client
+                .get_governance_assignment(&GovernanceRole::ProtocolPause, &first_delegate)
+                .unwrap(),
+            renewed
+        );
     }
 
     /// Test-only helper mirroring the contract's private `commit` so the

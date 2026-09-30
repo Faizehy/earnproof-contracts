@@ -65,6 +65,7 @@ export interface IssuerRecord {
 export interface ProofRecord {
   proof_id_hash: string; // BytesN<32> as hex string
   commitment_hash: string; // BytesN<32> as hex string
+  disclosure_policy_hash: string; // BytesN<32> as hex string; zero means legacy/unset
   issuer_address: string; // Stellar address
   status: ProofStatus;
   schema_version: number; // u32

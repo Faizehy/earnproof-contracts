@@ -330,6 +330,42 @@ pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion
 /// The interface version implemented by `protocol-config`.
 pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceRole {
+    ProtocolPause,
+    SchemaManagement,
+    IssuerManagement,
+    ProofAdministration,
+    DependencyManagement,
+    UpgradeManagement,
+    Recovery,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceRoleAssignment {
+    pub role: GovernanceRole,
+    pub address: Address,
+    pub activation_ledger: u32,
+    pub expiration_ledger: Option<u32>,
+    pub proposal_id: BytesN<32>,
+}
+
+impl GovernanceRoleAssignment {
+    pub fn is_active_at(&self, ledger: u32) -> bool {
+        ledger >= self.activation_ledger
+            && self
+                .expiration_ledger
+                .map(|expiration| ledger < expiration)
+                .unwrap_or(true)
+    }
+
+    pub fn is_pending_at(&self, ledger: u32) -> bool {
+        ledger < self.activation_ledger
+    }
+}
+
 /// Returns true when `actual` is compatible with the `required` minimum.
 ///
 /// The `major` component must match exactly (a breaking-change boundary); the
@@ -630,6 +666,7 @@ pub struct IssuerRecord {
 pub struct ProofRecord {
     pub proof_id_hash: BytesN<32>,
     pub commitment_hash: BytesN<32>,
+    pub disclosure_policy_hash: BytesN<32>,
     pub issuer_address: Address,
     pub status: ProofStatus,
     pub schema_version: u32,

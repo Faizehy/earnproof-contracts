@@ -18,7 +18,7 @@ mod tests {
                 continue;
             }
             let fields: Vec<&str> = line.split('\t').collect();
-            if fields[1] == "sha256" {
+            if fields[1] == "sha256" || fields[1] == "policy-json-sha256" {
                 let digest = Sha256::digest(fields[2].as_bytes());
                 assert_eq!(format!("{digest:x}"), fields[3], "{}", fields[0]);
             }
