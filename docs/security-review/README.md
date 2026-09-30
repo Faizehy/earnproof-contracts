@@ -4,8 +4,8 @@ A navigable map from threat assumptions and invariants to the exact code, tests,
 and artifacts that back them. It is written for an independent reviewer arriving
 without prior context on this repository.
 
-**Commit:** `09f9841c9af78e67c90f0eaab1039052b17b9a03`
-**Branch:** `develop`
+**Commit:** `e22996bb99135901ce36f8169b9dcd6586f3688d`
+**Branch:** `feat/add-proof-supersession-links-for-renewed-credentials`
 **Toolchain:** `rust-toolchain.toml` — channel `stable`, components `rustfmt`, `clippy`
 **SDK:** `soroban-sdk 27.0.0` (`Cargo.toml`)
 
@@ -429,28 +429,31 @@ cargo build --workspace
 
 Test inventory at this commit:
 
+Counts below are tests run by `cargo test --workspace`; ignored tests are excluded.
+
 | Suite | Path | Tests |
 |---|---|---|
 | Address validation | `tests/address-validation/src/lib.rs` | 5 |
 | Authorization | `tests/authorization/src/lib.rs` | 21 |
-| State machine | `tests/property/state_machine.rs` | 5 |
+| Compatibility | `tests/compatibility/tests/compatibility.rs` | 33 |
 | Cross-contract atomicity | `tests/cross-contract/src/lib.rs` | 35 |
 | Emergency and recovery | `tests/emergency/src/lib.rs` | 30 |
 | Encoding vectors | `tests/encoding/src/lib.rs` | 5 |
-| Error catalog | `tests/error-catalog/src/lib.rs` | 31 |
-| Event fixtures | `tests/event-fixtures/src/lib.rs` | 13 |
-| Event assertions | `tests/events/src/lib.rs` | 50 |
-| `issuer-registry` | `contracts/issuer-registry/src/lib.rs` | 37 |
-| Ledger snapshots | `tests/ledger-snapshots/src/lib.rs` | 8 |
+| Error catalog (2 ignored) | `tests/error-catalog/src/lib.rs` | 29 |
+| Event fixtures | `tests/event-fixtures/src/lib.rs` | 15 |
+| Event assertions | `tests/events/src/lib.rs` | 55 |
+| `issuer-registry` | `contracts/issuer-registry/src/lib.rs` | 83 |
+| Ledger snapshots (1 ignored) | `tests/ledger-snapshots/src/lib.rs` | 7 |
 | Ledger time | `tests/time/src/lib.rs` | 19 |
-| `proof-registry` | `contracts/proof-registry/src/lib.rs` | 39 |
-| `protocol-config` | `contracts/protocol-config/src/lib.rs` | 34 |
-| Resource budgets | `tests/budgets/src/lib.rs` | 17 |
+| `proof-registry` | `contracts/proof-registry/src/lib.rs` | 141 |
+| `protocol-config` | `contracts/protocol-config/src/lib.rs` | 69 |
+| Resource budgets | `tests/budgets/src/lib.rs` | 27 |
+| Shared library | `packages/shared/src/lib.rs` | 4 |
+| State machine | `tests/property/state_machine.rs` | 5 |
 | Storage keys | `tests/storage-keys/src/lib.rs` | 21 |
+| Supersession | `tests/supersession/src/lib.rs` | 6 |
 | TTL | `tests/ttl/src/lib.rs` | 62 |
-| **Total** | | **492** |
-| Compatibility | `tests/compatibility/tests/compatibility.rs` | 33 |
-| **Total** | | **486** |
+| **Total** | | **672** |
 
 Manifest verification (PowerShell, no credentials required):
 
@@ -467,7 +470,7 @@ Link and command validation for this index runs in CI:
 This index is **commit-specific**. It is stale when any of the following is true.
 A reviewer finding a stale index should request a refresh before proceeding.
 
-- [ ] `HEAD` differs from `09f9841c9af78e67c90f0eaab1039052b17b9a03` and any file
+- [ ] `HEAD` differs from `e22996bb99135901ce36f8169b9dcd6586f3688d` and any file
       under `contracts/`, `packages/`, or `tests/` changed.
 - [ ] A public entry point was added, removed, or renamed → refresh
       [Entry points](#entry-points-and-privileges) and its line numbers.
@@ -488,4 +491,4 @@ A reviewer finding a stale index should request a refresh before proceeding.
 - [ ] More than one release cycle has passed since the last refresh, regardless
       of whether anything above applies.
 
-**Last refreshed:** at commit `09f9841`, against `soroban-sdk 27.0.0`.
+**Last refreshed:** at commit `e22996b`, against `soroban-sdk 27.0.0`.
