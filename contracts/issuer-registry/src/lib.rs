@@ -1898,15 +1898,17 @@ mod test {
             &active,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 10),
+            &bytes(&env, 99),
         );
         client.register_issuer(
             &suspended,
             &Address::from_str(&env, ISSUER_TWO),
             &bytes(&env, 11),
+            &bytes(&env, 99),
         );
-        client.suspend_issuer(&suspended);
-        client.register_issuer(&revoked, &Address::generate(&env), &bytes(&env, 12));
-        client.revoke_issuer(&revoked);
+        client.suspend_issuer(&suspended, &bytes(&env, 99));
+        client.register_issuer(&revoked, &Address::generate(&env), &bytes(&env, 12), &bytes(&env, 99));
+        client.revoke_issuer(&revoked, &bytes(&env, 99));
 
         // Deliberately out of registration order to prove request order wins.
         let request = vec![
@@ -1948,6 +1950,7 @@ mod test {
             &issuer_id,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 2),
+            &bytes(&env, 99),
         );
 
         let request = vec![
@@ -2007,6 +2010,7 @@ mod test {
             &issuer_id,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 8),
+            &bytes(&env, 99),
         );
 
         let request = vec![&env, issuer_id.clone()];
@@ -2956,12 +2960,7 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.metadata_hash, bytes(&env, 2));
         // The URI commitment starts at the all-zero "unset" sentinel.
@@ -2974,12 +2973,7 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
 
         let content = bytes(&env, 0x11);
         let uri = bytes(&env, 0x22);
@@ -2998,12 +2992,7 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
         client.set_issuer_metadata_commitment(&issuer_id, &bytes(&env, 0x11), &bytes(&env, 0x22));
         assert_eq!(env.events().all().events().len(), 1);
     }
@@ -3013,12 +3002,7 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0),
@@ -3032,12 +3016,7 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0x11),
@@ -3062,13 +3041,8 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
-        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
+        client.revoke_issuer(&issuer_id, &bytes(&env, 99));
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0x11),
@@ -3082,12 +3056,7 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
         client.update_issuer(&issuer_id, &bytes(&env, 3));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.metadata_hash, bytes(&env, 3));
@@ -3107,12 +3076,7 @@ mod test {
         });
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status_effective_ledger, 100);
         assert_eq!(record.status_effective_timestamp, 555);
@@ -3123,18 +3087,13 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 900;
             li.timestamp = 9_000;
         });
-        client.suspend_issuer(&issuer_id, &bytes(&env, 98));
+        client.suspend_issuer(&issuer_id, &bytes(&env, 99));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Suspended);
         assert_eq!(record.status_effective_ledger, 900);
@@ -3146,32 +3105,27 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 10;
             li.timestamp = 100;
         });
-        client.suspend_issuer(&issuer_id, &bytes(&env, 98));
+        client.suspend_issuer(&issuer_id, &bytes(&env, 99));
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 10);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 20;
             li.timestamp = 200;
         });
-        client.reactivate_issuer(&issuer_id, &bytes(&env, 98));
+        client.reactivate_issuer(&issuer_id, &bytes(&env, 99));
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 20);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 30;
             li.timestamp = 300;
         });
-        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
+        client.revoke_issuer(&issuer_id, &bytes(&env, 99));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Revoked);
         assert_eq!(record.status_effective_ledger, 30);
@@ -3183,17 +3137,12 @@ mod test {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
-        client.register_issuer(
-            &issuer_id,
-            &issuer_address,
-            &bytes(&env, 2),
-            &bytes(&env, 99),
-        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2), &bytes(&env, 99));
         env.ledger().with_mut(|li| {
             li.sequence_number = 40;
             li.timestamp = 400;
         });
-        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
+        client.revoke_issuer(&issuer_id, &bytes(&env, 99));
         let before = client.get_issuer(&issuer_id);
 
         // A revoked issuer cannot be reactivated; the rejected call must not
@@ -3202,7 +3151,7 @@ mod test {
             li.sequence_number = 50;
             li.timestamp = 500;
         });
-        let result = client.try_reactivate_issuer(&issuer_id, &bytes(&env, 98));
+        let result = client.try_reactivate_issuer(&issuer_id, &bytes(&env, 99));
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
         let after = client.get_issuer(&issuer_id);
         assert_eq!(

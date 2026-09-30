@@ -511,7 +511,7 @@ fn a_failed_registration_rolls_back_writes_inside_the_dependency() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_invalid_protocol_config_address_aborts_the_registration() {
+fn an_invalid_protocol_config_address_is_rejected_during_initialization() {
     // Point proof-registry at an address with no contract deployed
     let env = soroban_sdk::Env::default();
     env.mock_all_auths();
@@ -537,24 +537,6 @@ fn an_invalid_protocol_config_address_aborts_the_registration() {
     // dependency interface handshake in `initialize` cannot reach it, so
     // initialization fails closed before any state is written.
     let invalid_config = Address::generate(&env);
-    proofs.initialize(&admin, &issuers_id, &invalid_config);
-
-    let rejection = outcome_of(|| {
-        proofs.try_register_proof(
-            &hash(&env, 0xAB),
-            &commitment(&env, 0xC0),
-            &issuer,
-            &APPROVED_SCHEMA,
-            &(env.ledger().timestamp() + 100_000),
-            &None,
-            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
-        )
-    });
-
-    assert_eq!(
-        rejection,
-        Rejection::Aborted,
-        "an invalid dependency address must abort, not produce a typed error"
     let initialized = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         proofs.try_initialize(&admin, &issuers_id, &invalid_config)
     }));
@@ -569,7 +551,7 @@ fn an_invalid_protocol_config_address_aborts_the_registration() {
 }
 
 #[test]
-fn an_invalid_issuer_registry_address_aborts_the_registration() {
+fn an_invalid_issuer_registry_address_is_rejected_during_initialization() {
     let env = soroban_sdk::Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
@@ -594,24 +576,6 @@ fn an_invalid_issuer_registry_address_aborts_the_registration() {
     // interface handshake in `initialize` cannot reach it, so initialization
     // fails closed before any state is written.
     let invalid_issuers = Address::generate(&env);
-    proofs.initialize(&admin, &invalid_issuers, &config_id);
-
-    let rejection = outcome_of(|| {
-        proofs.try_register_proof(
-            &hash(&env, 0xAC),
-            &commitment(&env, 0xC0),
-            &issuer,
-            &APPROVED_SCHEMA,
-            &(env.ledger().timestamp() + 100_000),
-            &None,
-            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
-        )
-    });
-
-    assert_eq!(
-        rejection,
-        Rejection::Aborted,
-        "an invalid dependency address must abort"
     let initialized = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         proofs.try_initialize(&admin, &invalid_issuers, &config_id)
     }));

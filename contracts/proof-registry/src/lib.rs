@@ -1348,7 +1348,7 @@ impl ProofRegistryContract {
     pub fn get_proof_validity_details(
         env: Env,
         proof_id_hash: BytesN<32>,
-        ) -> Result<ProofValidityDetails, ProofError> {
+    ) -> Result<ProofValidityDetails, ProofError> {
         let record = Self::get_proof(env.clone(), proof_id_hash)?;
         let is_valid =
             record.status == ProofStatus::Active && env.ledger().timestamp() <= record.expires_at;

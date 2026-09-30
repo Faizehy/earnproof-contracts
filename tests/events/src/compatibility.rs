@@ -27,7 +27,10 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
         &["pending_admin", "nominated_by"],
     ),
     ("admin_transfer_accepted", &["new_admin"]),
-    ("admin_transfer_cancelled", &["pending_admin", "cancelled_by"]),
+    (
+        "admin_transfer_cancelled",
+        &["pending_admin", "cancelled_by"],
+    ),
     ("paused", &["paused"]),
     ("unpaused", &["paused"]),
     ("schema_approved", &["version"]),

@@ -297,9 +297,7 @@ impl ProtocolConfigContract {
         Self::require_auth(&pending_admin);
         let new_admin = pending_admin.clone();
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Admin, &new_admin);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
 
         Self::bump_config_version(env.clone());

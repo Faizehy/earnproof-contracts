@@ -383,7 +383,6 @@ pub enum ContractError {
     UpgradeApprovalExpired = 92,
     WasmHashMismatch = 93,
     InvalidTimingConfig = 94,
-
 }
 
 /// Issuer-specific errors (200-299).
