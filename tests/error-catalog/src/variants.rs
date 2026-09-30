@@ -97,13 +97,6 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "BatchTooLarge",
             IssuerError::BatchTooLarge as u32
         ),
-        (
-            "IssuerError",
-            "InvalidMetadataCommitment",
-            IssuerError::InvalidMetadataCommitment as u32
-        ),
-        (
-            "IssuerError",
             "IssuerCapacityExceeded",
             IssuerError::IssuerCapacityExceeded as u32
         ),
@@ -116,6 +109,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "IssuerError",
             "ReactivationCooldownActive",
             IssuerError::ReactivationCooldownActive as u32
+        ),
+        (
+            "IssuerError",
+            "InvalidMetadataCommitment",
+            IssuerError::InvalidMetadataCommitment as u32
         ),
         (
             "ProofError",
@@ -166,6 +164,31 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "ProofError",
             "MalformedInput",
             ProofError::MalformedInput as u32,
+        ),
+        (
+            "ProofError",
+            "InvalidBatchSize",
+            ProofError::InvalidBatchSize as u32,
+        ),
+        (
+            "ProofError",
+            "InvalidActivationTime",
+            ProofError::InvalidActivationTime as u32,
+        ),
+        (
+            "ProofError",
+            "DisputeAlreadyOpen",
+            ProofError::DisputeAlreadyOpen as u32,
+        ),
+        (
+            "ProofError",
+            "DisputeNotFound",
+            ProofError::DisputeNotFound as u32,
+        ),
+        (
+            "ProofError",
+            "DisputeNotOpen",
+            ProofError::DisputeNotOpen as u32,
         ),
         (
             "ProofError",

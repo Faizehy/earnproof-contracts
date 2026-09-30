@@ -42,6 +42,6 @@
     }
   },
   "emitted_by": "register_proof",
-  "description": "Published once a proof registration commits, carrying the public record fields and creation timing but not the commitment hash.",
+  "description": "Published once a proof registration commits, carrying the public record fields, creation timing, and registry epoch but not the commitment hash.",
   "compatibility": "additive"
 }

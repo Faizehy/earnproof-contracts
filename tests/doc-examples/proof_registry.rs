@@ -77,6 +77,7 @@
 //!         &issuer_address,
 //!         &schema_version,
 //!         &expires_at,
+//!         &BytesN::from_array(&env, &[1u8; 32]),
 //!     );
 //!
 //!     // Verify proof was registered with Active status
@@ -128,6 +129,7 @@
 //!         &issuer_address,
 //!         &schema_version,
 //!         &expires_at,
+//!         &BytesN::from_array(&env, &[1u8; 32]),
 //!     );
 //!
 //!     // Verify proof is valid
@@ -182,6 +184,7 @@
 //!         &issuer_address,
 //!         &schema_version,
 //!         &expires_at,
+//!         &BytesN::from_array(&env, &[1u8; 32]),
 //!     );
 //!
 //!     // Admin revokes proof
@@ -228,6 +231,7 @@
 //!         &issuer_address,
 //!         &schema_version,
 //!         &expires_at,
+//!         &BytesN::from_array(&env, &[1u8; 32]),
 //!     );
 //!
 //!     // Proof is valid (Active status and not expired)

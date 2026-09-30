@@ -240,21 +240,15 @@ impl Deployment<'_> {
     }
 
     pub fn suspend_issuer(&self, issuer_id: &BytesN<32>) {
+        let reason_commitment = soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]);
         authorize(
             &self.env,
             &self.admin,
             &self.issuers_address,
             "suspend_issuer",
-            (
-                issuer_id,
-                &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
-            )
-                .into_val(&self.env),
+            (issuer_id, &reason_commitment).into_val(&self.env),
         );
-        self.issuers.suspend_issuer(
-            issuer_id,
-            &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
-        );
+        self.issuers.suspend_issuer(issuer_id, &reason_commitment);
     }
 
     pub fn rotate_issuer_address(&self, issuer_id: &BytesN<32>, new_address: &Address) {

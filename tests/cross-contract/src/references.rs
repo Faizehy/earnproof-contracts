@@ -42,12 +42,7 @@ fn fixtures() -> (Env, Address, Address, BytesN<32>, Address, Address) {
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
     let issuer_id = hash(&env, 0x01);
-    issuers.register_issuer(
-        &issuer_id,
-        &issuer,
-        &hash(&env, 0xAA),
-        &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
-    );
+    issuers.register_issuer(&issuer_id, &issuer, &hash(&env, 0xAA), &hash(&env, 0xAB));
 
     (env, admin, issuer, issuer_id, issuers_id, config_id)
 }

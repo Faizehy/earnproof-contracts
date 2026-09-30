@@ -115,6 +115,7 @@ pub fn build(name: &str) -> Scenario {
     // --- initialized: provisioned, holding no records -----------------------
     recorder.after(&env, || config.initialize(&admin));
     recorder.after(&env, || config.approve_schema_version(&SCHEMA_VERSION));
+    recorder.after(&env, || config.approve_proof_type(&bytes32(&env, 1)));
     recorder.after(&env, || issuers.initialize(&admin));
     recorder.after(&env, || proofs.initialize(&admin, &issuers_id, &config_id));
 

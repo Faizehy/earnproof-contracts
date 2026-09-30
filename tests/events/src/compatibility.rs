@@ -9,7 +9,7 @@
 //! the fixtures usable as a compatibility contract for indexers rather than
 //! documentation that happened to be true once.
 
-use crate::harness::{hash, read_events, Deployment, ObservedEvent};
+use crate::harness::{hash, read_events, Deployment, ObservedEvent, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 
@@ -21,6 +21,7 @@ use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     // protocol-config
     ("initialized", &["admin"]),
+    ("admin_changed", &["new_admin"]),
     (
         "admin_transfer_nominated",
         &["pending_admin", "nominated_by"],
@@ -113,6 +114,20 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "created_ledger",
             "created_at",
             "expires_at",
+            "epoch",
+        ],
+    ),
+    (
+        "proof_registered_with_payload",
+        &[
+            "proof_id_hash",
+            "issuer_address",
+            "schema_version",
+            "created_ledger",
+            "created_at",
+            "expires_at",
+            "payload_len",
+            "payload_hash",
             "epoch",
         ],
     ),
@@ -342,9 +357,11 @@ fn proof_registry_declares_registration_and_revocation_events() {
 
     assert_eq!(
         proof_events,
-        std::vec!["proof_registered", "proof_revoked"],
-        "proof-registry registration and revocation fixtures and docs/events.md \
-         update tests/fixtures/events/proof-registry/v1/ and docs/events.md \
-         must track both event declarations"
+        std::vec![
+            "proof_registered",
+            "proof_registered_with_payload",
+            "proof_revoked"
+        ],
+        "proof-registry event fixtures and docs/events.md must track every declared topic"
     );
 }

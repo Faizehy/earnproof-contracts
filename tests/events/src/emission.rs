@@ -303,52 +303,48 @@ fn register_proof_emits_proof_registered_with_the_advanced_epoch() {
     let announced_epoch: u32 = event
         .field(&deployment.env, "epoch")
         .expect("proof_registered event must carry epoch");
-
     assert_eq!(announced_id, proof_id);
     assert_eq!(announced_epoch, epoch_before + 1);
     assert_eq!(deployment.proofs.get_registry_epoch(), epoch_before + 1);
 }
 
 #[test]
-fn revoke_proof_emits_proof_revoked_with_the_advanced_epoch() {
+fn revoke_proof_emits_timing_and_the_advanced_epoch() {
     let deployment = Deployment::new();
     let proof_id = deployment.register_proof(0x21);
     let epoch_before = deployment.proofs.get_registry_epoch();
 
-    let events = deployment.capture(|| {
-        deployment.proofs.revoke_proof(&proof_id);
-    });
-
+    let events = deployment.capture(|| deployment.proofs.revoke_proof(&proof_id));
     let event = expect_single(&deployment.env, &events, "proof_revoked");
-    let announced_id: BytesN<32> = event
-        .field(&deployment.env, "proof_id_hash")
-        .expect("proof_revoked event must carry proof_id_hash");
-    let by_admin: bool = event
-        .field(&deployment.env, "by_admin")
-        .expect("proof_revoked event must carry by_admin");
-    let announced_epoch: u32 = event
-        .field(&deployment.env, "epoch")
-        .expect("proof_revoked event must carry epoch");
+    let announced_id: BytesN<32> = event.field(&deployment.env, "proof_id_hash").unwrap();
+    let revoked_at: u64 = event.field(&deployment.env, "revoked_at").unwrap();
+    let revoked_ledger: u32 = event.field(&deployment.env, "revoked_ledger").unwrap();
+    let by_admin: bool = event.field(&deployment.env, "by_admin").unwrap();
+    let announced_epoch: u32 = event.field(&deployment.env, "epoch").unwrap();
+    let record = deployment.proofs.get_proof(&proof_id);
 
     assert_eq!(announced_id, proof_id);
+    assert_eq!(revoked_at, record.revoked_at);
+    assert_eq!(revoked_ledger, record.revoked_ledger);
     assert!(!by_admin);
     assert_eq!(announced_epoch, epoch_before + 1);
 }
 
 #[test]
-fn admin_revoke_proof_emits_proof_revoked_with_by_admin_true() {
+fn admin_revoke_proof_emits_timing_and_admin_flag() {
     let deployment = Deployment::new();
     let proof_id = deployment.register_proof(0x22);
 
-    let events = deployment.capture(|| {
-        deployment.proofs.admin_revoke_proof(&proof_id);
-    });
-
+    let events = deployment.capture(|| deployment.proofs.admin_revoke_proof(&proof_id));
     let event = expect_single(&deployment.env, &events, "proof_revoked");
-    let by_admin: bool = event
-        .field(&deployment.env, "by_admin")
-        .expect("proof_revoked event must carry by_admin");
+    let by_admin: bool = event.field(&deployment.env, "by_admin").unwrap();
+    let record = deployment.proofs.get_proof(&proof_id);
+    let revoked_at: u64 = event.field(&deployment.env, "revoked_at").unwrap();
+    let revoked_ledger: u32 = event.field(&deployment.env, "revoked_ledger").unwrap();
+
     assert!(by_admin);
+    assert_eq!(revoked_at, record.revoked_at);
+    assert_eq!(revoked_ledger, record.revoked_ledger);
 }
 
 #[test]
@@ -370,59 +366,26 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
     });
 
     assert!(events.is_empty(), "a rejected call must publish nothing");
-    assert_eq!(
-        deployment.proofs.get_registry_epoch(),
-        epoch_before,
-        "a rejected call must not advance the registry epoch"
-    );
+    assert_eq!(deployment.proofs.get_registry_epoch(), epoch_before);
 }
 
 #[test]
-fn proof_registry_emits_proof_registered_on_registration() {
-    // proof-registry publishes exactly one `proof_registered` event on a
-    // successful registration, carrying the on-chain creation timing so an
-    // indexer can record deterministic audit timestamps.
+fn each_successful_proof_mutation_emits_one_proof_registry_event() {
     let deployment = Deployment::new();
-
-    let register_events = deployment.capture(|| {
-        deployment.register_proof(0x11);
-    });
-    let from_registration: std::vec::Vec<_> = register_events
+    let registration_events = deployment.capture(|| deployment.register_proof(0x23));
+    let proof_events: std::vec::Vec<_> = registration_events
         .iter()
         .filter(|event| event.contract == deployment.proofs.address)
         .collect();
-    assert_eq!(
-        from_registration.len(),
-        1,
-        "registration must emit exactly one proof-registry event"
-    );
-    assert!(
-        from_registration[0].is(&deployment.env, "proof_registered"),
-        "the registration event must be proof_registered"
-    );
-}
+    assert_eq!(proof_events.len(), 1);
+    assert!(proof_events[0].is(&deployment.env, "proof_registered"));
 
-#[test]
-fn proof_registry_revocation_emits_proof_revoked() {
-    // Revocation is the one proof-registry event: it carries the effective
-    // revocation timing so verifiers learn when a proof became invalid.
-    let deployment = Deployment::new();
-    let proof_id = deployment.register_proof(0x11);
-    let events = deployment.capture(|| {
-        deployment.proofs.admin_revoke_proof(&proof_id);
-    });
-    let from_proof_registry: std::vec::Vec<_> = events
+    let proof_id = deployment.register_proof(0x24);
+    let revocation_events = deployment.capture(|| deployment.proofs.admin_revoke_proof(&proof_id));
+    let proof_events: std::vec::Vec<_> = revocation_events
         .iter()
         .filter(|event| event.contract == deployment.proofs.address)
         .collect();
-
-    assert_eq!(
-        from_proof_registry.len(),
-        1,
-        "revocation must publish exactly one proof-registry event"
-    );
-    assert!(
-        from_proof_registry[0].is(&deployment.env, "proof_revoked"),
-        "the revocation event is published under the topic proof_revoked"
-    );
+    assert_eq!(proof_events.len(), 1);
+    assert!(proof_events[0].is(&deployment.env, "proof_revoked"));
 }

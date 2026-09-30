@@ -86,8 +86,8 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 41 | `NotFound` | `ContractError` | common | reserved | after-caller-change | 404 |
 | 42 | `InvalidState` | `ContractError` | common | reserved | never | 400 |
 | 60 | `InvalidInput` | `ContractError` | common | returned | after-caller-change | 400 |
-| 62 | `BatchTooLarge` | `ContractError` | common | returned | after-caller-change | 400 |
-| 63 | `IncompatibleInterfaceVersion` | `ContractError` | common | returned | after-caller-change | 400 |
+| 62 | `IncompatibleInterfaceVersion` | `ContractError` | common | returned | after-caller-change | 400 |
+| 64 | `BatchTooLarge` | `ContractError` | common | returned | after-caller-change | 400 |
 | 80 | `ProtocolPaused` | `ContractError` | common | reserved | after-operator-action | 503 |
 | 200 | `IssuerAlreadyRegistered` | `IssuerError` | issuer-registry | returned | never | 409 |
 | 201 | `IssuerNotFound` | `IssuerError` | issuer-registry | returned | after-caller-change | 404 |
@@ -96,11 +96,11 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 204 | `IssuerRevoked` | `IssuerError` | issuer-registry | returned | never | 403 |
 | 205 | `IssuerInactive` | `IssuerError` | issuer-registry | reserved | after-operator-action | 403 |
 | 206 | `InvalidTransition` | `IssuerError` | issuer-registry | returned | never | 400 |
-| 208 | `BatchTooLarge` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
-| 209 | `InvalidMetadataCommitment` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
-| 210 | `IssuerCapacityExceeded` | `IssuerError` | issuer-registry | returned | after-operator-action | 409 |
-| 211 | `MaxBelowActiveUsage` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
-| 212 | `ReactivationCooldownActive` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 208 | `IssuerCapacityExceeded` | `IssuerError` | issuer-registry | returned | after-operator-action | 409 |
+| 209 | `MaxBelowActiveUsage` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 210 | `ReactivationCooldownActive` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 211 | `InvalidMetadataCommitment` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 212 | `BatchTooLarge` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 300 | `ProofAlreadyRegistered` | `ProofError` | proof-registry | returned | never | 409 |
 | 301 | `ProofNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 302 | `ProofAlreadyRevoked` | `ProofError` | proof-registry | returned | never | 400 |
@@ -111,7 +111,12 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 308 | `IssuerInactive` | `ProofError` | proof-registry | returned | after-operator-action | 403 |
 | 309 | `UnsupportedSchema` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 310 | `MalformedInput` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
-| 311 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 311 | `InvalidBatchSize` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
+| 312 | `InvalidActivationTime` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
+| 313 | `DisputeAlreadyOpen` | `ProofError` | proof-registry | returned | never | 409 |
+| 314 | `DisputeNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
+| 315 | `DisputeNotOpen` | `ProofError` | proof-registry | returned | never | 400 |
+| 316 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 
 ## Details
 
@@ -192,18 +197,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Invalid input provided"
 
-### 62 - `BatchTooLarge`
-
-- Enum: `ContractError`
-- Domain: common
-- Status: returned
-- Retry: after-caller-change
-- Cause: get_schema_statuses was given more schema versions than the bounded batch limit.
-- Remediation: Split the request into batches of at most MAX_SCHEMA_STATUS_BATCH entries.
-- Suggested HTTP status: 400
-- Client message: "Request batch is too large"
-
-### 63 - `IncompatibleInterfaceVersion`
+### 62 - `IncompatibleInterfaceVersion`
 
 - Enum: `ContractError`
 - Domain: common
@@ -213,6 +207,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Bind a dependency whose interface version is compatible: same major and at least the minor and patch the consumer requires. Read the accepted version from the consumer before retrying.
 - Suggested HTTP status: 400
 - Client message: "Incompatible dependency version"
+
+### 64 - `BatchTooLarge`
+
+- Enum: `ContractError`
+- Domain: common
+- Status: returned
+- Retry: after-caller-change
+- Cause: get_schema_statuses was given more schema versions than the bounded batch limit.
+- Remediation: Split the request into batches of at most MAX_SCHEMA_STATUS_BATCH entries.
+- Suggested HTTP status: 400
+- Client message: "Request batch is too large"
 
 ### 80 - `ProtocolPaused`
 
@@ -302,29 +307,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Invalid status transition"
 
-### 208 - `BatchTooLarge`
-
-- Enum: `IssuerError`
-- Domain: issuer-registry
-- Status: returned
-- Retry: after-caller-change
-- Cause: get_issuer_statuses was given more issuer identifiers than the bounded batch limit.
-- Remediation: Split the request into batches of at most MAX_ISSUER_STATUS_BATCH entries.
-- Suggested HTTP status: 400
-- Client message: "Request batch is too large"
-
-### 209 - `InvalidMetadataCommitment`
-
-- Enum: `IssuerError`
-- Domain: issuer-registry
-- Status: returned
-- Retry: after-caller-change
-- Cause: set_issuer_metadata_commitment was given an all-zero content or URI commitment.
-- Remediation: Provide nonzero 32-byte commitments for both the canonical document and its URI.
-- Suggested HTTP status: 400
-- Client message: "Invalid issuer commitment"
-
-### 210 - `IssuerCapacityExceeded`
+### 208 - `IssuerCapacityExceeded`
 
 - Enum: `IssuerError`
 - Domain: issuer-registry
@@ -335,7 +318,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 409
 - Client message: "Issuer capacity reached"
 
-### 211 - `MaxBelowActiveUsage`
+### 209 - `MaxBelowActiveUsage`
 
 - Enum: `IssuerError`
 - Domain: issuer-registry
@@ -346,7 +329,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Capacity limit below current usage"
 
-### 212 - `ReactivationCooldownActive`
+### 210 - `ReactivationCooldownActive`
 
 - Enum: `IssuerError`
 - Domain: issuer-registry
@@ -356,6 +339,28 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Wait until the ledger time returned by get_earliest_reactivation before retrying. The deadline is fixed at suspension time and does not move.
 - Suggested HTTP status: 400
 - Client message: "Reactivation cooldown has not elapsed"
+
+### 211 - `InvalidMetadataCommitment`
+
+- Enum: `IssuerError`
+- Domain: issuer-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: set_issuer_metadata_commitment was called with the all-zero digest for the content hash or the URI hash, which is reserved as the "no URI commitment recorded" sentinel.
+- Remediation: Compute a real SHA-256 commitment over the canonical document or URI bytes and resubmit; the all-zero digest is never accepted.
+- Suggested HTTP status: 400
+- Client message: "Invalid identity digest"
+
+### 212 - `BatchTooLarge`
+
+- Enum: `IssuerError`
+- Domain: issuer-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: get_issuer_statuses was given more issuer identifiers than the bounded batch limit.
+- Remediation: Split the request into batches of at most MAX_ISSUER_STATUS_BATCH entries.
+- Suggested HTTP status: 400
+- Client message: "Request batch is too large"
 
 ### 300 - `ProofAlreadyRegistered`
 
@@ -467,7 +472,62 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Malformed proof input"
 
-### 311 - `UnsupportedProofType`
+### 311 - `InvalidBatchSize`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: A batch registration or batch revocation call was given zero entries, or more entries than MAX_PROOF_BATCH_SIZE.
+- Remediation: Split the request into batches of between one and MAX_PROOF_BATCH_SIZE entries.
+- Suggested HTTP status: 400
+- Client message: "Invalid batch size"
+
+### 312 - `InvalidActivationTime`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: register_proof_with_activation was given an activates_at at or after expires_at, so the proof could never be valid.
+- Remediation: Choose an activation time strictly before the expiration.
+- Suggested HTTP status: 400
+- Client message: "Invalid activation time"
+
+### 313 - `DisputeAlreadyOpen`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: open_dispute was called for a proof that already has an Open dispute.
+- Remediation: Withdraw, resolve, or reject the existing dispute before opening a new one. Retrying the identical request will not help: the dispute is cleared by a different call (from the disputant or the admin), not by this one succeeding on its own.
+- Suggested HTTP status: 409
+- Client message: "A dispute is already open for this proof"
+
+### 314 - `DisputeNotFound`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: withdraw_dispute, resolve_dispute, or reject_dispute referenced a proof with no dispute record.
+- Remediation: Open a dispute first, or confirm the proof id.
+- Suggested HTTP status: 404
+- Client message: "No dispute found for this proof"
+
+### 315 - `DisputeNotOpen`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: A dispute transition was attempted on a dispute that is not Open (already withdrawn, resolved, or rejected).
+- Remediation: Read the dispute's current status; it is terminal once withdrawn, resolved, or rejected.
+- Suggested HTTP status: 400
+- Client message: "Dispute is not open"
+
+### 316 - `UnsupportedProofType`
 
 - Enum: `ProofError`
 - Domain: proof-registry

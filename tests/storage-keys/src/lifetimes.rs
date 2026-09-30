@@ -108,15 +108,16 @@ fn per_record_namespaces_hold_one_entry_per_record() {
         12
     );
 
-    // Three proofs (one revoked in place, one registered with a payload) plus
-    // one payload-metadata entry for the payload-bearing registration.
+    // Proof records, TTL trackers, per-issuer accounting, schema rate usage,
+    // dispute/archive state, upgrade approvals, and payload metadata all use
+    // independent persistent keys.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        4
+        16
     );
 
-    // Schema history, type approvals, payload limits, and bounded governance
-    // history all use independent persistent keys.
+    // Schema history, proof-type approvals, predecessor links, payload
+    // limits, and bounded governance history each use independent keys.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
         17

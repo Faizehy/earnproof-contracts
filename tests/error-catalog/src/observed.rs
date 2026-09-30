@@ -179,6 +179,14 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         )),
     );
     observed.record(
+        "issuer-registry set_issuer_metadata_commitment with all-zero digest",
+        code(initial_dep.issuers.try_set_issuer_metadata_commitment(
+            &bytes32(env, 1),
+            &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            &bytes32(env, 3),
+        )),
+    );
+    observed.record(
         "issuer-registry update unknown issuer",
         code(
             initial_dep
@@ -335,7 +343,6 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             ),
         )),
     );
-
     // New precondition codes (307-309): drive a real failure path for each.
     // 307: ContractPaused — pause the protocol then attempt registration.
     let deployment2 = deployment();
@@ -440,6 +447,125 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         code(cap.try_reactivate_issuer(
             &bytes32(env, 50),
             &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        )),
+    );
+
+    // --- proof-registry incompatible dependency -------------------------
+    let bad_registry = env.register(BadVersionRegistry, ());
+    observed.record(
+        "proof-registry bind incompatible issuer registry",
+        code(initial_dep.proofs.try_set_issuer_registry(&bad_registry)),
+    );
+
+    // 311: InvalidBatchSize — an empty batch is rejected before any
+    // cross-contract call is made, on both the registration and revocation
+    // paths.
+    let empty_registration_batch: soroban_sdk::Vec<earnproof_shared::ProofRegistrationInput> =
+        soroban_sdk::Vec::new(env);
+    observed.record(
+        "proof-registry registration batch with zero entries",
+        code(
+            initial_dep
+                .proofs
+                .try_register_proofs_batch(&empty_registration_batch, &initial_dep.issuer),
+        ),
+    );
+
+    let empty_revocation_batch: soroban_sdk::Vec<soroban_sdk::BytesN<32>> =
+        soroban_sdk::Vec::new(env);
+    observed.record(
+        "proof-registry revocation batch with zero entries",
+        code(
+            initial_dep
+                .proofs
+                .try_revoke_proofs_batch(&empty_revocation_batch),
+        ),
+    );
+
+    // 312: InvalidActivationTime — activation at or after expiry can never
+    // be valid.
+    observed.record(
+        "proof-registry activation at or after expiry",
+        code(initial_dep.proofs.try_register_proof_with_activation(
+            &bytes32(env, 70),
+            &bytes32(env, 71),
+            &initial_dep.issuer,
+            &1,
+            &FAR_FUTURE,
+            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+            &FAR_FUTURE,
+        )),
+    );
+
+    // 313: DisputeAlreadyOpen — opening a second dispute while one is open.
+    initial_dep
+        .proofs
+        .open_dispute(&proof_id, &initial_dep.issuer, &bytes32(env, 80));
+    observed.record(
+        "proof-registry dispute already open",
+        code(initial_dep.proofs.try_open_dispute(
+            &proof_id,
+            &initial_dep.issuer,
+            &bytes32(env, 81),
+        )),
+    );
+
+    // 314: DisputeNotFound — no dispute exists for this proof.
+    observed.record(
+        "proof-registry dispute not found",
+        code(initial_dep.proofs.try_withdraw_dispute(&bytes32(env, 99))),
+    );
+
+    // 315: DisputeNotOpen — the dispute above is withdrawn, then acted on again.
+    initial_dep.proofs.withdraw_dispute(&proof_id);
+    observed.record(
+        "proof-registry dispute not open",
+        code(initial_dep.proofs.try_withdraw_dispute(&proof_id)),
+    );
+
+    // --- issuer-registry capacity and cooldown --------------------------
+    // A dedicated registry keeps the active-count accounting isolated from the
+    // paths above.
+    let cap_id = env.register(IssuerRegistryContract, ());
+    let cap = IssuerRegistryContractClient::new(env, &cap_id);
+    cap.initialize(&initial_dep.admin);
+    let cap_issuer = Address::generate(env);
+    cap.register_issuer(
+        &bytes32(env, 50),
+        &cap_issuer,
+        &bytes32(env, 51),
+        &bytes32(env, 59),
+    );
+
+    observed.record(
+        "issuer-registry set_max below active usage",
+        code(cap.try_set_max_active_issuers(&0, &false)),
+    );
+
+    cap.set_max_active_issuers(&1, &false);
+    observed.record(
+        "issuer-registry register beyond capacity",
+        code(cap.try_register_issuer(
+            &bytes32(env, 52),
+            &Address::generate(env),
+            &bytes32(env, 53),
+            &bytes32(env, 58),
+        )),
+    );
+
+    cap.set_reactivation_cooldown(&1_000);
+    cap.suspend_issuer(&bytes32(env, 50), &bytes32(env, 57));
+    observed.record(
+        "issuer-registry reactivate before cooldown",
+        code(cap.try_reactivate_issuer(&bytes32(env, 50), &bytes32(env, 56))),
+    );
+
+    observed.record(
+        "issuer-registry set metadata commitment empty",
+        code(cap.try_set_issuer_metadata_commitment(
+            &bytes32(env, 50),
+            &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            &bytes32(env, 53),
         )),
     );
 
