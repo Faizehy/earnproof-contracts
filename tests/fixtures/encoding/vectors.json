@@ -11,5 +11,36 @@
     {"id":"disclosure-policy-basic","kind":"policy-json-sha256","source":"{\"fields\":[\"amount\",\"date\"],\"version\":1}","hex":"508f1ecf8ffe53de7d1e6330072bf756696f995d2e368896db023f46943cb902"},
     {"id":"disclosure-policy-eligibility","kind":"policy-json-sha256","source":"{\"fields\":[\"amount\"],\"purpose\":\"eligibility\",\"version\":1}","hex":"dffbb4fc507d601e82b54c769ff56b983180d92838bc0628dfcb0b8310306dbb"}
   ],
-  "invalid": ["empty string", "malformed hex", "wrong byte length", "signed or little-endian integer", "unpaired UTF-16 surrogate"]
+  "proofContextV1": {
+    "encoding": "SHA-256 over domain tag plus canonical bytes; issued asset = issued NUL + one-byte code length + case-sensitive ASCII code + issuer StrKey",
+    "networkPassphrase": "Test SDF Network ; September 2015",
+    "claimCommitment": "7261c38367d18cd03b133d7011956d1a8a35daf3e379aed2d45cdf33be235f35",
+    "issuer": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+    "native": {
+      "networkCommitment": "2ae86c27166c9cd705171a390e1aa21629c78c25a1c07e54f871d3118f858c23",
+      "assetCommitment": "3940f80ca0d744c8ac0262cfb0745027a75c1518406414214d56bdd6d30b644c",
+      "contextCommitment": "5520a609b05439dcb41fd2cc612064a58eece4c9a535981d265e4dad7cb4bdac",
+      "recordId": "2f06fbe706162acde73d6f257246961032aec6b27c6571ee7a6ab01ce9735f36"
+    },
+    "issuedUSDC": {
+      "assetCode": "USDC",
+      "networkCommitment": "2ae86c27166c9cd705171a390e1aa21629c78c25a1c07e54f871d3118f858c23",
+      "assetCommitment": "dbd1a838d502a8a93a085ae411c9bc6c14582a3e7d4e5e6009fa9c24c0a5aff9",
+      "contextCommitment": "c98e7e0b741716ce9ea2b777c8284e29ea54e592f90e68a1b3321cb13e7f762c",
+      "recordId": "0855b695979ef50e47029a887fdcd7416884fabbde9a578a94359d920a3139ea"
+    }
+  },
+  "subjectPseudonymV1": {
+    "encoding": "SHA-256(domain tag NUL || domain-length-u8 || domain ASCII || issuer account StrKey ASCII || pseudonym BytesN<32>)",
+    "issuer": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+    "otherIssuer": "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG",
+    "pseudonym": "1111111111111111111111111111111111111111111111111111111111111111",
+    "domain": "credential-verification",
+    "commitment": "5ecb42daec707c8a896025a5e7c7b32b1f85a2f7ccc95a3afeb4dea1a4ea10bd",
+    "otherDomain": "analytics",
+    "otherDomainCommitment": "41274ef078938676b3daaeac0a5d26ba57bec415b912fce3d56c722b3664ba1b",
+    "otherIssuerCommitment": "f5db487092a3e26ef2d83cb2790649fe2a52bc1db699fb0fae7c7c6f99c0f2a0",
+    "zeroCommitmentPolicy": "all-zero BytesN<32> means no pseudonym; do not store a sidecar"
+  },
+  "invalid": ["empty string", "malformed hex", "wrong byte length", "signed or little-endian integer", "unpaired UTF-16 surrogate", "asset code with punctuation or whitespace", "issued asset with a contract issuer", "network passphrase not matching the current ledger", "empty, whitespace, or non-ASCII pseudonym domain"]
 }

@@ -8,7 +8,8 @@ use earnproof_shared::{
     PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Vec,
+    contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
+    Vec,
 };
 
 #[contract]
@@ -455,6 +456,7 @@ impl ProtocolConfigContract {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
         Self::ensure_nonzero_version(version)?;
         let policy_key = DataKey::SchemaPolicy(version);
         if !env.storage().persistent().has(&policy_key) {
@@ -597,6 +599,7 @@ impl ProtocolConfigContract {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
         Self::ensure_nonzero_version(version)?;
         env.storage()
             .persistent()
@@ -1117,6 +1120,114 @@ impl ProtocolConfigContract {
 
     fn require_auth(address: &Address) {
         address.require_auth();
+    }
+
+    fn critical_action_policy(env: &Env) -> CriticalActionPolicy {
+        env.storage()
+            .instance()
+            .get(&DataKey::CriticalActionPolicy)
+            .unwrap_or(CriticalActionPolicy {
+                enabled: false,
+                threshold: 0,
+                signers: Vec::new(env),
+            })
+    }
+
+    fn ensure_critical_action_policy_disabled(env: &Env) -> Result<(), ContractError> {
+        if Self::critical_action_policy(env).enabled {
+            Err(ContractError::ThresholdApprovalRequired)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_critical_action_policy(policy: &CriticalActionPolicy) -> Result<(), ContractError> {
+        if !policy.enabled {
+            return if policy.threshold == 0 && policy.signers.is_empty() {
+                Ok(())
+            } else {
+                Err(ContractError::InvalidApprovalPolicy)
+            };
+        }
+        if policy.signers.is_empty()
+            || policy.signers.len() > MAX_CRITICAL_ACTION_SIGNERS
+            || policy.threshold == 0
+            || policy.threshold > policy.signers.len()
+        {
+            return Err(ContractError::InvalidApprovalPolicy);
+        }
+        for (index, signer) in policy.signers.iter().enumerate() {
+            if !earnproof_shared::is_valid_principal_address(&signer) {
+                return Err(ContractError::InvalidApprovalPolicy);
+            }
+            for earlier in 0..index {
+                if policy.signers.get(earlier as u32).unwrap() == signer {
+                    return Err(ContractError::InvalidApprovalPolicy);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn store_critical_action_policy(
+        env: Env,
+        policy: CriticalActionPolicy,
+    ) -> Result<(), ContractError> {
+        let commitment = Self::commit(&env, policy.clone());
+        Self::store_critical_action_policy_with_commitment(env, policy, commitment);
+        Ok(())
+    }
+
+    fn store_critical_action_policy_with_commitment(
+        env: Env,
+        policy: CriticalActionPolicy,
+        commitment: BytesN<32>,
+    ) {
+        env.storage()
+            .instance()
+            .set(&DataKey::CriticalActionPolicy, &policy);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::ApprovalPolicyUpdate,
+            commitment,
+        );
+        CriticalActionPolicySet {
+            enabled: policy.enabled,
+            threshold: policy.threshold,
+            signer_count: policy.signers.len(),
+        }
+        .publish(&env);
+    }
+
+    fn ensure_proposal_live(
+        env: &Env,
+        proposal: &CriticalActionProposal,
+    ) -> Result<(), ContractError> {
+        if env.ledger().sequence() >= proposal.expires_at {
+            return Err(ContractError::ApprovalProposalExpired);
+        }
+        Ok(())
+    }
+
+    fn critical_action_commitment(env: &Env, action: &CriticalAction, nonce: u32) -> BytesN<32> {
+        let commitment = (
+            Symbol::new(env, "critical_action_v1"),
+            env.current_contract_address(),
+            action.category(),
+            action.clone(),
+            nonce,
+        );
+        env.crypto().sha256(&commitment.to_xdr(env)).to_bytes()
+    }
+
+    fn record_critical_action_change(
+        env: Env,
+        category: ConfigChangeCategory,
+        commitment: BytesN<32>,
+    ) {
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(env, category, commitment);
     }
 }
 

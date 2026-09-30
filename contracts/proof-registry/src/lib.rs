@@ -12,8 +12,8 @@ use earnproof_shared::{
     UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{
-    contract, contractclient, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
-    Env,
+    contract, contractclient, contractevent, contractimpl, contracttype, xdr::ToXdr, Address,
+    Bytes, BytesN, Env, Symbol, Vec,
 };
 
 /// Minimum `issuer-registry` interface version this contract can bind to.
@@ -41,6 +41,17 @@ pub trait IssuerRegistryInterface {
 
 #[contract]
 pub struct ProofRegistryContract;
+
+struct ProofRegistration {
+    proof_id_hash: BytesN<32>,
+    commitment_hash: BytesN<32>,
+    issuer_address: Address,
+    schema_version: u32,
+    expires_at: u64,
+    payload: Option<Bytes>,
+    context: Option<ProofContextCommitments>,
+    subject_pseudonym_commitment: Option<BytesN<32>>,
+}
 
 #[contracttype]
 enum DataKey {
@@ -778,17 +789,23 @@ impl ProofRegistryContract {
     ) -> Result<(), ProofError> {
         Self::ensure_not_decommissioned(&env)?;
         Self::require_valid_issuer_address(&issuer_address)?;
-        let protocol_config =
-            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
-        let issuer_registry =
-            Self::get_issuer_registry(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
-        if issuer_address == env.current_contract_address()
-            || issuer_address == protocol_config
-            || issuer_address == issuer_registry
-        {
-            return Err(ProofError::InvalidAddress);
-        }
         Self::require_auth(&issuer_address);
+        let subject_pseudonym_commitment =
+            optional_subject_pseudonym_commitment(&subject_pseudonym_commitment);
+        Self::register_proof_inner(
+            env,
+            ProofRegistration {
+                proof_id_hash,
+                commitment_hash,
+                issuer_address,
+                schema_version,
+                expires_at,
+                payload: None,
+                context: None,
+                subject_pseudonym_commitment,
+            },
+        )
+    }
 
         // Input validation (proof-specific data validation — checked before cross-contract calls)
         if schema_version == 0 {
@@ -953,14 +970,16 @@ impl ProofRegistryContract {
             return Err(ProofError::UnsupportedSchema);
         }
 
-        // Schema-specific payload size bound, enforced before any state
-        // write — a zero-length payload is always within bounds, and a
-        // payload exactly at the limit is accepted.
-        let max_payload_size = protocol_client.get_schema_payload_limit(&schema_version);
-        let payload_len = payload.len();
-        if payload_len > max_payload_size {
-            return Err(ProofError::MalformedInput);
-        }
+        let payload_len = if let Some(payload) = &payload {
+            let max_payload_size = protocol_client.get_schema_payload_limit(&schema_version);
+            let length = payload.len();
+            if length > max_payload_size {
+                return Err(ProofError::MalformedInput);
+            }
+            Some(length)
+        } else {
+            None
+        };
 
         let key = DataKey::Proof(proof_id_hash.clone());
         if env.storage().persistent().has(&key) {
@@ -1001,7 +1020,40 @@ impl ProofRegistryContract {
             payload_hash,
             epoch,
         }
-        .publish(&env);
+
+        if let Some(commitment) = subject_pseudonym_commitment {
+            let pseudonym_key = DataKey::ProofSubjectPseudonym(proof_id_hash.clone());
+            env.storage().persistent().set(&pseudonym_key, &commitment);
+            Self::extend_proof_key_ttl(env.clone(), &pseudonym_key);
+        }
+
+        if let (Some(payload), Some(payload_len)) = (payload, payload_len) {
+            let payload_hash = env.crypto().sha256(&payload).to_bytes();
+            let payload_key = DataKey::ProofPayloadMeta(proof_id_hash.clone());
+            let payload_meta = ProofPayloadRecord {
+                payload_len,
+                payload_hash: payload_hash.clone(),
+            };
+            env.storage().persistent().set(&payload_key, &payload_meta);
+            Self::extend_payload_key_ttl(env.clone(), &payload_key);
+
+            let epoch = Self::bump_registry_epoch(&env);
+            ProofRegisteredWithPayload {
+                proof_id_hash,
+                payload_len,
+                payload_hash,
+                epoch,
+            }
+            .publish(&env);
+        } else {
+            let epoch = Self::bump_registry_epoch(&env);
+            ProofRegistered {
+                proof_id_hash,
+                epoch,
+            }
+            .publish(&env);
+        }
+
         Ok(())
     }
 
@@ -1047,7 +1099,8 @@ impl ProofRegistryContract {
             .persistent()
             .get(&key)
             .ok_or(ProofError::ProofNotFound)?;
-        Self::extend_proof_key_ttl(env, &key);
+        Self::extend_proof_key_ttl(env.clone(), &key);
+        Self::extend_proof_sidecars_ttl(env, &context_id);
         Ok(record)
     }
 
@@ -1416,6 +1469,7 @@ impl ProofRegistryContract {
     ) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
 
         let issuer_registry = Self::get_issuer_registry(env.clone())?;
         Self::validate_dependency_addresses(&env, &issuer_registry, &new_protocol_config)?;
@@ -2464,6 +2518,87 @@ impl ProofRegistryContract {
 
     fn require_auth(address: &Address) {
         address.require_auth();
+    }
+
+    fn critical_action_policy(env: &Env) -> CriticalActionPolicy {
+        env.storage()
+            .instance()
+            .get(&DataKey::CriticalActionPolicy)
+            .unwrap_or(CriticalActionPolicy {
+                enabled: false,
+                threshold: 0,
+                signers: Vec::new(env),
+            })
+    }
+
+    fn ensure_critical_action_policy_disabled(env: &Env) -> Result<(), ContractError> {
+        if Self::critical_action_policy(env).enabled {
+            Err(ContractError::ThresholdApprovalRequired)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_critical_action_policy(policy: &CriticalActionPolicy) -> Result<(), ContractError> {
+        if !policy.enabled {
+            return if policy.threshold == 0 && policy.signers.is_empty() {
+                Ok(())
+            } else {
+                Err(ContractError::InvalidApprovalPolicy)
+            };
+        }
+        if policy.signers.is_empty()
+            || policy.signers.len() > MAX_CRITICAL_ACTION_SIGNERS
+            || policy.threshold == 0
+            || policy.threshold > policy.signers.len()
+        {
+            return Err(ContractError::InvalidApprovalPolicy);
+        }
+        for (index, signer) in policy.signers.iter().enumerate() {
+            if !earnproof_shared::is_valid_principal_address(&signer) {
+                return Err(ContractError::InvalidApprovalPolicy);
+            }
+            for earlier in 0..index {
+                if policy.signers.get(earlier as u32).unwrap() == signer {
+                    return Err(ContractError::InvalidApprovalPolicy);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn store_critical_action_policy(env: Env, policy: CriticalActionPolicy) {
+        env.storage()
+            .instance()
+            .set(&DataKey::CriticalActionPolicy, &policy);
+        Self::extend_instance_ttl(env.clone());
+        CriticalActionPolicySet {
+            enabled: policy.enabled,
+            threshold: policy.threshold,
+            signer_count: policy.signers.len(),
+        }
+        .publish(&env);
+    }
+
+    fn ensure_proposal_live(
+        env: &Env,
+        proposal: &CriticalActionProposal,
+    ) -> Result<(), ContractError> {
+        if env.ledger().sequence() >= proposal.expires_at {
+            return Err(ContractError::ApprovalProposalExpired);
+        }
+        Ok(())
+    }
+
+    fn critical_action_commitment(env: &Env, action: &CriticalAction, nonce: u32) -> BytesN<32> {
+        let commitment = (
+            Symbol::new(env, "critical_action_v1"),
+            env.current_contract_address(),
+            action.category(),
+            action.clone(),
+            nonce,
+        );
+        env.crypto().sha256(&commitment.to_xdr(env)).to_bytes()
     }
 }
 

@@ -113,6 +113,14 @@ pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
 }
 
+pub fn proof_context_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofContext"), id.clone())
+}
+
+pub fn proof_subject_pseudonym_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofSubjectPseudonym"), id.clone())
+}
+
 pub fn genesis_key() -> (Symbol,) {
     (symbol_short!("Genesis"),)
 }
