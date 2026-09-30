@@ -17,7 +17,8 @@ use super::support::{
     issuer_active_proof_count_key, issuer_epoch_key, issuer_index_count_key, issuer_index_key,
     issuer_key, issuer_lifetime_proof_count_key, issuer_registry_key, issuer_ttl_key,
     max_active_issuers_key, paused_key, proof_key, proof_ttl_key, protocol_config_key,
-    reactivation_cooldown_key, registry_epoch_key, schema_rate_usage_key, schema_version_key,
+    reactivation_cooldown_key, registry_epoch_key, schema_rate_usage_key,
+    schema_version_index_count_key, schema_version_index_key, schema_version_key,
 };
 use earnproof_shared::StorageClass;
 use soroban_sdk::testutils::Address as _;
@@ -46,6 +47,7 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, contract_version_key(env)),
             encoded(env, genesis_key()),
             encoded(env, config_history_total_key(env)),
+            encoded(env, schema_version_index_count_key(env)),
         ]),
         "protocol-config instance keys"
     );
@@ -54,6 +56,7 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
         encoded_keys_in(env, &deployment.config_id, StorageClass::Persistent),
         sorted(std::vec![
             encoded(env, schema_version_key(env, 1)),
+            encoded(env, schema_version_index_key(env, 0)),
             encoded(env, config_history_ring_key(env, 0)),
         ]),
         "protocol-config persistent keys"
@@ -189,6 +192,10 @@ fn no_two_distinct_keys_share_an_encoding() {
             std::format!("SchemaVersion({version})"),
             encoded(&env, schema_version_key(&env, version)),
         ));
+        keys.push((
+            std::format!("SchemaVersionIndex({version})"),
+            encoded(&env, schema_version_index_key(&env, version)),
+        ));
     }
     for value in [0_u8, 1, 2, 254, 255] {
         let identifier = bytes32(&env, value);
@@ -315,7 +322,7 @@ fn identical_namespaces_in_different_contracts_address_different_entries() {
     // another: the issuer registry still holds only its fixed instance keys.
     assert_eq!(
         encoded_keys_in(env, &deployment.issuers_id, StorageClass::Instance).len(),
-        8
+        9
     );
 }
 

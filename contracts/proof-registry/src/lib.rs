@@ -522,6 +522,7 @@ impl ProofRegistryContract {
         // `set`, so a proof never exists without its creation metadata.
         let now = env.ledger().timestamp();
         let created_ledger = env.ledger().sequence();
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
@@ -531,6 +532,7 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            sequence_number,
             created_ledger,
             activates_at: 0,
         };
@@ -615,6 +617,7 @@ impl ProofRegistryContract {
         Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
 
         let now = env.ledger().timestamp();
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
@@ -624,6 +627,7 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            sequence_number,
             created_ledger: env.ledger().sequence(),
             activates_at: 0,
         };
@@ -732,6 +736,8 @@ impl ProofRegistryContract {
 
         let now = env.ledger().timestamp();
         let created_ledger = env.ledger().sequence();
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
+        Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
         let record = ProofRecord {
             proof_id_hash,
             commitment_hash,
@@ -741,6 +747,7 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            sequence_number,
             created_ledger,
             activates_at,
         };
@@ -832,6 +839,8 @@ impl ProofRegistryContract {
                 return Err(ProofError::ProofAlreadyRegistered);
             }
 
+            let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
+            Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
             let record = ProofRecord {
                 proof_id_hash: entry.proof_id_hash.clone(),
                 commitment_hash: entry.commitment_hash.clone(),
@@ -841,6 +850,7 @@ impl ProofRegistryContract {
                 expires_at: entry.expires_at,
                 created_at: now,
                 revoked_at: 0,
+                sequence_number,
                 created_ledger,
                 activates_at: 0,
             };
@@ -1095,6 +1105,21 @@ impl ProofRegistryContract {
             Ok(record) => record.status == ProofStatus::Revoked,
             Err(_) => false,
         }
+    }
+
+    pub fn get_issuer_proof_sequence(env: Env, issuer: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::IssuerLifetimeProofCount(issuer))
+            .unwrap_or(0)
+    }
+
+    pub fn get_proof_sequence_number(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<u64, ProofError> {
+        let record = Self::get_proof(env, proof_id_hash)?;
+        Ok(record.sequence_number)
     }
 
     // ── dispute lifecycle ─────────────────────────────────────────────────────
@@ -1420,15 +1445,25 @@ impl ProofRegistryContract {
         if active >= max_active || lifetime >= max_lifetime {
             return Err(ProofError::MalformedInput);
         }
+        let next_active = active.checked_add(1).ok_or(ProofError::MalformedInput)?;
+        let next_lifetime = lifetime.checked_add(1).ok_or(ProofError::MalformedInput)?;
         env.storage().persistent().set(
             &DataKey::IssuerActiveProofCount(issuer.clone()),
-            &active.checked_add(1).ok_or(ProofError::MalformedInput)?,
+            &next_active,
         );
         env.storage().persistent().set(
             &DataKey::IssuerLifetimeProofCount(issuer.clone()),
-            &lifetime.checked_add(1).ok_or(ProofError::MalformedInput)?,
+            &next_lifetime,
         );
         Ok(())
+    }
+
+    fn next_issuer_proof_sequence(env: &Env, issuer: &Address) -> Result<u64, ProofError> {
+        let (_, lifetime, _, _) = Self::get_issuer_proof_usage(env.clone(), issuer.clone());
+        let next = lifetime
+            .checked_add(1)
+            .ok_or(ProofError::MalformedInput)? as u64;
+        Ok(next)
     }
 
     fn consume_schema_rate_limit(

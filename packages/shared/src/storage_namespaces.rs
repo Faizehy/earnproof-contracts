@@ -452,6 +452,22 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 52] = [
     },
     StorageNamespace {
         contract: "protocol-config",
+        namespace: "SchemaVersionIndex",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SchemaVersionIndexCount",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
         namespace: "ScopedPause",
         arity: 1,
         class: StorageClass::Persistent,

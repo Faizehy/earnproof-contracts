@@ -65,6 +65,14 @@ pub fn schema_version_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaVersion"), version)
 }
 
+pub fn schema_version_index_key(env: &Env, index: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaVersionIndex"), index)
+}
+
+pub fn schema_version_index_count_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "SchemaVersionIndexCount"),)
+}
+
 #[allow(dead_code)]
 pub fn schema_record_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaRecord"), version)

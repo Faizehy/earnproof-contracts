@@ -62,6 +62,7 @@ pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
 pub const MAX_ISSUER_PAGE: u32 = 20;
 pub const MAX_ISSUER_DISCOVERY_PAGE: u32 = 20;
 pub const MAX_ISSUER_ENUM_PAGE: u32 = 20;
+pub const MAX_SCHEMA_PAGE: u32 = 20;
 
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
@@ -544,6 +545,16 @@ pub type IssuerSummary = IssuerDiscoveryEntry;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaVersionSummary {
+    pub version: u32,
+    pub approved: bool,
+}
+
+pub type SchemaSummary = SchemaVersionSummary;
+pub type SchemaVersionDiscoveryEntry = SchemaVersionSummary;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProofStatus {
     Active,
     Revoked,
@@ -635,6 +646,9 @@ pub struct ProofRecord {
     pub expires_at: u64,
     pub created_at: u64,
     pub revoked_at: u64,
+    /// Monotonically increasing sequence number for proofs issued by this
+    /// issuer. The first proof for an issuer is `1`.
+    pub sequence_number: u64,
     /// Ledger sequence at which this proof was created (registered).
     /// [`LEDGER_SEQUENCE_UNSET`] marks a legacy record predating this field.
     pub created_ledger: u32,
