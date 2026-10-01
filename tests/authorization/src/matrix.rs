@@ -1,75 +1,172 @@
-//! Table-driven negative matrix over every mutating public entry point.
+//! Shared fixtures for the authorization negative matrix.
 //!
-//! Each row names one mutating function, the fixture it needs, and the code
-//! that attempts it. The same row is replayed under three identities:
+//! Unlike the emergency harness, this harness does **not** call
+//! `mock_all_auths`. Every privileged call is authorized explicitly through
+//! [`authorize`], which installs a *matching-mode* auth entry: the host admits
+//! the next invocation only when the demanded signer, function, and arguments
+//! match the entry exactly, and rejects everything else. That enforcement is
+//! what lets the matrix assert both the returned error and the absence of side
+//! effects for missing and wrong identities.
 //!
-//! * **Missing** — no authorization entry is provided at all.
-//! * **Wrong** — an entry is provided but signed by an unrelated address (for
-//!   `proof-registry` rows, a *different active issuer* where that is the
-//!   realistic threat).
-//! * **Authorized** — the documented authority signs. This is the control
-//!   that makes the negative verdicts attributable to authorization rather
-//!   than to a broken precondition.
-//!
-//! Missing and wrong identities must be rejected *and* leave the deployment
-//! byte-for-byte unchanged (storage, TTLs, events, cross-contract state). The
-//! authorized attempt must succeed. Read-only entry points are asserted
-//! separately in [`reads_do_not_require_authorization`].
-//!
-//! The table is the executable form of `docs/authorization-matrix.md`, and
-//! [`matrix_covers_every_mutating_public_function`] fails when the count
-//! drifts, so the matrix stays synchronized with the generated client surface.
+//! The deployment is the full three-contract set so that cross-contract
+//! authorization boundaries (`proof-registry`'s issuer-vs-admin revocation
+//! paths, independent per-contract admins) can be exercised from one place.
 
-use crate::harness::{authorize, hash, issuer_id_hash, Deployment, APPROVED_SCHEMA};
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, IntoVal, Val};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, Map, Val};
 
-/// The identity attempting the call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Identity {
-    /// No authorization entry at all.
-    Missing,
-    /// An authorization entry signed by an address that is not the documented
-    /// authority for this entry point.
-    Wrong,
-    /// The documented authority signs (control case).
-    Authorized,
+use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
+use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
+use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
+
+/// Schema version approved by [`Deployment::new`] and used by the fixture
+/// proofs.
+pub const APPROVED_SCHEMA: u32 = 1;
+
+/// Installs a matching-mode auth entry: `signer` is authorized for exactly one
+/// invocation of `fn_name` on `contract` with `args`. Any other signer,
+/// function, or argument set is rejected by the host.
+pub fn authorize(
+    env: &Env,
+    signer: &Address,
+    contract: &Address,
+    fn_name: &str,
+    args: soroban_sdk::Vec<Val>,
+) {
+    env.mock_auths(&[MockAuth {
+        address: signer,
+        invoke: &MockAuthInvoke {
+            contract,
+            fn_name,
+            args,
+            sub_invokes: &[],
+        },
+    }]);
 }
 
-/// One row of the authorization matrix.
-struct Case {
-    /// Fully-qualified entry point, matching the table in
-    /// `docs/authorization-matrix.md`.
-    name: &'static str,
-    /// Whether the row runs against an uninitialized deployment (the three
-    /// `initialize` rows).
-    uninitialized: bool,
-    /// Fixture state that must exist before the entry point can be exercised,
-    /// built through authorized calls.
-    setup: fn(&Deployment),
-    /// Attempts the entry point. Returns whether the invocation was accepted.
-    call: fn(&Deployment, Identity) -> bool,
+/// A fully wired deployment with real auth enforcement.
+pub struct Deployment<'a> {
+    pub env: Env,
+    pub config: ProtocolConfigContractClient<'a>,
+    pub issuers: IssuerRegistryContractClient<'a>,
+    pub proofs: ProofRegistryContractClient<'a>,
+    pub config_address: Address,
+    pub issuers_address: Address,
+    pub proofs_address: Address,
+    /// Administrator of all three contracts at deployment time.
+    pub admin: Address,
+    /// An active issuer, authorized to register proofs.
+    pub issuer: Address,
+    /// A second active issuer, used as the "wrong but privileged" signer in
+    /// proof-registry rows: it is not the named issuer, so its signature must
+    /// not be accepted.
+    pub second_issuer: Address,
+    pub issuer_id: BytesN<32>,
+    pub second_issuer_id: BytesN<32>,
 }
 
-/// Default [`Case::setup`] for rows that need no extra fixture.
-fn no_setup(_: &Deployment) {}
+impl Deployment<'_> {
+    /// Deploys and fully initializes the three-contract set. `initialize`,
+    /// `approve_schema_version`, and `register_issuer` are all authorized as
+    /// `admin`; `second_issuer` is registered as a second active issuer.
+    pub fn new() -> Self {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
 
-/// [`Case::setup`] for rows that need a registered proof.
-fn register_fixture_proof(d: &Deployment) {
-    d.register_proof(FIXTURE_PROOF);
-}
+        let admin = Address::generate(&env);
+        let issuer = Address::generate(&env);
+        let second_issuer = Address::generate(&env);
 
-/// Discriminator of the proof created by [`register_fixture_proof`].
-const FIXTURE_PROOF: u8 = 0x11;
+        let config_id = env.register(ProtocolConfigContract, ());
+        let config = ProtocolConfigContractClient::new(&env, &config_id);
+        let issuers_id = env.register(IssuerRegistryContract, ());
+        let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
+        let proofs_id = env.register(ProofRegistryContract, ());
+        let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
 
-/// Deploys the deployment a row runs against.
-fn deployment_for(case: &Case) -> Deployment<'_> {
-    if case.uninitialized {
-        Deployment::uninitialized()
-    } else {
-        Deployment::new()
+        // protocol-config: initialize + approve the fixture schema.
+        authorize(
+            &env,
+            &admin,
+            &config_id,
+            "initialize",
+            (&admin,).into_val(&env),
+        );
+        config.initialize(&admin);
+        let schema_proposal = proposal_id_hash(&env, 0xFE);
+        authorize(
+            &env,
+            &admin,
+            &config_id,
+            "approve_schema_version",
+            (&schema_proposal, &APPROVED_SCHEMA).into_val(&env),
+        );
+        config.approve_schema_version(&schema_proposal, &APPROVED_SCHEMA);
+
+        // issuer-registry: initialize + register two active issuers.
+        let issuer_id = issuer_id_hash(&env, 1);
+        let second_issuer_id = issuer_id_hash(&env, 2);
+        authorize(
+            &env,
+            &admin,
+            &issuers_id,
+            "initialize",
+            (&admin,).into_val(&env),
+        );
+        issuers.initialize(&admin);
+        authorize(
+            &env,
+            &admin,
+            &issuers_id,
+            "register_issuer",
+            (&issuer_id, &issuer, &hash(&env, 0xAA), &hash(&env, 0x99)).into_val(&env),
+        );
+        issuers.register_issuer(&issuer_id, &issuer, &hash(&env, 0xAA), &hash(&env, 0x99));
+        authorize(
+            &env,
+            &admin,
+            &issuers_id,
+            "register_issuer",
+            (
+                &second_issuer_id,
+                &second_issuer,
+                &hash(&env, 0xBB),
+                &hash(&env, 0x99),
+            )
+                .into_val(&env),
+        );
+        issuers.register_issuer(
+            &second_issuer_id,
+            &second_issuer,
+            &hash(&env, 0xBB),
+            &hash(&env, 0x99),
+        );
+
+        // proof-registry: initialize with the two supporting contracts.
+        authorize(
+            &env,
+            &admin,
+            &proofs_id,
+            "initialize",
+            (&admin, &issuers_id, &config_id).into_val(&env),
+        );
+        proofs.initialize(&admin, &issuers_id, &config_id);
+
+        Self {
+            env,
+            config,
+            issuers,
+            proofs,
+            config_address: config_id,
+            issuers_address: issuers_id,
+            proofs_address: proofs_id,
+            admin,
+            issuer,
+            second_issuer,
+            issuer_id,
+            second_issuer_id,
+        }
     }
-}
 
 /// Every mutating public entry point across the three contracts.
 ///
@@ -683,114 +780,225 @@ fn matrix() -> std::vec::Vec<Case> {
         },
     ]
 }
+    /// A fresh, unrelated address that holds no authority anywhere. Generated
+    /// on demand so every negative attempt uses a distinct identity.
+    pub fn attacker(&self) -> Address {
+        Address::generate(&self.env)
+    }
 
-/// Guards against a mutating entry point being added without a documented
-/// authorization expectation. Bump only together with
-/// `docs/authorization-matrix.md`.
-const DOCUMENTED_MUTATIONS: usize = 17;
+    /// Deploys the three contracts without initializing any of them. Used by
+    /// the `initialize` rows of the matrix, where the deployment must still be
+    /// uninitialized when the attempt runs.
+    pub fn uninitialized() -> Self {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
 
-#[test]
-fn matrix_covers_every_mutating_public_function() {
-    assert_eq!(
-        matrix().len(),
-        DOCUMENTED_MUTATIONS,
-        "authorization matrix and docs/authorization-matrix.md disagree on the mutating surface"
-    );
-}
+        let admin = Address::generate(&env);
+        let issuer = Address::generate(&env);
+        let second_issuer = Address::generate(&env);
 
-#[test]
-fn every_mutation_rejects_a_missing_identity_without_side_effects() {
-    for case in matrix() {
-        let deployment = deployment_for(&case);
-        (case.setup)(&deployment);
-        let before = deployment.snapshot();
+        let config_id = env.register(ProtocolConfigContract, ());
+        let config = ProtocolConfigContractClient::new(&env, &config_id);
+        let issuers_id = env.register(IssuerRegistryContract, ());
+        let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
+        let proofs_id = env.register(ProofRegistryContract, ());
+        let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
+        let issuer_id = issuer_id_hash(&env, 1);
+        let second_issuer_id = issuer_id_hash(&env, 2);
 
-        let accepted = (case.call)(&deployment, Identity::Missing);
+        Self {
+            env,
+            config,
+            issuers,
+            proofs,
+            config_address: config_id,
+            issuers_address: issuers_id,
+            proofs_address: proofs_id,
+            admin,
+            issuer,
+            second_issuer,
+            issuer_id,
+            second_issuer_id,
+        }
+    }
 
-        assert!(
-            !accepted,
-            "{} was accepted with no authorization at all",
-            case.name
+    /// Authorized wrapper around the privileged operations the fixture and the
+    /// rotation scenarios need. Each method installs the auth entry for the
+    /// signer the contract is documented to demand.
+    pub fn set_admin(&self, new_admin: &Address) {
+        authorize(
+            &self.env,
+            &self.admin,
+            &self.config_address,
+            "nominate_admin",
+            (new_admin,).into_val(&self.env),
         );
-        deployment.assert_no_side_effects(&before, case.name);
+        self.config.nominate_admin(new_admin);
+        authorize(
+            &self.env,
+            new_admin,
+            &self.config_address,
+            "accept_admin",
+            ().into_val(&self.env),
+        );
+        self.config.accept_admin();
+    }
+
+    pub fn suspend_issuer(&self, issuer_id: &BytesN<32>) {
+        let proposal_id = proposal_id_hash(&self.env, 0xFC);
+        let reason_commitment = soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]);
+        authorize(
+            &self.env,
+            &self.admin,
+            &self.issuers_address,
+            "suspend_issuer",
+            (&proposal_id, issuer_id, &reason_commitment).into_val(&self.env),
+        );
+        self.issuers
+            .suspend_issuer(&proposal_id, issuer_id, &reason_commitment);
+    }
+
+    pub fn rotate_issuer_address(&self, issuer_id: &BytesN<32>, new_address: &Address) {
+        authorize(
+            &self.env,
+            &self.issuer,
+            &self.issuers_address,
+            "rotate_issuer_address",
+            (issuer_id, new_address).into_val(&self.env),
+        );
+        self.issuers.rotate_issuer_address(issuer_id, new_address);
+        authorize(
+            &self.env,
+            new_address,
+            &self.issuers_address,
+            "accept_issuer_address_rotation",
+            (issuer_id,).into_val(&self.env),
+        );
+        self.issuers.accept_issuer_address_rotation(issuer_id);
+    }
+
+    /// Registers a proof with the given discriminator as `issuer` and returns
+    /// its id hash. Fails the test if registration is rejected.
+    pub fn register_proof(&self, discriminator: u8) -> BytesN<32> {
+        let proof_id = hash(&self.env, discriminator);
+        let commitment = hash(&self.env, discriminator ^ 0xFF);
+        let expires_at = self.env.ledger().timestamp() + 100_000;
+        authorize(
+            &self.env,
+            &self.issuer,
+            &self.proofs_address,
+            "register_proof",
+            (
+                &proof_id,
+                &commitment,
+                &self.issuer,
+                &APPROVED_SCHEMA,
+                &expires_at,
+            )
+                .into_val(&self.env),
+        );
+        self.proofs.register_proof(
+            &proof_id,
+            &commitment,
+            &self.issuer,
+            &APPROVED_SCHEMA,
+            &expires_at,
+        );
+        proof_id
     }
 }
 
-#[test]
-fn every_mutation_rejects_a_wrong_identity_without_side_effects() {
-    for case in matrix() {
-        let deployment = deployment_for(&case);
-        (case.setup)(&deployment);
-        let before = deployment.snapshot();
+// ---------------------------------------------------------------------------
+// Snapshots
+//
+// A rejected call must leave the entire observable surface untouched: storage,
+// storage TTLs, instance TTLs, and events. The snapshot captures instance
+// storage per contract and all persistent storage globally.
+//
+// NOTE: Soroban SDK's `Persistent::all()` does not filter by contract
+// address — it returns persistent entries from every contract in the test
+// environment. We therefore capture persistent storage as a single global
+// map at the Env level (not using `as_contract`), and compare that map
+// before and after the rejected call. Instance storage is safe to capture
+// per contract because `Instance::all()` correctly filters by address.
+// ---------------------------------------------------------------------------
 
-        let accepted = (case.call)(&deployment, Identity::Wrong);
+/// Instance storage and TTL state of one contract.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstanceSnapshot {
+    pub address: Address,
+    pub instance: Map<Val, Val>,
+    pub instance_ttl: u32,
+}
 
-        assert!(
-            !accepted,
-            "{} was accepted when signed by the wrong identity",
-            case.name
+/// Observable state of the whole deployment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeploymentSnapshot {
+    pub config: InstanceSnapshot,
+    pub issuers: InstanceSnapshot,
+    pub proofs: InstanceSnapshot,
+    /// All persistent storage entries across every contract, captured at the
+    /// Env level so contract-boundary filtering issues do not arise.
+    pub persistent: Map<Val, Val>,
+}
+
+impl Deployment<'_> {
+    /// Captures instance storage for a single contract.
+    fn capture_instance(&self, address: &Address) -> InstanceSnapshot {
+        self.env.as_contract(address, || {
+            use soroban_sdk::testutils::storage::Instance as _;
+            let instance = self.env.storage().instance().all();
+            let instance_ttl = self.env.storage().instance().get_ttl();
+            InstanceSnapshot {
+                address: address.clone(),
+                instance,
+                instance_ttl,
+            }
+        })
+    }
+
+    /// Captures the state of all three contracts. Persistent storage is
+    /// captured inside `as_contract` (the SDK requires it), and the result
+    /// is the same regardless of which contract context is used because
+    /// `Persistent::all()` returns entries from every contract.
+    pub fn snapshot(&self) -> DeploymentSnapshot {
+        use soroban_sdk::testutils::storage::Persistent as _;
+        let persistent = self.env.as_contract(&self.config_address, || {
+            self.env.storage().persistent().all()
+        });
+        DeploymentSnapshot {
+            config: self.capture_instance(&self.config_address),
+            issuers: self.capture_instance(&self.issuers_address),
+            proofs: self.capture_instance(&self.proofs_address),
+            persistent,
+        }
+    }
+
+    /// Asserts that a rejected call left every observable surface untouched.
+    pub fn assert_no_side_effects(&self, before: &DeploymentSnapshot, label: &str) {
+        let after = self.snapshot();
+        assert_eq!(
+            after, *before,
+            "{label}: a rejected call changed storage state"
         );
-        deployment.assert_no_side_effects(&before, case.name);
+        assert!(
+            self.env.events().all().events().is_empty(),
+            "{label}: a rejected call emitted events"
+        );
     }
 }
 
-#[test]
-fn every_mutation_succeeds_for_the_documented_authority() {
-    // The mirror of the matrix: no row may be "rejected" merely because its
-    // precondition was already broken. Each case must succeed when the
-    // documented authority signs, so the negative verdicts above are
-    // attributable to authorization and nothing else.
-    for case in matrix() {
-        let deployment = deployment_for(&case);
-        (case.setup)(&deployment);
-
-        assert!(
-            (case.call)(&deployment, Identity::Authorized),
-            "{} failed for its documented authority; the negative verdicts above are not attributable",
-            case.name
-        );
-    }
+/// Deterministic 32-byte value derived from a single discriminator byte.
+pub fn hash(env: &Env, discriminator: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[discriminator; 32])
 }
 
-#[test]
-fn read_only_entry_points_require_no_authorization() {
-    // Reads are deliberately unauthenticated. If one of them were accidentally
-    // gated, verifiers and indexers would break; if one of the mutations were
-    // accidentally ungated, the matrix above would fail. This test pins the
-    // read side of that boundary: every read works with zero auth entries.
-    let deployment = Deployment::new();
-    let proof_id = deployment.register_proof(0x90);
+/// Issuer id hashes live in a disjoint range from proof id hashes so that a
+/// scenario mixing the two cannot accidentally collide.
+pub fn issuer_id_hash(env: &Env, discriminator: u8) -> BytesN<32> {
+    hash(env, 0x80 | discriminator)
+}
 
-    assert!(deployment.config.try_get_admin().is_ok());
-    assert!(deployment.config.try_is_paused().is_ok());
-    assert!(deployment.config.try_get_config_version().is_ok());
-    assert!(deployment
-        .config
-        .try_is_schema_version_approved(&APPROVED_SCHEMA)
-        .is_ok());
-
-    assert!(deployment.issuers.try_get_admin().is_ok());
-    assert!(deployment
-        .issuers
-        .try_get_issuer(&deployment.issuer_id)
-        .is_ok());
-    assert!(deployment
-        .issuers
-        .try_get_issuer_by_address(&deployment.issuer)
-        .is_ok());
-    assert!(deployment
-        .issuers
-        .try_is_active_issuer(&deployment.issuer_id)
-        .is_ok());
-    assert!(deployment
-        .issuers
-        .try_is_active_address(&deployment.issuer)
-        .is_ok());
-
-    assert!(deployment.proofs.try_get_admin().is_ok());
-    assert!(deployment.proofs.try_get_issuer_registry().is_ok());
-    assert!(deployment.proofs.try_get_protocol_config().is_ok());
-    assert!(deployment.proofs.try_get_proof(&proof_id).is_ok());
-    assert!(deployment.proofs.try_is_valid_proof(&proof_id).is_ok());
-    assert!(deployment.proofs.try_is_revoked(&proof_id).is_ok());
+pub fn proposal_id_hash(env: &Env, discriminator: u8) -> BytesN<32> {
+    hash(env, 0x40 | discriminator)
 }

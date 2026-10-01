@@ -1,7 +1,8 @@
 //! Invalid, stale, and version-incompatible dependency references.
 //!
-//! `proof-registry` fixes both dependency addresses at `initialize` and exposes
-//! no way to change them. `initialize` does not check that anything is deployed
+//! `proof-registry` binds both dependency addresses at `initialize`; governed
+//! replacement validates and activates the pair together. `initialize` checks
+//! that the dependencies implement compatible interfaces, but does not check
 //! at either address, or that what *is* deployed answers the calls
 //! `register_proof` will make. Every one of those mistakes therefore surfaces
 //! for the first time inside a registration, which is the worst moment for it
@@ -12,14 +13,53 @@
 //! describes the caller must reject the registration, never wave it through.
 
 use earnproof_shared::ProofError;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::Address;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
+use soroban_sdk::{Address, BytesN, Env};
 
-use issuer_registry::IssuerRegistryContract;
+use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
+use proof_registry::ProofRegistryContractClient;
 use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
 
-use crate::harness::{commitment, hash, Deployment, Rejection, APPROVED_SCHEMA};
+use crate::harness::{commitment, hash, Deployment, Rejection, APPROVED_SCHEMA, START_TIMESTAMP};
 use crate::mocks::{ConfigWithoutSchemaRead, IssuersWithChangedSignature};
+
+/// Deploys and initializes the two real dependencies with one active issuer,
+/// returning the pieces a scenario needs to build a `proof-registry` by hand.
+fn fixtures() -> (Env, Address, Address, BytesN<32>, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(START_TIMESTAMP);
+
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    let config_id = env.register(ProtocolConfigContract, ());
+    let config = ProtocolConfigContractClient::new(&env, &config_id);
+    config.initialize(&admin);
+    config.approve_schema_version(&APPROVED_SCHEMA);
+
+    let issuers_id = env.register(IssuerRegistryContract, ());
+    let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
+    issuers.initialize(&admin);
+    let issuer_id = hash(&env, 0x01);
+    issuers.register_issuer(&issuer_id, &issuer, &hash(&env, 0xAA), &hash(&env, 0xAB));
+
+    (env, admin, issuer, issuer_id, issuers_id, config_id)
+}
+
+/// Attempts to initialize `proofs` and returns true when it fails closed:
+/// initialization did not complete and no admin was written.
+fn init_fails_closed(
+    proofs: &ProofRegistryContractClient,
+    admin: &Address,
+    issuers_ref: &Address,
+    config_ref: &Address,
+) -> bool {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        proofs.try_initialize(admin, issuers_ref, config_ref)
+    }));
+    !matches!(outcome, Ok(Ok(_))) && proofs.try_get_admin().is_err()
+}
 
 // ---------------------------------------------------------------------------
 // Unknown contract ids
@@ -27,35 +67,31 @@ use crate::mocks::{ConfigWithoutSchemaRead, IssuersWithChangedSignature};
 
 #[test]
 fn an_unknown_protocol_config_id_fails_closed() {
-    let unknown = Deployment::with_dependency_addresses(|env, _config, issuers| {
-        (Address::generate(env), issuers)
-    });
+    // Point proof-registry at an address with no contract deployed. The
+    // dependency interface handshake in `initialize` reaches nothing there, so
+    // the mistake is caught at initialization and no admin is written.
+    let (env, admin, _issuer, _issuer_id, issuers_id, _config_id) = fixtures();
+    let proofs = env.register(proof_registry::ProofRegistryContract, ());
+    let proofs = proof_registry::ProofRegistryContractClient::new(&env, &proofs);
 
-    // `initialize` accepted an address with nothing deployed at it, and stored
-    // it unchanged. Nothing detects the mistake until the first registration.
-    let reference = unknown.proofs.get_protocol_config();
-    assert_ne!(reference, unknown.config.address);
-
-    let rejection = unknown.assert_rejected_and_atomic(&hash(&unknown.env, 0xA1));
-
-    assert_eq!(
-        rejection,
-        Rejection::Aborted,
-        "a reference that resolves to no contract must reject the registration"
+    let unknown_config = Address::generate(&env);
+    assert!(
+        init_fails_closed(&proofs, &admin, &issuers_id, &unknown_config),
+        "a protocol-config reference that resolves to no contract must fail closed at init"
     );
 }
 
 #[test]
 fn an_unknown_issuer_registry_id_fails_closed() {
-    let unknown = Deployment::with_dependency_addresses(|env, config, _issuers| {
-        (config, Address::generate(env))
-    });
+    let (env, admin, _issuer, _issuer_id, _issuers_id, config_id) = fixtures();
+    let proofs = env.register(proof_registry::ProofRegistryContract, ());
+    let proofs = proof_registry::ProofRegistryContractClient::new(&env, &proofs);
 
-    // Both `protocol-config` reads succeed before this reference is touched, so
-    // the failure happens with the invocation already part-way through.
-    let rejection = unknown.assert_rejected_and_atomic(&hash(&unknown.env, 0xA2));
-
-    assert_eq!(rejection, Rejection::Aborted);
+    let unknown_issuers = Address::generate(&env);
+    assert!(
+        init_fails_closed(&proofs, &admin, &unknown_issuers, &config_id),
+        "an issuer-registry reference that resolves to no contract must fail closed at init"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +195,9 @@ fn a_stale_issuer_address_fails_closed_after_rotation() {
     deployment
         .issuers
         .rotate_issuer_address(&deployment.issuer_id, &rotated_to);
+    deployment
+        .issuers
+        .accept_issuer_address_rotation(&deployment.issuer_id);
 
     let rejection = deployment.assert_rejected_and_atomic_with(
         &hash(&deployment.env, 0xA7),
@@ -175,6 +214,48 @@ fn a_stale_issuer_address_fails_closed_after_rotation() {
         &hash(&deployment.env, 0xA8),
         &commitment(&deployment.env, 0xA8),
         &rotated_to,
+        &APPROVED_SCHEMA,
+        &deployment.expiry(),
+    );
+}
+
+#[test]
+fn governed_dependency_pair_migration_keeps_registration_operational() {
+    let deployment = Deployment::new();
+    let env = &deployment.env;
+
+    let config_id = env.register(ProtocolConfigContract, ());
+    let config = ProtocolConfigContractClient::new(env, &config_id);
+    config.initialize(&deployment.admin);
+    config.approve_schema_version(&hash(env, 0x21), &APPROVED_SCHEMA);
+
+    let issuers_id = env.register(IssuerRegistryContract, ());
+    let issuers = IssuerRegistryContractClient::new(env, &issuers_id);
+    issuers.initialize(&deployment.admin);
+    issuers.register_issuer(
+        &deployment.issuer_id,
+        &deployment.issuer,
+        &hash(env, 0x22),
+        &hash(env, 0x23),
+    );
+
+    let proposal_id = hash(env, 0x24);
+    deployment.proofs.propose_dependency_replacement(
+        &proposal_id,
+        &issuers_id,
+        &config_id,
+        &(env.ledger().sequence() + 100),
+    );
+    deployment
+        .proofs
+        .activate_dependency_replacement(&proposal_id);
+    assert_eq!(deployment.proofs.get_issuer_registry(), issuers_id);
+    assert_eq!(deployment.proofs.get_protocol_config(), config_id);
+
+    deployment.proofs.register_proof(
+        &hash(env, 0x25),
+        &commitment(env, 0x25),
+        &deployment.issuer,
         &APPROVED_SCHEMA,
         &deployment.expiry(),
     );

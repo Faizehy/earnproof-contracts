@@ -232,6 +232,7 @@ impl Deployment<'_> {
     }
 
     pub fn suspend_issuer(&self, issuer_id: &BytesN<32>) {
+        let reason_commitment = soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]);
         authorize(
             &self.env,
             &self.admin,
@@ -246,18 +247,28 @@ impl Deployment<'_> {
         self.issuers.suspend_issuer(
             issuer_id,
             &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
+            (issuer_id, &reason_commitment).into_val(&self.env),
         );
+        self.issuers.suspend_issuer(issuer_id, &reason_commitment);
     }
 
     pub fn rotate_issuer_address(&self, issuer_id: &BytesN<32>, new_address: &Address) {
         authorize(
             &self.env,
-            &self.admin,
+            &self.issuer,
             &self.issuers_address,
             "rotate_issuer_address",
             (issuer_id, new_address).into_val(&self.env),
         );
         self.issuers.rotate_issuer_address(issuer_id, new_address);
+        authorize(
+            &self.env,
+            new_address,
+            &self.issuers_address,
+            "accept_issuer_address_rotation",
+            (issuer_id,).into_val(&self.env),
+        );
+        self.issuers.accept_issuer_address_rotation(issuer_id);
     }
 
     /// Registers a proof with the given discriminator as `issuer` and returns

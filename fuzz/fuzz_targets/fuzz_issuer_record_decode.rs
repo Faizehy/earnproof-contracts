@@ -76,15 +76,30 @@ fuzz_target!(|data: &[u8]| {
         1_000
     };
 
+    // Derive the URI commitment from the remaining bytes when available,
+    // otherwise fall back to the metadata hash (arbitrary but valid 32 bytes).
+    let metadata_uri_hash = if data.len() >= 116 {
+        match BytesN::<32>::try_from(Bytes::from_slice(&env, &data[84..116])) {
+            Ok(h) => h,
+            Err(_) => metadata_hash.clone(),
+        }
+    } else {
+        metadata_hash.clone()
+    };
+
     // Construct the IssuerRecord - this should never panic or cause undefined behavior
     let _issuer = IssuerRecord {
         issuer_id_hash: issuer_id_hash.clone(),
         issuer_address,
+        metadata_uri_hash,
+        metadata_revision: (created_at as u32).wrapping_add(1),
         metadata_hash: metadata_hash.clone(),
         provenance_commitment: metadata_hash,
         status,
         created_at,
         updated_at,
+        status_effective_ledger: updated_at as u32,
+        status_effective_timestamp: updated_at,
         reason_commitment: None,
     };
 

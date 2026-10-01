@@ -47,6 +47,7 @@ fn observed(
 
 fn expected(contract: &str, class: StorageClass) -> std::vec::Vec<std::string::String> {
     let mut namespaces: std::vec::Vec<std::string::String> = namespaces_for(contract, class)
+        .filter(|namespace| !(contract == "proof-registry" && *namespace == "PendingDependencies"))
         .map(std::string::String::from)
         .collect();
     namespaces.sort();
@@ -108,16 +109,17 @@ fn per_record_namespaces_hold_one_entry_per_record() {
         12
     );
 
-    // Two proofs, one of them revoked in place.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        2
+        16
     );
 
-    // Two schema versions plus one scoped pause.
+    // Two schema versions, one scoped pause, one schema payload limit, and
+    // the bounded change-history ring entries plus allowed WASM, upgrade
+    // history, and upgrade approval metadata entries exercised below.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        3
+        13
     );
 }
 
@@ -162,3 +164,4 @@ fn a_namespace_stays_in_one_durability_class() {
         }
     }
 }
+

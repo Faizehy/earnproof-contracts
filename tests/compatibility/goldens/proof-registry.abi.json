@@ -52,6 +52,40 @@
       "effects": "creates ProofRecord with status=Active, no event emitted (storage only)"
     },
     {
+      "name": "register_proof_with_context",
+      "inputs": [
+        { "name": "env", "type": "Env" },
+        { "name": "proof_id_hash", "type": "BytesN<32>" },
+        { "name": "commitment_hash", "type": "BytesN<32>" },
+        { "name": "issuer_address", "type": "Address" },
+        { "name": "schema_version", "type": "u32" },
+        { "name": "expires_at", "type": "u64" },
+        { "name": "registration_context", "type": "ProofRegistrationContext" }
+      ],
+      "output": "Result<BytesN<32>, ProofError>",
+      "access": "public",
+      "auth": "issuer_address.require_auth()",
+      "validation": ["passphrase matches ledger network", "asset identifier is canonical"],
+      "effects": "stores ProofRecord, ProofContextCommitments, and optional ProofSubjectPseudonym sidecars; returns derived contextual proof ID"
+    },
+    {
+      "name": "register_proof_with_pseudonym",
+      "inputs": [
+        { "name": "env", "type": "Env" },
+        { "name": "proof_id_hash", "type": "BytesN<32>" },
+        { "name": "commitment_hash", "type": "BytesN<32>" },
+        { "name": "issuer_address", "type": "Address" },
+        { "name": "schema_version", "type": "u32" },
+        { "name": "expires_at", "type": "u64" },
+        { "name": "subject_pseudonym_commitment", "type": "BytesN<32>" }
+      ],
+      "output": "Result<(), ProofError>",
+      "access": "public",
+      "auth": "issuer_address.require_auth()",
+      "validation": ["issuer_address is valid principal", "schema and issuer are valid", "zero commitment means absent"],
+      "effects": "stores only a nonzero opaque ProofSubjectPseudonym sidecar; leaves ProofRecord shape unchanged"
+    },
+    {
       "name": "revoke_proof",
       "inputs": [
         { "name": "env", "type": "Env" },
@@ -85,6 +119,28 @@
       "access": "public",
       "auth": "none",
       "effects": "extends TTL on read"
+    },
+    {
+      "name": "get_proof_context_commitments",
+      "inputs": [
+        { "name": "env", "type": "Env" },
+        { "name": "proof_id_hash", "type": "BytesN<32>" }
+      ],
+      "output": "Result<Option<ProofContextCommitments>, ProofError>",
+      "access": "public",
+      "auth": "none",
+      "effects": "returns None for a legacy proof without context sidecar; extends TTL when present"
+    },
+    {
+      "name": "get_proof_pseudonym_commitment",
+      "inputs": [
+        { "name": "env", "type": "Env" },
+        { "name": "proof_id_hash", "type": "BytesN<32>" }
+      ],
+      "output": "Result<Option<BytesN<32>>, ProofError>",
+      "access": "public",
+      "auth": "none",
+      "effects": "returns None when omitted or on legacy records"
     },
     {
       "name": "is_valid_proof",
@@ -200,6 +256,8 @@
         { "name": "IssuerRegistry", "discriminant": 1, "storage_tier": "instance", "value_type": "Address", "note": "Dependency reference" },
         { "name": "ProtocolConfig", "discriminant": 2, "storage_tier": "instance", "value_type": "Address", "note": "Dependency reference" },
         { "name": "Proof", "discriminant": 3, "storage_tier": "persistent", "value_type": "ProofRecord", "note": "Maps BytesN<32> to full record" },
+        { "name": "ProofContext", "discriminant": 12, "storage_tier": "persistent", "value_type": "ProofContextCommitments", "note": "Optional, versioned sidecar; absent on legacy records" },
+        { "name": "ProofSubjectPseudonym", "discriminant": 13, "storage_tier": "persistent", "value_type": "BytesN<32>", "note": "Optional opaque issuer/purpose-scoped commitment; absent for zero and legacy records" },
         { "name": "AllowedWasm", "discriminant": 4, "storage_tier": "instance", "value_type": "u32" },
         { "name": "ContractVersion", "discriminant": 5, "storage_tier": "instance", "value_type": "u32" }
       ]
@@ -226,7 +284,35 @@
         { "name": "Revoked", "discriminant": 1 }
       ],
       "note": "Shared enum from earnproof-shared"
-    }
+    },
+    {
+      "name": "ProofAssetIdentifier",
+      "kind": "enum",
+      "variants": [
+        { "name": "Native", "discriminant": 0 },
+        { "name": "Issued", "discriminant": 1, "fields": ["String", "Address"] }
+      ]
+    },
+    {
+      "name": "ProofContextCommitments",
+      "kind": "struct",
+      "fields": [
+        { "name": "version", "type": "u32" },
+        { "name": "network_commitment", "type": "BytesN<32>" },
+        { "name": "asset_commitment", "type": "BytesN<32>" },
+        { "name": "proof_context_commitment", "type": "BytesN<32>" }
+      ]
+    },
+    {
+      "name": "ProofRegistrationContext",
+      "kind": "struct",
+      "fields": [
+        { "name": "network_passphrase", "type": "String" },
+        { "name": "asset", "type": "ProofAssetIdentifier" },
+        { "name": "payload", "type": "Option<Bytes>" },
+        { "name": "subject_pseudonym_commitment", "type": "BytesN<32>" }
+      ]
+      }
   ],
 
   "errors": [
@@ -236,7 +322,8 @@
     { "name": "ProofExpired", "code": 303, "category": "domain", "shared": true },
     { "name": "InvalidSchemaVersion", "code": 304, "category": "domain", "shared": true, "note": "Overloaded: schema_version == 0, protocol paused, issuer inactive" },
     { "name": "SchemaVersionNotApproved", "code": 305, "category": "domain", "shared": true },
-    { "name": "InvalidAddress", "code": 306, "category": "domain", "shared": true }
+    { "name": "InvalidAddress", "code": 306, "category": "domain", "shared": true },
+    { "name": "InvalidProofContext", "code": 311, "category": "domain", "shared": true }
   ],
 
   "events": [
@@ -296,6 +383,24 @@
       "ttl": "extends via extend_proof_key_ttl()"
     },
     {
+      "key": "DataKey::ProofContext",
+      "tier": "persistent",
+      "value_type": "ProofContextCommitments",
+      "access": "get_proof_context_commitments(hash)",
+      "mutated_by": "register_proof_with_context()",
+      "ttl": "extends with the corresponding Proof record",
+      "note": "Absent for legacy records; stores hashes only"
+    },
+    {
+      "key": "DataKey::ProofSubjectPseudonym",
+      "tier": "persistent",
+      "value_type": "BytesN<32>",
+      "access": "get_proof_pseudonym_commitment(hash)",
+      "mutated_by": "register_proof_with_pseudonym(), register_proof_with_context()",
+      "ttl": "extends with the corresponding Proof record",
+      "note": "Zero sentinel and legacy records do not create this key; raw subject and wallet identities are not stored"
+    },
+    {
       "key": "DataKey::AllowedWasm(BytesN<32>)",
       "tier": "instance",
       "value_type": "u32",
@@ -332,8 +437,8 @@
   ],
 
   "ttl_constants": {
-    "TTL_THRESHOLD_LEDGERS": 50_000,
-    "TTL_EXTEND_TO_LEDGERS": 500_000,
+    "TTL_THRESHOLD_LEDGERS": 50000,
+    "TTL_EXTEND_TO_LEDGERS": 500000,
     "source": "earnproof-shared/src/lib.rs"
   },
 

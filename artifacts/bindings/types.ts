@@ -34,6 +34,17 @@ export enum ProofStatus {
   Revoked = "Revoked",
 }
 
+/** Stable commitment algorithm identifiers stored with each proof. */
+export enum CommitmentAlgorithm {
+  LegacySha256 = 0,
+  Sha256CanonicalV1 = 1,
+}
+
+/** Reserved proof type for the original registration entrypoints. */
+export const LEGACY_PROOF_TYPE = 0;
+export const MAX_SCHEMA_PROOF_TYPES = 16;
+export const MAX_SCHEMA_VALIDITY_SECONDS = 3_153_600_000n;
+
 /**
  * IssuerRecord structure.
  * Complete record for an issuer including identity, status, and timestamps.
@@ -54,12 +65,26 @@ export interface IssuerRecord {
 export interface ProofRecord {
   proof_id_hash: string; // BytesN<32> as hex string
   commitment_hash: string; // BytesN<32> as hex string
+  disclosure_policy_hash: string; // BytesN<32> as hex string; zero means legacy/unset
   issuer_address: string; // Stellar address
   status: ProofStatus;
   schema_version: number; // u32
   expires_at: bigint; // u64 timestamp
   created_at: bigint; // u64 timestamp
   revoked_at: bigint; // u64 timestamp (0 if not revoked)
+}
+
+/** Immutable proof type and commitment interpretation selected at registration. */
+export interface ProofPolicySnapshot {
+  proof_type: number;
+  commitment_algorithm: CommitmentAlgorithm;
+  max_validity_seconds: bigint;
+}
+
+/** Bounded policy configured for one schema version. */
+export interface SchemaPolicy {
+  proof_types: number[];
+  max_validity_seconds: bigint;
 }
 
 // ── Protocol Config Contract Types ───────────────────────────
@@ -171,6 +196,33 @@ export interface IsSchemaVersionApprovedParams {
  * Return type: bool
  */
 export type IsSchemaVersionApprovedResult = boolean;
+
+/** Parameters for protocol_config::set_schema_policy */
+export interface SetSchemaPolicyParams {
+  version: number;
+  proof_types: number[];
+  max_validity_seconds: bigint;
+}
+export type SetSchemaPolicyResult = void;
+
+/** Parameters for protocol_config::get_schema_policy */
+export interface GetSchemaPolicyParams {
+  version: number;
+}
+export type GetSchemaPolicyResult = SchemaPolicy;
+
+/** Parameters for protocol_config::set_commitment_algorithm */
+export interface SetCommitmentAlgorithmParams {
+  algorithm: CommitmentAlgorithm;
+  supported: boolean;
+}
+export type SetCommitmentAlgorithmResult = void;
+
+/** Parameters for protocol_config::is_algorithm_supported */
+export interface IsAlgorithmSupportedParams {
+  algorithm: CommitmentAlgorithm;
+}
+export type IsAlgorithmSupportedResult = boolean;
 
 /**
  * Parameters for protocol_config::get_config_version
@@ -366,6 +418,13 @@ export interface RegisterProofParams {
  */
 export type RegisterProofResult = void;
 
+/** Parameters for proof_registry::register_proof_with_policy */
+export interface RegisterProofWithPolicyParams extends RegisterProofParams {
+  proof_type: number;
+  commitment_algorithm: CommitmentAlgorithm;
+}
+export type RegisterProofWithPolicyResult = void;
+
 /**
  * Parameters for proof_registry::revoke_proof
  */
@@ -401,6 +460,12 @@ export interface GetProofParams {
  * Return type: ProofRecord
  */
 export type GetProofResult = ProofRecord;
+
+/** Parameters for proof_registry::get_proof_policy_snapshot */
+export interface GetProofPolicySnapshotParams {
+  proof_id_hash: string;
+}
+export type GetProofPolicySnapshotResult = ProofPolicySnapshot;
 
 /**
  * Parameters for proof_registry::is_valid_proof

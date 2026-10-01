@@ -227,18 +227,30 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
 
     let proof_id_hash = bytes_from_hex(&env, vector_hex("proof-1"));
     let commitment_hash = bytes_from_hex(&env, vector_hex("commitment-1"));
+    let disclosure_policy_hash = bytes_from_hex(&env, vector_hex("disclosure-policy-basic"));
 
-    proofs.register_proof(
+    proofs.register_proof_with_policy(
         &proof_id_hash,
         &commitment_hash,
+        &disclosure_policy_hash,
         &issuer_address,
         &1,
         &(env.ledger().timestamp() + 1_000),
     );
 
+    let registered = events(&env)
+        .into_iter()
+        .find(|event| event.is(&env, "proof_registered"))
+        .expect("ProofRegistered must be emitted");
+    let event_policy_hash: BytesN<32> = registered
+        .field(&env, "disclosure_policy_hash")
+        .expect("ProofRegistered must carry disclosure_policy_hash");
+    assert_eq!(event_policy_hash, disclosure_policy_hash);
+
     let record = proofs.get_proof(&proof_id_hash);
     assert_eq!(record.proof_id_hash, proof_id_hash);
     assert_eq!(record.commitment_hash, commitment_hash);
+    assert_eq!(record.disclosure_policy_hash, disclosure_policy_hash);
     assert!(proofs.is_valid_proof(&proof_id_hash));
 }
 
