@@ -138,6 +138,7 @@ fn register_with_root_auth_only(deployment: &Deployment, proof_id: &BytesN<32>) 
         deployment.issuer.clone(),
         APPROVED_SCHEMA,
         expires_at,
+        soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
     )
         .into_val(env);
 
@@ -152,12 +153,13 @@ fn register_with_root_auth_only(deployment: &Deployment, proof_id: &BytesN<32>) 
     }]);
 
     outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             proof_id,
             &commitment_hash,
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
     })
 }
@@ -250,12 +252,13 @@ fn a_successful_pause_read_gates_the_registration_correctly() {
     let proof_id = hash(&deployment.env, 0x33);
 
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &commitment(&deployment.env, 0xC0),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
     });
 
@@ -306,12 +309,13 @@ fn a_successful_schema_read_gates_the_registration_correctly() {
     let proof_id = hash(&deployment.env, 0x43);
 
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &commitment(&deployment.env, 0xC0),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
     });
 
@@ -383,12 +387,13 @@ fn a_successful_issuer_read_gates_the_registration_correctly() {
     let proof_id = hash(&deployment.env, 0x53);
 
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &commitment(&deployment.env, 0xC0),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
     });
 
@@ -443,12 +448,13 @@ fn a_duplicate_proof_id_is_rejected_before_writing() {
 
     // Try to register the same proof id again
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &commitment(&deployment.env, 0xC0),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
     });
 
@@ -510,6 +516,7 @@ fn an_invalid_protocol_config_address_aborts_the_registration() {
     let config = protocol_config::ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&APPROVED_SCHEMA);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
     let issuers_id = env.register(issuer_registry::IssuerRegistryContract, ());
     let issuers = issuer_registry::IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -548,6 +555,7 @@ fn an_invalid_issuer_registry_address_aborts_the_registration() {
     let config = protocol_config::ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&APPROVED_SCHEMA);
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
     let issuers_id = env.register(issuer_registry::IssuerRegistryContract, ());
     let issuers = issuer_registry::IssuerRegistryContractClient::new(&env, &issuers_id);

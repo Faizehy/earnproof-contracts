@@ -8,7 +8,7 @@
 //! The catalog is machine-readable so that three things can be checked rather
 //! than asserted in prose, all of them in `tests/error-catalog/`:
 //!
-//! * every enum variant has a catalog entry with a matching code, so a new
+//! * every published enum variant has a catalog entry with a matching code, so a new
 //!   error cannot be added without being documented;
 //! * the codes in [`docs/errors.md`](../../../docs/errors.md) and in the golden
 //!   fixture match the catalog, so renumbering or reuse is caught;
@@ -36,7 +36,7 @@
 /// Whether a code is returned by the current release.
 ///
 /// A code can be declared in an error enum without any contract path returning
-/// it. Publishing that distinction matters: for example, [`ProofError::MalformedInput`]
+/// it. Publishing that distinction matters: for example, [`ProofError::SchemaVersionNotApproved`]
 /// is declared and reserved but returned by no path in the current release.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Status {
@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 35] = [
+pub const ERROR_CATALOG: [ErrorSpec; 44] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -251,6 +251,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 35] = [
         remediation: "Bind a dependency whose interface version is compatible: same major and at least the minor and patch the consumer requires. Read the accepted version from the consumer before retrying.",
         http_status: 400,
         client_message: "Incompatible dependency version",
+    },
+    ErrorSpec {
+        code: 64,
+        name: "BatchTooLarge",
+        enum_name: "ContractError",
+        domain: Domain::Common,
+        status: Status::Returned,
+        cause: "get_schema_statuses was given more schema versions than the bounded batch limit.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Split the request into batches of at most MAX_SCHEMA_STATUS_BATCH entries.",
+        http_status: 400,
+        client_message: "Request batch is too large",
     },
     ErrorSpec {
         code: 80,
@@ -457,6 +469,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 35] = [
         client_message: "Invalid identity digest",
     },
     ErrorSpec {
+        code: 212,
+        name: "BatchTooLarge",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "get_issuer_statuses was given more issuer identifiers than the bounded batch limit.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Split the request into batches of at most MAX_ISSUER_STATUS_BATCH entries.",
+        http_status: 400,
+        client_message: "Request batch is too large",
+    },
+    ErrorSpec {
         code: 300,
         name: "ProofAlreadyRegistered",
         enum_name: "ProofError",
@@ -510,9 +534,9 @@ pub const ERROR_CATALOG: [ErrorSpec; 35] = [
         enum_name: "ProofError",
         domain: Domain::ProofRegistry,
         status: Status::Returned,
-        cause: "register_proof was given schema version zero, or a precondition that the registry currently reports through this same code failed: the protocol is paused, or the issuer address is not active.",
-        retry: Retry::AfterOperatorAction,
-        remediation: "Check three things in order: that the schema version is non-zero, that is_paused is false, and that is_active_address is true for the issuer. This code is overloaded in the current release; see the ambiguity note in docs/errors.md.",
+        cause: "register_proof was given schema version zero.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Use a nonzero schema version. Check protocol pause, issuer activity, schema approval, and proof-type approval separately when registration is rejected.",
         http_status: 400,
         client_message: "Invalid schema version",
     },
@@ -635,6 +659,30 @@ pub const ERROR_CATALOG: [ErrorSpec; 35] = [
         remediation: "Read the dispute's current status; it is terminal once withdrawn, resolved, or rejected.",
         http_status: 400,
         client_message: "Dispute is not open",
+    },
+    ErrorSpec {
+        code: 316,
+        name: "UnsupportedProofType",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The proof type identifier is not supported by the protocol config.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Call is_proof_type_approved on the protocol config contract to verify the proof type is approved. An operator must approve the proof type before it can be used for proof registration.",
+        http_status: 400,
+        client_message: "Proof type not supported",
+    },
+    ErrorSpec {
+        code: 317,
+        name: "InvalidProofContext",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Reserved,
+        cause: "The network passphrase or native/issued asset identifier is not canonical, or the passphrase does not match the ledger network.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Use the exact active Stellar network passphrase and either Native or a case-sensitive ASCII alphanumeric asset code with a valid account issuer.",
+        http_status: 400,
+        client_message: "Invalid proof network or asset context",
     },
 ];
 

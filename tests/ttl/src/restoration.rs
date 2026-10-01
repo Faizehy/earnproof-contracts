@@ -105,12 +105,13 @@ fn a_restored_proof_id_cannot_be_re_registered() {
     // A new registration under an existing identifier must fail even though the
     // entry was archived a moment ago. Anything else would let an archived
     // commitment be replaced.
-    let result = deployment.proofs.try_register_proof(
+    let result = deployment.proofs.try_register_proof_with_type_identifier(
         &proof_id,
         &bytes(&deployment.env, 99),
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
@@ -165,12 +166,13 @@ fn a_long_idle_deployment_recovers_every_contract_on_the_next_call() {
 
     // A registration exercises all three contracts in one invocation.
     let second_proof = bytes(&deployment.env, 7);
-    deployment.proofs.register_proof(
+    deployment.proofs.register_proof_with_type_identifier(
         &second_proof,
         &bytes(&deployment.env, 8),
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     assert!(deployment.proofs.is_valid_proof(&second_proof));

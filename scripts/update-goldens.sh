@@ -16,7 +16,7 @@
 #
 # Prerequisites:
 #   - Rust 1.98.0 (from rust-toolchain.toml) installed
-#   - cargo with wasm32-unknown-unknown target
+#   - cargo with wasm32v1-none target
 #   - stellar CLI (optional; fallback to manual update)
 #   - jq (optional; for formatting)
 #
@@ -35,7 +35,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 GOLDENS_DIR="${PROJECT_ROOT}/tests/compatibility/goldens"
-BUILD_DIR="${PROJECT_ROOT}/target/wasm32-unknown-unknown/release"
+BUILD_DIR="${PROJECT_ROOT}/target/wasm32v1-none/release"
 
 echo "=========================================="
 echo "Updating Contract ABI Golden Artifacts"
@@ -52,11 +52,14 @@ if [[ ! -d "$GOLDENS_DIR" ]]; then
 fi
 
 # Build all contracts for wasm32 target
-echo "Step 1: Building contracts (wasm32-unknown-unknown release)..."
+echo "Step 1: Building contracts (wasm32v1-none release)..."
 if ! cargo build \
-  --target wasm32-unknown-unknown \
+  --target wasm32v1-none \
   --release \
   --quiet \
+  --package protocol-config \
+  --package issuer-registry \
+  --package proof-registry \
   2>&1 | grep -E "(error|warning:)" || true; then
   :
 fi

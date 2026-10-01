@@ -177,12 +177,13 @@ fn apply_to_contracts(deployment: &Deployment, op: Op, step: usize) -> bool {
             let discriminator = 0x40u8.wrapping_add(step as u8);
             deployment
                 .proofs
-                .try_register_proof(
+                .try_register_proof_with_type_identifier(
                     &hash(&deployment.env, discriminator),
                     &hash(&deployment.env, discriminator ^ 0xFF),
                     &deployment.issuer,
                     &APPROVED_SCHEMA,
                     &(deployment.env.ledger().timestamp() + 100_000),
+                    &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
                 )
                 .is_ok()
         }
@@ -358,12 +359,13 @@ fn a_stale_caller_cannot_register_against_a_deprecated_schema() {
     assert!(
         deployment
             .proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &hash(&deployment.env, 0xE1),
                 &hash(&deployment.env, 0xE2),
                 &deployment.issuer,
                 &APPROVED_SCHEMA,
                 &(deployment.env.ledger().timestamp() + 100_000),
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
             )
             .is_err(),
         "a deprecated schema must not be usable after the pause lifts"
@@ -398,12 +400,13 @@ fn cross_contract_disagreement_resolves_in_favour_of_containment() {
 
         let accepted = deployment
             .proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &hash(&deployment.env, 0xF1),
                 &hash(&deployment.env, 0xF2),
                 &deployment.issuer,
                 &APPROVED_SCHEMA,
                 &(deployment.env.ledger().timestamp() + 100_000),
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
             )
             .is_ok();
 

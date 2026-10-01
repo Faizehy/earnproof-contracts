@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contracterror, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+    contracterror, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol,
 };
 
 pub mod storage_namespaces;
@@ -96,6 +96,16 @@ pub const DEFAULT_SCHEMA_PAYLOAD_LIMIT: u32 = 4096;
 /// limit. A zero maximum means registrations are paused for that schema.
 pub const DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS: u32 = 1_000;
 pub const DEFAULT_SCHEMA_RATE_LIMIT: u32 = u32::MAX;
+
+/// Maximum validity duration that protocol governance may assign to a schema.
+pub const MAX_SCHEMA_VALIDITY_SECONDS: u64 = 3_153_600_000;
+/// Maximum number of numeric proof types allowed in one schema policy.
+pub const MAX_SCHEMA_PROOF_TYPES: u32 = 16;
+/// Compatibility proof type used by legacy registration entry points.
+pub const LEGACY_PROOF_TYPE: u32 = 0;
+/// Stable commitment algorithm identifiers; zero retains the legacy behavior.
+pub const LEGACY_COMMITMENT_ALGORITHM: u32 = 0;
+pub const SHA256_COMMITMENT_ALGORITHM_V1: u32 = 1;
 
 /// Governed, fixed-size issuance policy for one schema version.
 #[contracttype]
@@ -438,6 +448,8 @@ pub enum ContractError {
     // Input validation errors (60-79)
     InvalidInput = 60,
     InvalidAddress = 61,
+    /// A bounded batch query supplied more items than its documented maximum.
+    BatchTooLarge = 64,
     /// A cross-contract dependency reported an interface version outside the
     /// range the consumer accepts.
     IncompatibleInterfaceVersion = 62,
@@ -480,6 +492,8 @@ pub enum IssuerError {
     MaxBelowActiveUsage = 209,
     /// The suspended issuer's reactivation cooldown has not yet elapsed.
     ReactivationCooldownActive = 210,
+    /// A bounded batch issuer-status query exceeded its documented maximum.
+    BatchTooLarge = 212,
 }
 
 /// Proof-specific errors (300-399).
@@ -539,6 +553,179 @@ pub enum ProofError {
     /// (already withdrawn, resolved, or rejected).
     /// Recovery: read the dispute's current status; it is terminal.
     DisputeNotOpen = 315,
+    /// The proof-type identifier is unknown or deprecated in protocol config.
+    UnsupportedProofType = 316,
+    /// The network passphrase or asset identifier is not canonical, or the
+    /// passphrase does not match the current ledger network.
+    InvalidProofContext = 317,
+}
+
+/// Versioned asset identifier accepted by context-aware proof registration.
+/// Issued asset codes are case-sensitive ASCII alphanumeric strings of 1-12
+/// characters; the variant tag keeps native XLM distinct from an issued asset
+/// whose code happens to be `XLM`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProofAssetIdentifier {
+    Native,
+    Issued(String, Address),
+}
+
+/// Public commitments that bind a proof claim to the network and asset policy
+/// used by the backend. The raw network passphrase and asset identifier are
+/// never stored in proof-registry.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofContextCommitments {
+    pub version: u32,
+    pub network_commitment: BytesN<32>,
+    pub asset_commitment: BytesN<32>,
+    pub proof_context_commitment: BytesN<32>,
+}
+
+/// Context options supplied by an issuer during context-aware proof
+/// registration. Raw passphrases and asset identifiers are not persisted.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofRegistrationContext {
+    pub network_passphrase: String,
+    pub asset: ProofAssetIdentifier,
+    pub payload: Option<Bytes>,
+    /// Fixed-size opaque commitment. All-zero bytes mean no pseudonym was
+    /// supplied; non-zero values are stored as opaque bytes only.
+    pub subject_pseudonym_commitment: BytesN<32>,
+}
+
+/// Computes version-1 network, asset, and claim-context commitments.
+///
+/// Network passphrases must be 1-128 visible ASCII bytes with no leading or
+/// trailing spaces. Issued asset identifiers use the exact case-sensitive
+/// ASCII code and a valid Stellar account address as issuer.
+pub fn compute_proof_context_commitments(
+    env: &Env,
+    claim_commitment: &BytesN<32>,
+    network_passphrase: &String,
+    asset: &ProofAssetIdentifier,
+) -> Option<ProofContextCommitments> {
+    let network_bytes = network_passphrase.to_bytes();
+    let network_len = network_bytes.len();
+    if network_len == 0 || network_len > 128 {
+        return None;
+    }
+    for index in 0..network_len {
+        let byte = network_bytes.get(index)?;
+        if !(0x20..=0x7e).contains(&byte)
+            || (index == 0 || index == network_len - 1) && byte == b' '
+        {
+            return None;
+        }
+    }
+    if env.crypto().sha256(&network_bytes).to_bytes() != env.ledger().network_id() {
+        return None;
+    }
+
+    let mut network_preimage = Bytes::from_slice(env, b"earnproof.network.v1\0");
+    network_preimage.append(&network_bytes);
+    let network_commitment = env.crypto().sha256(&network_preimage).to_bytes();
+
+    let mut asset_preimage = Bytes::from_slice(env, b"earnproof.asset.v1\0");
+    match asset {
+        ProofAssetIdentifier::Native => asset_preimage.append(&Bytes::from_slice(env, b"native")),
+        ProofAssetIdentifier::Issued(code, issuer) => {
+            let code_bytes = code.to_bytes();
+            let code_len = code_bytes.len();
+            if code_len == 0 || code_len > 12 || !is_valid_account_address(issuer) {
+                return None;
+            }
+            for index in 0..code_len {
+                let byte = code_bytes.get(index)?;
+                if !byte.is_ascii_alphanumeric() {
+                    return None;
+                }
+            }
+            asset_preimage.append(&Bytes::from_slice(env, b"issued\0"));
+            asset_preimage.append(&Bytes::from_array(env, &[code_len as u8]));
+            asset_preimage.append(&code_bytes);
+            asset_preimage.append(&issuer.to_string().to_bytes());
+        }
+    };
+    let asset_commitment = env.crypto().sha256(&asset_preimage).to_bytes();
+
+    let mut context_preimage = Bytes::from_slice(env, b"earnproof.proof-context.v1\0");
+    context_preimage.append(&Bytes::from_slice(
+        env,
+        claim_commitment.to_array().as_slice(),
+    ));
+    context_preimage.append(&network_commitment.to_bytes());
+    context_preimage.append(&asset_commitment.to_bytes());
+    let proof_context_commitment = env.crypto().sha256(&context_preimage).to_bytes();
+
+    Some(ProofContextCommitments {
+        version: 1,
+        network_commitment,
+        asset_commitment,
+        proof_context_commitment,
+    })
+}
+
+/// Returns true for a canonical account address, excluding contract addresses
+/// that cannot issue a classic Stellar asset.
+pub fn is_valid_account_address(address: &Address) -> bool {
+    is_valid_principal_address(address) && address.to_string().to_bytes().get(0) == Some(b'G')
+}
+
+/// Derives a storage identifier for a context-bound proof record. Reusing the
+/// same caller claim ID with a different network or asset yields a distinct
+/// record key.
+pub fn derive_contextual_proof_id(
+    env: &Env,
+    claim_id: &BytesN<32>,
+    context_commitment: &BytesN<32>,
+) -> BytesN<32> {
+    let mut preimage = Bytes::from_slice(env, b"earnproof.proof-record.v1\0");
+    preimage.append(&claim_id.to_bytes());
+    preimage.append(&context_commitment.to_bytes());
+    env.crypto().sha256(&preimage).to_bytes()
+}
+
+/// Computes an issuer- and purpose-scoped commitment for a subject pseudonym.
+/// The raw pseudonym is input only and is never included in a persisted record.
+pub fn compute_subject_pseudonym_commitment(
+    env: &Env,
+    issuer_address: &Address,
+    domain: &String,
+    subject_pseudonym: &BytesN<32>,
+) -> Option<BytesN<32>> {
+    if !is_valid_account_address(issuer_address) {
+        return None;
+    }
+    let domain_bytes = domain.to_bytes();
+    let domain_len = domain_bytes.len();
+    if domain_len == 0 || domain_len > 64 {
+        return None;
+    }
+    for index in 0..domain_len {
+        let byte = domain_bytes.get(index)?;
+        if !(0x21..=0x7e).contains(&byte) {
+            return None;
+        }
+    }
+
+    let mut preimage = Bytes::from_slice(env, b"earnproof.subject-pseudonym.v1\0");
+    preimage.append(&Bytes::from_array(env, &[domain_len as u8]));
+    preimage.append(&domain_bytes);
+    preimage.append(&issuer_address.to_string().to_bytes());
+    preimage.append(&subject_pseudonym.to_bytes());
+    Some(env.crypto().sha256(&preimage).to_bytes())
+}
+
+/// Interprets the all-zero commitment sentinel as explicit absence.
+pub fn optional_subject_pseudonym_commitment(commitment: &BytesN<32>) -> Option<BytesN<32>> {
+    if commitment.to_array() == [0; 32] {
+        None
+    } else {
+        Some(commitment.clone())
+    }
 }
 
 /// Fixed capacity of the protocol-config change-history ring. Once this many
@@ -678,6 +865,62 @@ pub struct IssuerPolicyCommitments {
     pub jurisdiction_commitment: BytesN<32>,
 }
 
+/// Maximum identifiers accepted by one bounded issuer status query.
+pub const MAX_ISSUER_STATUS_BATCH: u32 = 50;
+
+/// Status returned for one identifier in a bounded issuer status query.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssuerQueryStatus {
+    Active,
+    Suspended,
+    Revoked,
+    NotFound,
+}
+
+/// One issuer id and its current status in a bounded query response.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerStatusResult {
+    pub issuer_id_hash: BytesN<32>,
+    pub status: IssuerQueryStatus,
+}
+
+/// Maximum schema versions accepted by one bounded status query.
+pub const MAX_SCHEMA_STATUS_BATCH: u32 = 50;
+
+/// Lifecycle state for one schema version in a batch query.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchemaVersionState {
+    Unknown,
+    Approved,
+    Deprecated,
+}
+
+/// One version and its status in a bounded schema query response.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaStatusResult {
+    pub version: u32,
+    pub state: SchemaVersionState,
+}
+
+/// Maximum number of predecessor links a schema-lineage query may traverse.
+pub const MAX_SCHEMA_LINEAGE_DEPTH: u32 = 32;
+
+/// Canonical reason returned by the dependency-aware proof validity query.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProofValidityReason {
+    Valid,
+    Unknown,
+    Revoked,
+    Expired,
+    IssuerInactive,
+    SchemaDeprecated,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IssuerRecord {
@@ -722,6 +965,11 @@ pub struct ProofRecord {
     pub expires_at: u64,
     pub created_at: u64,
     pub revoked_at: u64,
+    /// Stable protocol proof type. `None` is the explicit legacy marker for
+    /// records written before proof types were committed to storage.
+    pub proof_type: Option<BytesN<32>>,
+    /// Ledger sequence at revocation; zero marks legacy records without it.
+    pub revoked_ledger: u32,
     /// Monotonically increasing sequence number for proofs issued by this
     /// issuer. The first proof for an issuer is `1`.
     pub sequence_number: u64,
@@ -786,6 +1034,18 @@ pub enum ProofValidity {
     Valid,
 }
 
+/// Detailed timing metadata returned alongside a proof validity summary.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofValidityDetails {
+    pub status: ProofStatus,
+    pub is_valid: bool,
+    pub expires_at: u64,
+    pub revoked: bool,
+    pub revoked_at: u64,
+    pub revoked_ledger: u32,
+}
+
 /// One entry of a bounded batch registration request.
 ///
 /// Mirrors the per-proof arguments of `register_proof` minus `issuer_address`,
@@ -797,6 +1057,7 @@ pub struct ProofRegistrationInput {
     pub commitment_hash: BytesN<32>,
     pub schema_version: u32,
     pub expires_at: u64,
+    pub proof_type: BytesN<32>,
 }
 
 /// Lifecycle state of a proof dispute. Terminal once `Withdrawn`, `Resolved`,

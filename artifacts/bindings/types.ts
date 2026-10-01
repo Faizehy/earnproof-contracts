@@ -72,6 +72,7 @@ export interface ProofRecord {
   expires_at: bigint; // u64 timestamp
   created_at: bigint; // u64 timestamp
   revoked_at: bigint; // u64 timestamp (0 if not revoked)
+  proof_type?: string; // Option<BytesN<32>> as hex string
 }
 
 /** Immutable proof type and commitment interpretation selected at registration. */
@@ -223,6 +224,54 @@ export interface IsAlgorithmSupportedParams {
   algorithm: CommitmentAlgorithm;
 }
 export type IsAlgorithmSupportedResult = boolean;
+
+/**
+ * Parameters for protocol_config::keepalive_proof_type
+ */
+export interface KeepaliveProofTypeParams {
+  proof_type: string; // BytesN<32> as hex string
+}
+
+/**
+ * Return type: bool
+ */
+export type KeepaliveProofTypeResult = boolean;
+
+/**
+ * Parameters for protocol_config::approve_proof_type
+ */
+export interface ApproveProofTypeParams {
+  proof_type: string; // BytesN<32> as hex string
+}
+
+/**
+ * Return type: void
+ */
+export type ApproveProofTypeResult = void;
+
+/**
+ * Parameters for protocol_config::deprecate_proof_type
+ */
+export interface DeprecateProofTypeParams {
+  proof_type: string; // BytesN<32> as hex string
+}
+
+/**
+ * Return type: void
+ */
+export type DeprecateProofTypeResult = void;
+
+/**
+ * Parameters for protocol_config::is_proof_type_approved
+ */
+export interface IsProofTypeApprovedParams {
+  proof_type: string; // BytesN<32> as hex string
+}
+
+/**
+ * Return type: bool
+ */
+export type IsProofTypeApprovedResult = boolean;
 
 /**
  * Parameters for protocol_config::get_config_version
@@ -411,6 +460,7 @@ export interface RegisterProofParams {
   issuer_address: string; // Address
   schema_version: number; // u32
   expires_at: bigint; // u64 timestamp
+  proof_type: string; // BytesN<32> as hex string
 }
 
 /**
@@ -419,7 +469,7 @@ export interface RegisterProofParams {
 export type RegisterProofResult = void;
 
 /** Parameters for proof_registry::register_proof_with_policy */
-export interface RegisterProofWithPolicyParams extends RegisterProofParams {
+export interface RegisterProofWithPolicyParams extends Omit<RegisterProofParams, "proof_type"> {
   proof_type: number;
   commitment_algorithm: CommitmentAlgorithm;
 }

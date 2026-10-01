@@ -295,12 +295,13 @@ fn matrix() -> std::vec::Vec<Case> {
             expected: Contained,
             setup: no_setup,
             call: |d| {
-                settled(d.proofs.try_register_proof(
+                settled(d.proofs.try_register_proof_with_type_identifier(
                     &hash(&d.env, 0x21),
                     &hash(&d.env, 0x22),
                     &d.issuer,
                     &APPROVED_SCHEMA,
                     &(d.env.ledger().timestamp() + 100_000),
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                 ))
             },
         },
@@ -420,12 +421,13 @@ fn containment_survives_repeated_pause_calls() {
     assert!(
         deployment
             .proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &hash(&deployment.env, 0x51),
                 &hash(&deployment.env, 0x52),
                 &deployment.issuer,
                 &APPROVED_SCHEMA,
                 &(deployment.env.ledger().timestamp() + 100_000),
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
             )
             .is_err(),
         "repeated pause must keep registration contained"

@@ -94,6 +94,19 @@ fuzz_target!(|data: &[u8]| {
 
     let created_ledger = u32::from_be_bytes([data[125], data[126], data[127], data[128]]);
 
+    // An absent trailing proof-type segment models a legacy record; present
+    // bytes exercise the stable identifier carried by current records.
+    let proof_type = if data.len() >= 129 {
+        match BytesN::<32>::try_from(Bytes::from_slice(&env, &data[97..129])) {
+            Ok(value) => Some(value),
+            Err(_) => return,
+        }
+    } else {
+        None
+    };
+
+    // Parse activates_at (u64, bytes 97-105, big-endian)
+    let activates_at = if data.len() > 104 {
     let sequence_number = if data.len() > 105 {
         u64::from_be_bytes([
             data[97], data[98], data[99], data[100], data[101], data[102], data[103], data[104],
@@ -122,6 +135,8 @@ fuzz_target!(|data: &[u8]| {
         expires_at,
         created_at,
         revoked_at,
+        proof_type,
+        revoked_ledger: 0,
         sequence_number,
         created_ledger,
         activates_at,

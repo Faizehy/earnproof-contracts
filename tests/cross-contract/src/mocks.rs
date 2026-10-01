@@ -6,6 +6,7 @@
 //! ```text
 //! protocol-config: is_paused() -> bool
 //!                  is_schema_version_approved(u32) -> bool
+//!                  is_proof_type_approved(BytesN<32>) -> bool
 //! issuer-registry: is_active_address(Address) -> bool
 //! ```
 //!
@@ -85,6 +86,10 @@ impl RejectsPauseRead {
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
         true
     }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
+    }
 }
 
 /// Rejects boundary 2, after boundary 1 has already succeeded.
@@ -108,9 +113,13 @@ impl RejectsSchemaRead {
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> Result<bool, MockError> {
         Err(MockError::DependencyRejected)
     }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
+    }
 }
 
-/// Rejects boundary 3, after both `protocol-config` reads have succeeded.
+/// Rejects the issuer-registry read after the protocol-config reads succeed.
 #[contract]
 pub struct RejectsIssuerRead;
 
@@ -155,6 +164,10 @@ impl MalformedPauseRead {
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
         true
     }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
+    }
 }
 
 /// Returns `u32` from boundary 2.
@@ -173,6 +186,10 @@ impl MalformedSchemaRead {
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> u32 {
         7
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
     }
 }
 
@@ -217,6 +234,10 @@ impl ConfigWithoutSchemaRead {
 
     pub fn is_scope_paused(_env: Env, _scope: PauseScope) -> bool {
         false
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
     }
 }
 
@@ -278,6 +299,10 @@ impl ConfigRequiringAuth {
         true
     }
 
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
+    }
+
     pub fn get_schema_rate_limit(_env: Env, _version: u32) -> SchemaRateLimit {
         SchemaRateLimit {
             max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
@@ -316,6 +341,10 @@ impl RecordingConfig {
     }
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
+        true
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
         true
     }
 
@@ -365,6 +394,10 @@ impl SelfPausingConfig {
     }
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
+        true
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
         true
     }
 

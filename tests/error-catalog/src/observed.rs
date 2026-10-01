@@ -60,6 +60,7 @@ fn deployment() -> Deployment {
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&1);
+    config.approve_proof_type(&bytes32(&env, 1));
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -145,6 +146,14 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         "protocol-config deprecate_schema_version(0)",
         code(initial_dep.config.try_deprecate_schema_version(&0)),
     );
+    let mut schema_batch = soroban_sdk::Vec::new(env);
+    for version in 0..=earnproof_shared::MAX_SCHEMA_STATUS_BATCH {
+        schema_batch.push_back(version);
+    }
+    observed.record(
+        "protocol-config oversized schema status batch",
+        code(initial_dep.config.try_get_schema_statuses(&schema_batch)),
+    );
 
     // --- issuer-registry -------------------------------------------------
     observed.record(
@@ -197,6 +206,22 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
                 .try_get_issuer_by_address(&Address::generate(env)),
         ),
     );
+    let mut issuer_batch = soroban_sdk::Vec::new(env);
+    for index in 0..=earnproof_shared::MAX_ISSUER_STATUS_BATCH {
+        issuer_batch.push_back(bytes32(env, index as u8));
+    }
+    observed.record(
+        "issuer-registry oversized status batch",
+        code(initial_dep.issuers.try_get_issuer_statuses(&issuer_batch)),
+    );
+    observed.record(
+        "issuer-registry invalid metadata commitment",
+        code(initial_dep.issuers.try_set_issuer_metadata_commitment(
+            &bytes32(env, 1),
+            &bytes32(env, 0),
+            &bytes32(env, 99),
+        )),
+    );
 
     let revoked_issuer = Address::generate(env);
     initial_dep.issuers.register_issuer(
@@ -242,21 +267,23 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
 
     let proof_id = bytes32(env, 5);
-    initial_dep.proofs.register_proof(
+    initial_dep.proofs.register_proof_with_type_identifier(
         &proof_id,
         &bytes32(env, 6),
         &initial_dep.issuer,
         &1,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
     observed.record(
         "proof-registry duplicate proof id",
-        code(initial_dep.proofs.try_register_proof(
+        code(initial_dep.proofs.try_register_proof_with_type_identifier(
             &proof_id,
             &bytes32(env, 7),
             &initial_dep.issuer,
             &1,
             &FAR_FUTURE,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         )),
     );
     observed.record(
@@ -270,49 +297,56 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     observed.record(
         "proof-registry expiration in the past",
-        code(initial_dep.proofs.try_register_proof(
+        code(initial_dep.proofs.try_register_proof_with_type_identifier(
             &bytes32(env, 30),
             &bytes32(env, 31),
             &initial_dep.issuer,
             &1,
             &0,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         )),
     );
     observed.record(
         "proof-registry schema version zero",
-        code(initial_dep.proofs.try_register_proof(
+        code(initial_dep.proofs.try_register_proof_with_type_identifier(
             &bytes32(env, 32),
             &bytes32(env, 33),
             &initial_dep.issuer,
             &0,
             &FAR_FUTURE,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         )),
     );
     observed.record(
         "proof-registry unapproved schema version",
-        code(initial_dep.proofs.try_register_proof(
+        code(initial_dep.proofs.try_register_proof_with_type_identifier(
             &bytes32(env, 34),
             &bytes32(env, 35),
             &initial_dep.issuer,
             &7,
             &FAR_FUTURE,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         )),
     );
     observed.record(
         "proof-registry payload exceeds schema limit",
-        code(initial_dep.proofs.try_register_proof_with_payload(
-            &bytes32(env, 36),
-            &bytes32(env, 37),
-            &initial_dep.issuer,
-            &1,
-            &FAR_FUTURE,
-            &soroban_sdk::Bytes::from_array(
-                env,
-                &[0u8; (earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT + 1) as usize],
-            ),
-        )),
+        code(
+            initial_dep
+                .proofs
+                .try_register_proof_with_type_identifier_and_payload(
+                    &bytes32(env, 36),
+                    &bytes32(env, 37),
+                    &initial_dep.issuer,
+                    &1,
+                    &FAR_FUTURE,
+                    &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+                    &soroban_sdk::Bytes::from_array(
+                        env,
+                        &[0u8; (earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT + 1) as usize],
+                    ),
+                ),
+        ),
     );
-
     // New precondition codes (307-309): drive a real failure path for each.
     // 307: ContractPaused — pause the protocol then attempt registration.
     let deployment2 = deployment();
@@ -320,12 +354,13 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     deployment2.config.pause();
     observed.record(
         "proof-registry contract paused",
-        code(deployment2.proofs.try_register_proof(
+        code(deployment2.proofs.try_register_proof_with_type_identifier(
             &bytes32(env2, 40),
             &bytes32(env2, 41),
             &deployment2.issuer,
             &1,
             &FAR_FUTURE,
+            &soroban_sdk::BytesN::from_array(&env2, &[1u8; 32]),
         )),
     );
 
@@ -338,12 +373,13 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     observed.record(
         "proof-registry issuer inactive",
-        code(deployment3.proofs.try_register_proof(
+        code(deployment3.proofs.try_register_proof_with_type_identifier(
             &bytes32(env3, 50),
             &bytes32(env3, 51),
             &deployment3.issuer,
             &1,
             &FAR_FUTURE,
+            &soroban_sdk::BytesN::from_array(&env3, &[1u8; 32]),
         )),
     );
 
@@ -352,13 +388,77 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let env4 = &deployment4.env;
     observed.record(
         "proof-registry unsupported schema",
-        code(deployment4.proofs.try_register_proof(
+        code(deployment4.proofs.try_register_proof_with_type_identifier(
             &bytes32(env4, 60),
             &bytes32(env4, 61),
             &deployment4.issuer,
             &7,
             &FAR_FUTURE,
+            &soroban_sdk::BytesN::from_array(&env4, &[1u8; 32]),
         )),
+    );
+    let deployment5 = deployment();
+    let env5 = &deployment5.env;
+    observed.record(
+        "proof-registry unsupported proof type",
+        code(deployment5.proofs.try_register_proof(
+            &bytes32(env5, 70),
+            &bytes32(env5, 71),
+            &deployment5.issuer,
+            &1,
+            &FAR_FUTURE,
+            &bytes32(env5, 2),
+        )),
+    );
+
+    // --- issuer-registry capacity and cooldown --------------------------
+    // A dedicated registry keeps the active-count accounting isolated from the
+    // paths above.
+    let cap_id = env.register(IssuerRegistryContract, ());
+    let cap = IssuerRegistryContractClient::new(env, &cap_id);
+    cap.initialize(&initial_dep.admin);
+    let cap_issuer = Address::generate(env);
+    cap.register_issuer(
+        &bytes32(env, 50),
+        &cap_issuer,
+        &bytes32(env, 51),
+        &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+    );
+
+    observed.record(
+        "issuer-registry set_max below active usage",
+        code(cap.try_set_max_active_issuers(&0, &false)),
+    );
+
+    cap.set_max_active_issuers(&1, &false);
+    observed.record(
+        "issuer-registry register beyond capacity",
+        code(cap.try_register_issuer(
+            &bytes32(env, 52),
+            &Address::generate(env),
+            &bytes32(env, 53),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        )),
+    );
+
+    cap.set_reactivation_cooldown(&1_000);
+    cap.suspend_issuer(
+        &bytes32(env, 50),
+        &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+    );
+    observed.record(
+        "issuer-registry reactivate before cooldown",
+        code(cap.try_reactivate_issuer(
+            &bytes32(env, 50),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        )),
+    );
+
+    // --- proof-registry incompatible dependency -------------------------
+    let bad_registry = env.register(BadVersionRegistry, ());
+    observed.record(
+        "proof-registry bind incompatible issuer registry",
+        code(initial_dep.proofs.try_set_issuer_registry(&bad_registry)),
     );
 
     // 311: InvalidBatchSize — an empty batch is rejected before any
@@ -396,6 +496,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &initial_dep.issuer,
             &1,
             &FAR_FUTURE,
+            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
             &FAR_FUTURE,
         )),
     );
@@ -516,12 +617,13 @@ fn a_paused_protocol_is_reported_as_contract_paused() {
     let deployment = deployment();
     deployment.config.pause();
 
-    let result = deployment.proofs.try_register_proof(
+    let result = deployment.proofs.try_register_proof_with_type_identifier(
         &bytes32(&deployment.env, 1),
         &bytes32(&deployment.env, 2),
         &deployment.issuer,
         &1,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
@@ -548,12 +650,13 @@ fn a_suspended_issuer_is_reported_as_issuer_inactive() {
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
-    let result = deployment.proofs.try_register_proof(
+    let result = deployment.proofs.try_register_proof_with_type_identifier(
         &bytes32(env, 42),
         &bytes32(env, 43),
         &suspended,
         &1,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
@@ -572,12 +675,13 @@ fn an_uninitialized_proof_registry_reports_proof_not_found_and_writes_nothing() 
     let proofs = ProofRegistryContractClient::new(&env, &contract);
     let issuer = Address::generate(&env);
 
-    let result = proofs.try_register_proof(
+    let result = proofs.try_register_proof_with_type_identifier(
         &bytes32(&env, 1),
         &bytes32(&env, 2),
         &issuer,
         &1,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
@@ -593,12 +697,13 @@ fn a_registry_pointed_at_an_empty_config_reports_unsupported_schema() {
     let proofs = ProofRegistryContractClient::new(env, &proofs_id);
     proofs.initialize(&deployment.admin, &deployment.issuers_id, &empty_config);
 
-    let result = proofs.try_register_proof(
+    let result = proofs.try_register_proof_with_type_identifier(
         &bytes32(env, 1),
         &bytes32(env, 2),
         &deployment.issuer,
         &1,
         &FAR_FUTURE,
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));

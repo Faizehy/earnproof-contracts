@@ -9,6 +9,7 @@
 42	InvalidState	ContractError	common	reserved	never	400
 60	InvalidInput	ContractError	common	returned	after-caller-change	400
 62	IncompatibleInterfaceVersion	ContractError	common	returned	after-caller-change	400
+64	BatchTooLarge	ContractError	common	returned	after-caller-change	400
 80	ProtocolPaused	ContractError	common	reserved	after-operator-action	503
 200	IssuerAlreadyRegistered	IssuerError	issuer-registry	returned	never	409
 201	IssuerNotFound	IssuerError	issuer-registry	returned	after-caller-change	404
@@ -21,11 +22,12 @@
 209	MaxBelowActiveUsage	IssuerError	issuer-registry	returned	after-caller-change	400
 210	ReactivationCooldownActive	IssuerError	issuer-registry	returned	after-caller-change	400
 211	InvalidMetadataCommitment	IssuerError	issuer-registry	returned	after-caller-change	400
+212	BatchTooLarge	IssuerError	issuer-registry	returned	after-caller-change	400
 300	ProofAlreadyRegistered	ProofError	proof-registry	returned	never	409
 301	ProofNotFound	ProofError	proof-registry	returned	after-caller-change	404
 302	ProofAlreadyRevoked	ProofError	proof-registry	returned	never	400
 303	ProofExpired	ProofError	proof-registry	returned	after-caller-change	400
-304	InvalidSchemaVersion	ProofError	proof-registry	returned	after-operator-action	400
+304	InvalidSchemaVersion	ProofError	proof-registry	returned	after-caller-change	400
 305	SchemaVersionNotApproved	ProofError	proof-registry	reserved	after-operator-action	400
 307	ContractPaused	ProofError	proof-registry	returned	after-operator-action	503
 308	IssuerInactive	ProofError	proof-registry	returned	after-operator-action	403
@@ -36,3 +38,5 @@
 313	DisputeAlreadyOpen	ProofError	proof-registry	returned	never	409
 314	DisputeNotFound	ProofError	proof-registry	returned	after-caller-change	404
 315	DisputeNotOpen	ProofError	proof-registry	returned	never	400
+316	UnsupportedProofType	ProofError	proof-registry	returned	after-operator-action	400
+317	InvalidProofContext	ProofError	proof-registry	reserved	after-caller-change	400

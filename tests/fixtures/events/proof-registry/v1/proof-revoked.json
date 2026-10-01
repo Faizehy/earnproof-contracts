@@ -10,6 +10,16 @@
       "description": "Identifier hash of the proof that was revoked.",
       "example": "0x0101010101010101010101010101010101010101010101010101010101010101"
     },
+    "revoked_at": {
+      "type": "u64",
+      "description": "Ledger timestamp at which the proof became invalid on-chain.",
+      "example": 1500
+    },
+    "revoked_ledger": {
+      "type": "u32",
+      "description": "Ledger sequence at which the proof became invalid on-chain.",
+      "example": 4242
+    },
     "by_admin": {
       "type": "bool",
       "description": "True when the admin revoked the proof via admin_revoke_proof; false when the issuer revoked it via revoke_proof.",

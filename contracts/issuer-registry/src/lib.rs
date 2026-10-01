@@ -10,8 +10,9 @@ use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, 
 
 const MAX_BULK_SUSPENSION_BATCH: u32 = 20;
     ContractError, GenesisRecord, InterfaceVersion, IssuerError, IssuerPolicyCommitments,
-    IssuerRecord, IssuerStatus, MigrationStatus, SigningKeyCommitment, TtlStatus, UpgradeApproval,
-    UpgradeReceipt, ISSUER_REGISTRY_INTERFACE_VERSION, MAX_MIGRATION_BATCH,
+    IssuerQueryStatus, IssuerRecord, IssuerStatus, IssuerStatusResult, MigrationStatus,
+    SigningKeyCommitment, TtlStatus, UpgradeApproval, UpgradeReceipt,
+    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
     METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
     TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
@@ -1403,6 +1404,62 @@ impl IssuerRegistryContract {
         }
     }
 
+    /// Returns the status of each supplied issuer identifier, in the same order
+    /// as the request.
+    ///
+    /// This lets proof validation and indexer reconciliation inspect several
+    /// issuers in one call instead of one cross-contract round trip per issuer.
+    ///
+    /// # Bounding
+    /// The batch is rejected with [`IssuerError::BatchTooLarge`] when it carries
+    /// more than [`MAX_ISSUER_STATUS_BATCH`] identifiers. The check runs before
+    /// any storage read, so an oversized request cannot force unbounded host
+    /// work. An empty batch is valid and yields an empty response.
+    ///
+    /// # Duplicates and unknown identifiers
+    /// Input order is preserved and each occurrence produces its own entry, so a
+    /// repeated identifier appears once per occurrence. An identifier with no
+    /// registered issuer is reported as [`IssuerQueryStatus::NotFound`] rather
+    /// than being omitted, keeping the response aligned with the request.
+    ///
+    /// # TTL
+    /// A found issuer's record TTL is extended exactly as a single-item
+    /// [`Self::get_issuer`] read would, so batching does not change the TTL
+    /// behavior clients already rely on. Unknown identifiers touch no storage.
+    pub fn get_issuer_statuses(
+        env: Env,
+        issuer_id_hashes: Vec<BytesN<32>>,
+    ) -> Result<Vec<IssuerStatusResult>, IssuerError> {
+        if issuer_id_hashes.len() > MAX_ISSUER_STATUS_BATCH {
+            return Err(IssuerError::BatchTooLarge);
+        }
+
+        let mut results = Vec::new(&env);
+        for issuer_id_hash in issuer_id_hashes.iter() {
+            let key = DataKey::Issuer(issuer_id_hash.clone());
+            let status = match env
+                .storage()
+                .persistent()
+                .get::<DataKey, IssuerRecord>(&key)
+            {
+                Some(record) => {
+                    Self::extend_issuer_key_ttl(env.clone(), &key);
+                    match record.status {
+                        IssuerStatus::Active => IssuerQueryStatus::Active,
+                        IssuerStatus::Suspended => IssuerQueryStatus::Suspended,
+                        IssuerStatus::Revoked => IssuerQueryStatus::Revoked,
+                    }
+                }
+                None => IssuerQueryStatus::NotFound,
+            };
+            results.push_back(IssuerStatusResult {
+                issuer_id_hash,
+                status,
+            });
+        }
+        Ok(results)
+    }
+
     pub fn is_active_address(env: Env, issuer_address: Address) -> bool {
         let issuer_id_hash: Option<BytesN<32>> = env
             .storage()
@@ -2102,10 +2159,6 @@ impl IssuerRegistryContract {
         // timestamp. Timing is sourced only from the host ledger environment.
         let now = env.ledger().timestamp();
         let effective_ledger = env.ledger().sequence();
-        record.status = status.clone();
-        record.reason_commitment = Some(reason_commitment.clone());
-        let now = env.ledger().timestamp();
-
         // Enforce cooldown and capacity, and adjust the active-issuer count, per
         // transition. All checks that can reject the call run before any state
         // is written, so a rejected transition mutates nothing.
@@ -2150,6 +2203,7 @@ impl IssuerRegistryContract {
             .remove(&DataKey::PendingIssuerRotation(issuer_id_hash.clone()));
 
         record.status = status.clone();
+        record.reason_commitment = Some(reason_commitment.clone());
         record.updated_at = now;
         record.status_effective_ledger = effective_ledger;
         record.status_effective_timestamp = now;
@@ -2372,6 +2426,11 @@ impl IssuerRegistryContract {
 mod test {
     extern crate std;
 
+    use super::{DataKey, IssuerRegistryContract, IssuerRegistryContractClient};
+    use earnproof_shared::{
+        ContractError, IssuerError, IssuerQueryStatus, IssuerStatus, IssuerStatusResult,
+        MAX_ISSUER_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
+    };
     use super::{
         DataKey, IssuerRegistryContract, IssuerRegistryContractClient, MAX_BULK_SUSPENSION_BATCH,
     };
@@ -2380,7 +2439,7 @@ mod test {
         testutils::{
             storage::Persistent as _, Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke,
         },
-        Address, BytesN, Env, IntoVal,
+        vec, Address, BytesN, Env, IntoVal, Vec,
     };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
@@ -2519,6 +2578,159 @@ mod test {
                 env.storage()
                     .persistent()
                     .get_ttl(&DataKey::AddressIssuer(issuer_address.clone()))
+                    > TTL_THRESHOLD_LEDGERS
+            );
+        });
+    }
+
+    // ── bounded batch issuer status query tests ───────────────────────────────
+
+    #[test]
+    fn batch_status_reports_each_state_in_request_order() {
+        let (env, client, _admin) = setup();
+        let active = bytes(&env, 1);
+        let suspended = bytes(&env, 2);
+        let revoked = bytes(&env, 3);
+        let unknown = bytes(&env, 4);
+
+        client.register_issuer(
+            &active,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 10),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+        client.register_issuer(
+            &suspended,
+            &Address::from_str(&env, ISSUER_TWO),
+            &bytes(&env, 11),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+        client.suspend_issuer(
+            &suspended,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+        client.register_issuer(
+            &revoked,
+            &Address::generate(&env),
+            &bytes(&env, 12),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+        client.revoke_issuer(
+            &revoked,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+
+        // Deliberately out of registration order to prove request order wins.
+        let request = vec![
+            &env,
+            unknown.clone(),
+            revoked.clone(),
+            active.clone(),
+            suspended.clone(),
+        ];
+        let results = client.get_issuer_statuses(&request);
+
+        let expected = vec![
+            &env,
+            IssuerStatusResult {
+                issuer_id_hash: unknown,
+                status: IssuerQueryStatus::NotFound,
+            },
+            IssuerStatusResult {
+                issuer_id_hash: revoked,
+                status: IssuerQueryStatus::Revoked,
+            },
+            IssuerStatusResult {
+                issuer_id_hash: active,
+                status: IssuerQueryStatus::Active,
+            },
+            IssuerStatusResult {
+                issuer_id_hash: suspended,
+                status: IssuerQueryStatus::Suspended,
+            },
+        ];
+        assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn batch_status_preserves_duplicate_identifiers() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 1);
+        client.register_issuer(
+            &issuer_id,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 2),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+
+        let request = vec![
+            &env,
+            issuer_id.clone(),
+            issuer_id.clone(),
+            issuer_id.clone(),
+        ];
+        let results = client.get_issuer_statuses(&request);
+
+        assert_eq!(results.len(), 3);
+        for entry in results.iter() {
+            assert_eq!(entry.issuer_id_hash, issuer_id);
+            assert_eq!(entry.status, IssuerQueryStatus::Active);
+        }
+    }
+
+    #[test]
+    fn batch_status_empty_request_returns_empty_response() {
+        let (env, client, _admin) = setup();
+        let request: Vec<BytesN<32>> = Vec::new(&env);
+        let results = client.get_issuer_statuses(&request);
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn batch_status_at_maximum_is_accepted() {
+        let (env, client, _admin) = setup();
+        let mut request: Vec<BytesN<32>> = Vec::new(&env);
+        for index in 0..MAX_ISSUER_STATUS_BATCH {
+            request.push_back(bytes(&env, index as u8));
+        }
+        let results = client.get_issuer_statuses(&request);
+        assert_eq!(results.len(), MAX_ISSUER_STATUS_BATCH);
+        // None of these were registered, so every entry is unambiguously unknown.
+        for entry in results.iter() {
+            assert_eq!(entry.status, IssuerQueryStatus::NotFound);
+        }
+    }
+
+    #[test]
+    fn batch_status_over_maximum_is_rejected_before_reads() {
+        let (env, client, _admin) = setup();
+        let mut request: Vec<BytesN<32>> = Vec::new(&env);
+        for index in 0..(MAX_ISSUER_STATUS_BATCH + 1) {
+            request.push_back(bytes(&env, index as u8));
+        }
+        let result = client.try_get_issuer_statuses(&request);
+        assert_eq!(result, Err(Ok(IssuerError::BatchTooLarge)));
+    }
+
+    #[test]
+    fn batch_status_extends_ttl_like_single_item_query() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 7);
+        client.register_issuer(
+            &issuer_id,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 8),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
+
+        let request = vec![&env, issuer_id.clone()];
+        let _ = client.get_issuer_statuses(&request);
+
+        env.as_contract(&client.address, || {
+            assert!(
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::Issuer(issuer_id.clone()))
                     > TTL_THRESHOLD_LEDGERS
             );
         });

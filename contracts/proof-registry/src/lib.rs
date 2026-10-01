@@ -10,10 +10,11 @@ use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec,
     is_interface_compatible, ApprovalQuery, ApprovalStatus, ArchivedProofRecord, ContractError,
     DisputeActorClass, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
-    MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofRecord,
-    ProofRegistrationInput, ProofStatus, ProofValidity, SchemaRateLimit, SchemaRateLimitUsage,
-    TtlStatus, UpgradeApproval, UpgradeApprovalMetadata, UpgradeApprovalRecord,
-    UpgradeHistoryRecord, UpgradeReceipt, MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE,
+    MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofPolicySnapshot, ProofRecord,
+    ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaPolicy,
+    SchemaRateLimit, SchemaRateLimitUsage, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
+    UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt, LEGACY_COMMITMENT_ALGORITHM,
+    LEGACY_PROOF_TYPE, MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE, MAX_SCHEMA_VALIDITY_SECONDS,
     MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
     UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
@@ -34,6 +35,9 @@ const MAX_DEPENDENCY_PROPOSAL_LEDGERS: u32 = 518_400;
 pub trait ProtocolConfigInterface {
     fn is_paused(env: Env) -> bool;
     fn is_schema_version_approved(env: Env, version: u32) -> bool;
+    fn is_proof_type_approved(env: Env, proof_type: BytesN<32>) -> bool;
+    fn get_schema_policy(env: Env, version: u32) -> SchemaPolicy;
+    fn is_algorithm_supported(env: Env, algorithm: u32) -> bool;
     fn get_max_proofs(env: Env) -> u32;
     fn get_schema_payload_limit(env: Env, version: u32) -> u32;
     fn get_schema_rate_limit(env: Env, version: u32) -> SchemaRateLimit;
@@ -49,17 +53,6 @@ pub trait IssuerRegistryInterface {
 #[contract]
 pub struct ProofRegistryContract;
 
-struct ProofRegistration {
-    proof_id_hash: BytesN<32>,
-    commitment_hash: BytesN<32>,
-    issuer_address: Address,
-    schema_version: u32,
-    expires_at: u64,
-    payload: Option<Bytes>,
-    context: Option<ProofContextCommitments>,
-    subject_pseudonym_commitment: Option<BytesN<32>>,
-}
-
 #[contracttype]
 enum DataKey {
     MigrationStatus,
@@ -67,6 +60,8 @@ enum DataKey {
     IssuerRegistry,
     ProtocolConfig,
     Proof(BytesN<32>),
+    /// Immutable numeric schema policy selected when the proof was registered.
+    ProofPolicy(BytesN<32>),
     RevocationInfo(BytesN<32>),
     ExecutedProposal(BytesN<32>),
     /// Allowlist entry: maps a WASM hash to the target contract version.
@@ -257,6 +252,12 @@ pub struct ContractDecommissioned {
 #[contractevent]
 pub struct ProofRegistered {
     pub proof_id_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub schema_version: u32,
+    pub created_ledger: u32,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub disclosure_policy_hash: BytesN<32>,
     pub proof_type: u32,
     pub commitment_algorithm: u32,
     pub epoch: u32,
@@ -266,6 +267,12 @@ pub struct ProofRegistered {
 #[contractevent]
 pub struct ProofRegisteredWithPayload {
     pub proof_id_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub schema_version: u32,
+    pub created_ledger: u32,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub disclosure_policy_hash: BytesN<32>,
     pub proof_type: u32,
     pub commitment_algorithm: u32,
     pub payload_len: u32,
@@ -277,6 +284,8 @@ pub struct ProofRegisteredWithPayload {
 #[contractevent]
 pub struct ProofRevoked {
     pub proof_id_hash: BytesN<32>,
+    pub revoked_at: u64,
+    pub revoked_ledger: u32,
     pub by_admin: bool,
     pub epoch: u32,
 }
@@ -363,10 +372,7 @@ impl ProofRegistryContract {
 
     /// Returns the bounded auxiliary-payload metadata recorded for a proof
     /// registered via `register_proof_with_payload`.
-    pub fn get_proof_payload(
-        env: Env,
-        proof_id_hash: BytesN<32>,
-    ) -> Result {
+    pub fn get_proof_payload(env: Env, proof_id_hash: BytesN<32>) -> Result {
         let key = DataKey::ProofPayloadMeta(proof_id_hash);
         let record = env
             .storage()
@@ -486,6 +492,8 @@ impl ProofRegistryContract {
         Ok(())
     }
 
+    /// Compatibility registration entry point. Records written through this
+    /// method use the explicit legacy identifier rule (`proof_type: None`).
     pub fn register_proof(
         env: Env,
         proof_id_hash: BytesN<32>,
@@ -494,6 +502,7 @@ impl ProofRegistryContract {
         schema_version: u32,
         expires_at: u64,
     ) -> Result<(), ProofError> {
+        let legacy_disclosure_hash = BytesN::from_array(&env, &[0; 32]);
         Self::register_proof_internal(
             env,
             proof_id_hash,
@@ -501,15 +510,45 @@ impl ProofRegistryContract {
             issuer_address,
             schema_version,
             expires_at,
+            None,
             LEGACY_PROOF_TYPE,
             LEGACY_COMMITMENT_ALGORITHM,
             None,
+            legacy_disclosure_hash,
+            0,
         )
     }
 
-    /// Registers a proof with an explicit schema proof type and commitment
-    /// algorithm identifier. The original `register_proof` remains available
-    /// and uses the stable legacy identifiers.
+    /// Registers a proof with the stable identifier approved by protocol
+    /// governance. The identifier is checked before any persistent write.
+    pub fn register_proof_with_type_identifier(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        proof_type_identifier: BytesN<32>,
+    ) -> Result<(), ProofError> {
+        let legacy_disclosure_hash = BytesN::from_array(&env, &[0; 32]);
+        Self::register_proof_internal(
+            env,
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            Some(proof_type_identifier),
+            LEGACY_PROOF_TYPE,
+            LEGACY_COMMITMENT_ALGORITHM,
+            None,
+            legacy_disclosure_hash,
+            0,
+        )
+    }
+
+    /// Registers a proof using the governed numeric proof type and commitment
+    /// algorithm. `register_proof` remains the legacy-compatible entry point.
     pub fn register_proof_with_policy(
         env: Env,
         proof_id_hash: BytesN<32>,
@@ -520,6 +559,7 @@ impl ProofRegistryContract {
         proof_type: u32,
         commitment_algorithm: u32,
     ) -> Result<(), ProofError> {
+        let legacy_disclosure_hash = BytesN::from_array(&env, &[0; 32]);
         Self::register_proof_internal(
             env,
             proof_id_hash,
@@ -527,13 +567,16 @@ impl ProofRegistryContract {
             issuer_address,
             schema_version,
             expires_at,
+            None,
             proof_type,
             commitment_algorithm,
             None,
+            legacy_disclosure_hash,
+            0,
         )
     }
 
-    /// Registers a legacy proof with bounded auxiliary payload metadata.
+    /// Legacy-compatible registration with bounded auxiliary payload metadata.
     pub fn register_proof_with_payload(
         env: Env,
         proof_id_hash: BytesN<32>,
@@ -543,6 +586,7 @@ impl ProofRegistryContract {
         expires_at: u64,
         payload: Bytes,
     ) -> Result<(), ProofError> {
+        let legacy_disclosure_hash = BytesN::from_array(&env, &[0; 32]);
         Self::register_proof_internal(
             env,
             proof_id_hash,
@@ -550,14 +594,44 @@ impl ProofRegistryContract {
             issuer_address,
             schema_version,
             expires_at,
+            None,
             LEGACY_PROOF_TYPE,
             LEGACY_COMMITMENT_ALGORITHM,
             Some(payload),
+            legacy_disclosure_hash,
+            0,
         )
     }
 
-    /// Registers a proof with explicit policy identifiers and an auxiliary
-    /// payload whose raw bytes are not persisted.
+    /// Registers a proof with a stable type identifier and bounded payload.
+    pub fn register_proof_with_type_identifier_and_payload(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        proof_type_identifier: BytesN<32>,
+        payload: Bytes,
+    ) -> Result<(), ProofError> {
+        let legacy_disclosure_hash = BytesN::from_array(&env, &[0; 32]);
+        Self::register_proof_internal(
+            env,
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            Some(proof_type_identifier),
+            LEGACY_PROOF_TYPE,
+            LEGACY_COMMITMENT_ALGORITHM,
+            Some(payload),
+            legacy_disclosure_hash,
+            0,
+        )
+    }
+
+    /// Registers a proof with governed numeric policy identifiers and payload.
     pub fn register_policy_payload(
         env: Env,
         proof_id_hash: BytesN<32>,
@@ -569,6 +643,7 @@ impl ProofRegistryContract {
         commitment_algorithm: u32,
         payload: Bytes,
     ) -> Result<(), ProofError> {
+        let legacy_disclosure_hash = BytesN::from_array(&env, &[0; 32]);
         Self::register_proof_internal(
             env,
             proof_id_hash,
@@ -576,12 +651,74 @@ impl ProofRegistryContract {
             issuer_address,
             schema_version,
             expires_at,
+            None,
             proof_type,
             commitment_algorithm,
             Some(payload),
+            legacy_disclosure_hash,
+            0,
         )
     }
 
+    /// Records a nonzero disclosure-policy commitment with legacy numeric IDs.
+    pub fn register_proof_payload_policy(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        disclosure_policy_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        payload: Bytes,
+    ) -> Result<(), ProofError> {
+        if disclosure_policy_hash == BytesN::from_array(&env, &[0; 32]) {
+            return Err(ProofError::MalformedInput);
+        }
+        Self::register_proof_internal(
+            env,
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            None,
+            LEGACY_PROOF_TYPE,
+            LEGACY_COMMITMENT_ALGORITHM,
+            Some(payload),
+            disclosure_policy_hash,
+            0,
+        )
+    }
+
+    /// Registers a proof with a fixed future activation timestamp.
+    pub fn register_proof_with_activation(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        activates_at: u64,
+        proof_type_identifier: BytesN<32>,
+    ) -> Result<(), ProofError> {
+        let legacy_disclosure_hash = BytesN::from_array(&env, &[0; 32]);
+        Self::register_proof_internal(
+            env,
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            Some(proof_type_identifier),
+            LEGACY_PROOF_TYPE,
+            LEGACY_COMMITMENT_ALGORITHM,
+            None,
+            legacy_disclosure_hash,
+            activates_at,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn register_proof_internal(
         env: Env,
         proof_id_hash: BytesN<32>,
@@ -589,9 +726,12 @@ impl ProofRegistryContract {
         issuer_address: Address,
         schema_version: u32,
         expires_at: u64,
+        proof_type_identifier: Option<BytesN<32>>,
         proof_type: u32,
         commitment_algorithm: u32,
-        payload: Option,
+        payload: Option<Bytes>,
+        disclosure_policy_hash: BytesN<32>,
+        activates_at: u64,
     ) -> Result<(), ProofError> {
         Self::ensure_not_decommissioned(&env)?;
         Self::require_valid_issuer_address(&issuer_address)?;
@@ -607,53 +747,54 @@ impl ProofRegistryContract {
         }
         Self::require_auth(&issuer_address);
 
-        // Input validation (proof-specific data validation — checked before cross-contract calls)
         if schema_version == 0 {
             return Err(ProofError::InvalidSchemaVersion);
         }
-
-        if expires_at <= env.ledger().timestamp() {
+        let now = env.ledger().timestamp();
+        if expires_at <= now {
             return Err(ProofError::ProofExpired);
         }
+        if activates_at >= expires_at {
+            return Err(ProofError::InvalidActivationTime);
+        }
 
-        // Check 1: Contract paused (highest precedence — most external state)
         let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
         if protocol_client.is_paused() {
             return Err(ProofError::ContractPaused);
         }
-
-        // Check 2: Issuer active (issuer-specific state)
         let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry);
         if !issuer_client.is_active_address(&issuer_address) {
             return Err(ProofError::IssuerInactive);
         }
-
-        // Check 3: Schema supported (protocol configuration state)
         if !protocol_client.is_schema_version_approved(&schema_version) {
             return Err(ProofError::UnsupportedSchema);
         }
 
+        // Validate both protocol policy layers and all caller-provided bounds
+        // before consuming limits or writing any storage.
+        if let Some(identifier) = &proof_type_identifier {
+            if !protocol_client.is_proof_type_approved(identifier) {
+                return Err(ProofError::UnsupportedProofType);
+            }
+        }
         let policy = protocol_client.get_schema_policy(&schema_version);
         if !Self::schema_allows_proof_type(&policy, proof_type)
             || !protocol_client.is_algorithm_supported(&commitment_algorithm)
         {
             return Err(ProofError::MalformedInput);
         }
-        let now = env.ledger().timestamp();
-        let validity_seconds = expires_at
+        let validity = expires_at
             .checked_sub(now)
             .ok_or(ProofError::ProofExpired)?;
-        if validity_seconds == 0 || validity_seconds > policy.max_validity_seconds {
+        if validity == 0 || validity > policy.max_validity_seconds {
             return Err(ProofError::ProofExpired);
         }
-
         let payload_len = if let Some(payload) = &payload {
-            let max_payload_size = protocol_client.get_schema_payload_limit(&schema_version);
-            let payload_len = payload.len();
-            if payload_len > max_payload_size {
+            let length = payload.len();
+            if length > protocol_client.get_schema_payload_limit(&schema_version) {
                 return Err(ProofError::MalformedInput);
             }
-            Some(payload_len)
+            Some(length)
         } else {
             None
         };
@@ -678,27 +819,24 @@ impl ProofRegistryContract {
         Self::consume_schema_rate_limit(&env, &protocol_client, schema_version)?;
         Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
 
-        // Creation timing is sourced only from the host ledger environment so
-        // it is deterministic and non-forgeable by the caller. The proof
-        // record and its timing are written together in a single persistent
-        // `set`, so a proof never exists without its creation metadata.
-        let now = env.ledger().timestamp();
         let created_ledger = env.ledger().sequence();
         let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
-            BytesN::from_array(&env, &[0u8; 32]),
-            issuer_address,
+            disclosure_policy_hash: disclosure_policy_hash.clone(),
+            issuer_address: issuer_address.clone(),
+            status: ProofStatus::Active,
             schema_version,
             expires_at,
             created_at: now,
             revoked_at: 0,
+            proof_type: proof_type_identifier,
+            revoked_ledger: 0,
             sequence_number,
             created_ledger,
-            activates_at: 0,
+            activates_at,
         };
-
         env.storage().persistent().set(&key, &record);
         env.storage()
             .instance()
@@ -857,22 +995,28 @@ impl ProofRegistryContract {
         Self::extend_proof_key_ttl(env.clone(), &policy_key);
 
         let epoch = Self::bump_registry_epoch(&env);
-        if let Some(payload) = payload {
+        if let (Some(payload), Some(payload_len)) = (payload, payload_len) {
             let payload_hash = env.crypto().sha256(&payload).to_bytes();
             let payload_key = DataKey::ProofPayloadMeta(proof_id_hash.clone());
             env.storage().persistent().set(
                 &payload_key,
                 &ProofPayloadRecord {
-                    payload_len: payload_len.unwrap_or(0),
+                    payload_len,
                     payload_hash: payload_hash.clone(),
                 },
             );
             Self::extend_payload_key_ttl(env.clone(), &payload_key);
             ProofRegisteredWithPayload {
                 proof_id_hash,
+                issuer_address,
+                schema_version,
+                created_ledger,
+                created_at: now,
+                expires_at,
+                disclosure_policy_hash,
                 proof_type,
                 commitment_algorithm,
-                payload_len: payload_len.unwrap_or(0),
+                payload_len,
                 payload_hash,
                 epoch,
             }
@@ -880,6 +1024,12 @@ impl ProofRegistryContract {
         } else {
             ProofRegistered {
                 proof_id_hash,
+                issuer_address,
+                schema_version,
+                created_ledger,
+                created_at: now,
+                expires_at,
+                disclosure_policy_hash,
                 proof_type,
                 commitment_algorithm,
                 epoch,
@@ -897,47 +1047,84 @@ impl ProofRegistryContract {
             }
             index += 1;
         }
+        false
+    }
+
+    pub fn register_proofs_batch(
+        env: Env,
+        entries: Vec<ProofRegistrationInput>,
+        issuer_address: Address,
+    ) -> Result<(), ProofError> {
+        Self::ensure_not_decommissioned(&env)?;
+        Self::require_valid_issuer_address(&issuer_address)?;
+
+        let len = entries.len();
+        if len == 0 || len > MAX_PROOF_BATCH_SIZE {
+            return Err(ProofError::InvalidBatchSize);
+        }
+
+        let protocol_config =
+            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        let issuer_registry =
+            Self::get_issuer_registry(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        if issuer_address == env.current_contract_address()
+            || issuer_address == protocol_config
+            || issuer_address == issuer_registry
+        {
+            return Err(ProofError::InvalidAddress);
+        }
         Self::require_auth(&issuer_address);
 
-        if schema_version == 0 {
-            return Err(ProofError::InvalidSchemaVersion);
-        }
-
-        if expires_at <= env.ledger().timestamp() {
-            return Err(ProofError::ProofExpired);
-        }
-
+        // Check 1: Contract paused (highest precedence — most external state)
         let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
         if protocol_client.is_paused() {
             return Err(ProofError::ContractPaused);
         }
 
+        // Check 2: Issuer active (issuer-specific state) — checked once for
+        // the whole batch, since every entry shares the same issuer.
         let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry);
         if !issuer_client.is_active_address(&issuer_address) {
             return Err(ProofError::IssuerInactive);
         }
 
-        if !protocol_client.is_schema_version_approved(&schema_version) {
-            return Err(ProofError::UnsupportedSchema);
+        // Check all proof types before this batch mutates storage. This keeps
+        // an unsupported type from partially consuming rate or issuer limits.
+        for entry in entries.iter() {
+            if !protocol_client.is_proof_type_approved(&entry.proof_type) {
+                return Err(ProofError::UnsupportedProofType);
+            }
         }
 
-        // Schema-specific payload size bound, enforced before any state
-        // write — a zero-length payload is always within bounds, and a
-        // payload exactly at the limit is accepted.
-        let max_payload_size = protocol_client.get_schema_payload_limit(&schema_version);
-        let payload_len = payload.len();
-        if payload_len > max_payload_size {
-            return Err(ProofError::MalformedInput);
-        }
+        let now = env.ledger().timestamp();
+        let created_ledger = env.ledger().sequence();
 
-        let key = DataKey::Proof(proof_id_hash.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(ProofError::ProofAlreadyRegistered);
-        }
+        for entry in entries.iter() {
+            if entry.schema_version == 0 {
+                return Err(ProofError::InvalidSchemaVersion);
+            }
 
-        Self::consume_schema_rate_limit(&env, &protocol_client, schema_version)?;
-        Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
+            if entry.expires_at <= now {
+                return Err(ProofError::ProofExpired);
+            }
 
+            // Check 3: Schema supported (protocol configuration state)
+            if !protocol_client.is_schema_version_approved(&entry.schema_version) {
+                return Err(ProofError::UnsupportedSchema);
+            }
+            let policy = protocol_client.get_schema_policy(&entry.schema_version);
+            if !Self::schema_allows_proof_type(&policy, LEGACY_PROOF_TYPE)
+                || !protocol_client.is_algorithm_supported(&LEGACY_COMMITMENT_ALGORITHM)
+            {
+                return Err(ProofError::MalformedInput);
+            }
+            let validity = entry
+                .expires_at
+                .checked_sub(now)
+                .ok_or(ProofError::ProofExpired)?;
+            if validity == 0 || validity > policy.max_validity_seconds {
+                return Err(ProofError::ProofExpired);
+            }
         let now = env.ledger().timestamp();
         let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
         let record = ProofRecord {
@@ -956,53 +1143,84 @@ impl ProofRegistryContract {
         env.storage().persistent().set(&key, &record);
         Self::extend_proof_key_ttl(env.clone(), &key);
 
-        let payload_hash = env.crypto().sha256(&payload).to_bytes();
-        let payload_key = DataKey::ProofPayloadMeta(proof_id_hash.clone());
-        let payload_meta = ProofPayloadRecord {
-            payload_len,
-            payload_hash: payload_hash.clone(),
-        };
-        env.storage().persistent().set(&payload_key, &payload_meta);
-        Self::extend_payload_key_ttl(env.clone(), &payload_key);
+            // Check 4: Uniqueness constraint (storage precondition). A proof
+            // id repeated earlier in this same batch is already visible here,
+            // since writes made earlier in this call are readable within it —
+            // so this single check also rejects intra-batch duplicates.
+            let key = DataKey::Proof(entry.proof_id_hash.clone());
+            if env.storage().persistent().has(&key) {
+                return Err(ProofError::ProofAlreadyRegistered);
+            }
 
-        let epoch = Self::bump_registry_epoch(&env);
-        ProofRegisteredWithPayload {
-            proof_id_hash,
-            payload_len,
-            payload_hash,
-            epoch,
+            Self::consume_schema_rate_limit(&env, &protocol_client, entry.schema_version)?;
+            Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
+
+            let record = ProofRecord {
+                proof_id_hash: entry.proof_id_hash.clone(),
+                commitment_hash: entry.commitment_hash.clone(),
+                disclosure_policy_hash: BytesN::from_array(&env, &[0; 32]),
+                issuer_address: issuer_address.clone(),
+                status: ProofStatus::Active,
+                schema_version: entry.schema_version,
+                expires_at: entry.expires_at,
+                created_at: now,
+                revoked_at: 0,
+                proof_type: Some(entry.proof_type.clone()),
+                revoked_ledger: 0,
+                created_ledger,
+                activates_at: 0,
+            };
+
+            env.storage().persistent().set(&key, &record);
+            let policy_key = DataKey::ProofPolicy(entry.proof_id_hash.clone());
+            env.storage().persistent().set(
+                &policy_key,
+                &ProofPolicySnapshot {
+                    proof_type: LEGACY_PROOF_TYPE,
+                    commitment_algorithm: LEGACY_COMMITMENT_ALGORITHM,
+                    max_validity_seconds: policy.max_validity_seconds,
+                },
+            );
+            // A plain TTL bump, deliberately skipping the per-key TTL
+            // tracker write `extend_proof_key_ttl` also performs: a batch of
+            // up to `MAX_PROOF_BATCH_SIZE` entries must stay within the
+            // per-invocation storage-write budget, and `get_proof_ttl_status`
+            // is documented to reflect only calls made outside a batch.
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+            env.storage().persistent().extend_ttl(
+                &policy_key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+
+            ProofRegisteredInBatch {
+                proof_id_hash: entry.proof_id_hash.clone(),
+                issuer_address: issuer_address.clone(),
+            }
+            .publish(&env);
         }
-        .publish(&env);
+
         Ok(())
     }
 
-    fn register_proof_inner(
+    pub fn revoke_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        Self::set_revoked(env, proof_id_hash, false)
+    }
+
+    pub fn admin_revoke_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        Self::set_revoked(env, proof_id_hash, true)
+    }
+
+    pub fn admin_revoke_proof_by_role(
         env: Env,
         proof_id_hash: BytesN<32>,
-        commitment_hash: BytesN<32>,
-        disclosure_policy_hash: BytesN<32>,
-        issuer_address: Address,
-        schema_version: u32,
-        expires_at: u64,
+        actor: Address,
     ) -> Result<(), ProofError> {
-        Self::ensure_not_decommissioned(&env)?;
-        Self::require_valid_issuer_address(&issuer_address)?;
-        Self::require_auth(&issuer_address);
-        let subject_pseudonym_commitment =
-            optional_subject_pseudonym_commitment(&subject_pseudonym_commitment);
-        Self::register_proof_inner(
-            env,
-            ProofRegistration {
-                proof_id_hash,
-                commitment_hash,
-                issuer_address,
-                schema_version,
-                expires_at,
-                payload: None,
-                context: None,
-                subject_pseudonym_commitment,
-            },
-        )
+        Self::set_revoked_as(env, proof_id_hash, true, None, Some(actor))
     }
 
         // Input validation (proof-specific data validation — checked before cross-contract calls)
@@ -1438,7 +1656,6 @@ impl ProofRegistryContract {
             .get(&key)
             .ok_or(ProofError::ProofNotFound)?;
         Self::extend_proof_key_ttl(env.clone(), &key);
-        Self::extend_proof_sidecars_ttl(env, &context_id);
         Ok(record)
     }
 
@@ -1516,10 +1733,7 @@ impl ProofRegistryContract {
 
     /// Returns the immutable policy interpretation selected when the proof
     /// was registered. Older records are reported using explicit legacy IDs.
-    pub fn get_proof_policy_snapshot(
-        env: Env,
-        proof_id_hash: BytesN<32>,
-    ) -> Result {
+    pub fn get_proof_policy_snapshot(env: Env, proof_id_hash: BytesN<32>) -> Result {
         let proof_key = DataKey::Proof(proof_id_hash.clone());
         if !env.storage().persistent().has(&proof_key) {
             return Err(ProofError::ProofNotFound);
@@ -1554,6 +1768,49 @@ impl ProofRegistryContract {
             }
             Err(_) => false,
         }
+    }
+
+    /// Full validity state of a proof: distinguishes pending, active,
+    /// revoked, expired, and not-found, where [`Self::is_valid_proof`]
+    /// collapses all but "active" to `false`.
+    pub fn get_proof_validity(env: Env, proof_id_hash: BytesN<32>) -> ProofValidity {
+        match Self::get_proof(env.clone(), proof_id_hash) {
+            Ok(record) => Self::compute_validity(env.ledger().timestamp(), &record),
+            Err(_) => ProofValidity::NotFound,
+        }
+    }
+
+    /// Returns the locally-checkable validity summary and revocation timing.
+    /// `revoked_ledger == 0` explicitly marks a legacy revoked record whose
+    /// stored format predates ledger-sequence revocation metadata.
+    pub fn get_proof_validity_details(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<ProofValidityDetails, ProofError> {
+        let record = Self::get_proof(env.clone(), proof_id_hash)?;
+        let revoked = record.status == ProofStatus::Revoked;
+        Ok(ProofValidityDetails {
+            status: record.status.clone(),
+            is_valid: Self::compute_validity(env.ledger().timestamp(), &record)
+                == ProofValidity::Active,
+            expires_at: record.expires_at,
+            revoked,
+            revoked_at: if revoked { record.revoked_at } else { 0 },
+            revoked_ledger: if revoked { record.revoked_ledger } else { 0 },
+        })
+    }
+
+    fn compute_validity(now: u64, record: &ProofRecord) -> ProofValidity {
+        if record.status == ProofStatus::Revoked {
+            return ProofValidity::Revoked;
+        }
+        if now < record.activates_at {
+            return ProofValidity::Pending(record.activates_at);
+        }
+        if now > record.expires_at {
+            return ProofValidity::Expired;
+        }
+        ProofValidity::Active
     }
 
     /// Structured proof validity query.
@@ -2166,11 +2423,7 @@ impl ProofRegistryContract {
         env.storage().instance().get(&DataKey::MigrationStatus)
     }
 
-    pub fn begin_migration(
-        env: Env,
-        target_contract_version: u32,
-        total_items: u32,
-    ) -> Result {
+    pub fn begin_migration(env: Env, target_contract_version: u32, total_items: u32) -> Result {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         if target_contract_version <= Self::get_contract_version(env.clone()) || total_items == 0 {
@@ -2199,11 +2452,7 @@ impl ProofRegistryContract {
         Ok(status)
     }
 
-    pub fn advance_migration(
-        env: Env,
-        expected_cursor: u32,
-        processed_items: u32,
-    ) -> Result {
+    pub fn advance_migration(env: Env, expected_cursor: u32, processed_items: u32) -> Result {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         if processed_items == 0 || processed_items > MAX_MIGRATION_BATCH {
@@ -2784,6 +3033,9 @@ mod test {
 
         record.status = ProofStatus::Revoked;
         record.revoked_at = env.ledger().timestamp();
+        record.revoked_ledger = env.ledger().sequence();
+        let revoked_at = record.revoked_at;
+        let revoked_ledger = record.revoked_ledger;
         let active_key = DataKey::IssuerActiveProofCount(record.issuer_address.clone());
         let active: u32 = env.storage().persistent().get(&active_key).unwrap_or(0);
         env.storage()
@@ -2794,6 +3046,8 @@ mod test {
         let epoch = Self::bump_registry_epoch(&env);
         ProofRevoked {
             proof_id_hash,
+            revoked_at,
+            revoked_ledger,
             by_admin,
             epoch,
         }
@@ -3164,7 +3418,8 @@ mod test {
         let issuer_id = bytes(&env, 9);
 
         protocol_config_client.initialize(&admin);
-        protocol_config_client.approve_schema_version(&bytes(&env, 0x90), &1);
+        protocol_config_client.approve_schema_version(&1);
+        protocol_config_client.approve_proof_type(&bytes(&env, 1));
         issuer_registry_client.initialize(&admin);
         issuer_registry_client.register_issuer(
             &issuer_id,
@@ -3192,7 +3447,14 @@ mod test {
         let commitment = bytes(&env, 2);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &commitment, &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         let record = client.get_proof(&proof_id);
         assert_eq!(record.proof_id_hash, proof_id);
@@ -3210,7 +3472,14 @@ mod test {
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         client.revoke_proof(&proof_id);
 
         let record = client.get_proof(&proof_id);
@@ -3224,12 +3493,13 @@ mod test {
         let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
         use earnproof_shared::ProofError;
 
-        let result = client.try_register_proof(
+        let result = client.try_register_proof_with_type_identifier(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &Address::from_str(&env, ISSUER),
             &1,
             &0,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::ProofExpired)));
     }
@@ -3241,9 +3511,23 @@ mod test {
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
-        let result = client.try_register_proof(&proof_id, &bytes(&env, 3), &issuer, &1, &2_000);
+        let result = client.try_register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 3),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
     }
 
@@ -3252,12 +3536,13 @@ mod test {
         let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
         use earnproof_shared::ProofError;
 
-        let result = client.try_register_proof(
+        let result = client.try_register_proof_with_type_identifier(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &Address::from_str(&env, ISSUER),
             &2,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
     }
@@ -3268,12 +3553,13 @@ mod test {
         use earnproof_shared::ProofError;
         protocol_config.pause(&bytes(&env, 0x91));
 
-        let result = client.try_register_proof(
+        let result = client.try_register_proof_with_type_identifier(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &Address::from_str(&env, ISSUER),
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
     }
@@ -3298,12 +3584,13 @@ mod test {
             &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
 
-        let result = client.try_register_proof(
+        let result = client.try_register_proof_with_type_identifier(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &inactive_issuer,
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
     }
@@ -3314,7 +3601,14 @@ mod test {
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         env.as_contract(&client.address, || {
             assert!(
@@ -3428,7 +3722,14 @@ mod test {
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert!(client.is_valid_proof(&proof_id));
 
         let hash = bytes(&env, 0x77);
@@ -3464,7 +3765,14 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
 
         // Valid: minimum allowed schema version
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert!(client.is_valid_proof(&bytes(&env, 1)));
 
         // Valid: typical schema version
@@ -3474,12 +3782,13 @@ mod test {
 
         // Valid: large schema version
         _pc.approve_schema_version(&bytes(&env, 0xad), &u32::MAX);
-        client.register_proof(
+        client.register_proof_with_type_identifier(
             &bytes(&env, 20),
             &bytes(&env, 21),
             &issuer,
             &u32::MAX,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert!(client.is_valid_proof(&bytes(&env, 20)));
     }
@@ -3490,8 +3799,14 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
 
         // Schema version 0 must be rejected with a typed error.
-        let result =
-            client.try_register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &0, &2_000);
+        let result = client.try_register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &0,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
     }
 
@@ -3504,22 +3819,24 @@ mod test {
         let current_time = env.ledger().timestamp();
 
         // Valid: one second in the future (minimum practical offset)
-        client.register_proof(
+        client.register_proof_with_type_identifier(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &issuer,
             &1,
             &(current_time + 1),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert!(client.is_valid_proof(&bytes(&env, 1)));
 
         // Valid: reasonable future expiration (1 year in seconds)
-        client.register_proof(
+        client.register_proof_with_type_identifier(
             &bytes(&env, 10),
             &bytes(&env, 11),
             &issuer,
             &1,
             &(current_time + 365 * 24 * 3600),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert!(client.is_valid_proof(&bytes(&env, 10)));
 
@@ -3657,7 +3974,10 @@ mod test {
             &1,
             &u64::MAX,
         );
-        assert_eq!(client.get_proof(&bytes(&env, 60)).unwrap().expires_at, u64::MAX);
+        assert_eq!(
+            client.get_proof(&bytes(&env, 60)).unwrap().expires_at,
+            u64::MAX
+        );
     }
 
     #[test]
@@ -3667,8 +3987,14 @@ mod test {
         let current_time = env.ledger().timestamp();
 
         // Expiration equal to current time is rejected with a typed error.
-        let result =
-            client.try_register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &current_time);
+        let result = client.try_register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &current_time,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert_eq!(result, Err(Ok(ProofError::ProofExpired)));
     }
 
@@ -3680,12 +4006,13 @@ mod test {
 
         // Expiration in the past is rejected with a typed error.
         if current_time > 0 {
-            let result = client.try_register_proof(
+            let result = client.try_register_proof_with_type_identifier(
                 &bytes(&env, 1),
                 &bytes(&env, 2),
                 &issuer,
                 &1,
                 &(current_time - 1),
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             );
             assert_eq!(result, Err(Ok(ProofError::ProofExpired)));
         }
@@ -3711,7 +4038,14 @@ mod test {
 
         // Attempt to register with schema version 0 — should panic
         let register_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&proof_id, &bytes(&env, 88), &issuer, &0, &2_000);
+            client.register_proof_with_type_identifier(
+                &proof_id,
+                &bytes(&env, 88),
+                &issuer,
+                &0,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
         }));
 
         // Must have panicked
@@ -4022,7 +4356,14 @@ mod test {
         // Perform proof registration
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         // Dependencies must remain unchanged
         assert_eq!(
@@ -4155,7 +4496,14 @@ mod test {
 
         // Verify the full system is functional: proof registration works
         let proof_id_hash = bytes(&env, 1);
-        proof_client.register_proof(&proof_id_hash, &bytes(&env, 2), &issuer, &1, &2_000);
+        proof_client.register_proof_with_type_identifier(
+            &proof_id_hash,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert!(proof_client.is_valid_proof(&proof_id_hash));
     }
 
@@ -4188,7 +4536,14 @@ mod test {
         // However, attempting to use the proof registry should fail because
         // the dependencies are not initialized
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            proof_client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+            proof_client.register_proof_with_type_identifier(
+                &bytes(&env, 1),
+                &bytes(&env, 2),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
         }));
 
         // Must have panicked (dependencies are not initialized)
@@ -4235,7 +4590,14 @@ mod test {
         // Initialization succeeds, but proof registration must fail at runtime
         // because the dependencies are the wrong contracts
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            proof_client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+            proof_client.register_proof_with_type_identifier(
+                &bytes(&env, 1),
+                &bytes(&env, 2),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
         }));
 
         // Must have panicked
@@ -4281,7 +4643,14 @@ mod test {
 
         // Now proof registration should work because dependencies are initialized
         let proof_id_hash = bytes(&env, 1);
-        proof_client.register_proof(&proof_id_hash, &bytes(&env, 2), &issuer, &1, &2_000);
+        proof_client.register_proof_with_type_identifier(
+            &proof_id_hash,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert!(proof_client.is_valid_proof(&proof_id_hash));
     }
 
@@ -4500,7 +4869,14 @@ mod test {
         // Proof registration should fail because:
         // 1. Schema version 1 is not approved
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            proof_client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+            proof_client.register_proof_with_type_identifier(
+                &bytes(&env, 1),
+                &bytes(&env, 2),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
         }));
         assert!(
             result.is_err(),
@@ -4512,7 +4888,14 @@ mod test {
 
         // Proof registration should fail because issuer is not registered
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            proof_client.register_proof(&bytes(&env, 2), &bytes(&env, 3), &issuer, &1, &2_000);
+            proof_client.register_proof_with_type_identifier(
+                &bytes(&env, 2),
+                &bytes(&env, 3),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
         }));
         assert!(
             result.is_err(),
@@ -4523,7 +4906,14 @@ mod test {
         let issuer_id = bytes(&env, 9);
         ir_client.register_issuer(&issuer_id, &issuer, &bytes(&env, 8), &bytes(&env, 99));
 
-        proof_client.register_proof(&bytes(&env, 3), &bytes(&env, 4), &issuer, &1, &2_000);
+        proof_client.register_proof_with_type_identifier(
+            &bytes(&env, 3),
+            &bytes(&env, 4),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert!(proof_client.is_valid_proof(&bytes(&env, 3)));
     }
 
@@ -4586,7 +4976,14 @@ mod test {
         .is_err());
 
         // Verify core operations work as expected
-        proof_client.register_proof(&proof_id_hash, &bytes(&env, 2), &issuer, &1, &2_000);
+        proof_client.register_proof_with_type_identifier(
+            &proof_id_hash,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert!(proof_client.is_valid_proof(&proof_id_hash));
 
         // Verify state mutations work
@@ -4620,6 +5017,7 @@ mod test {
             commitment_hash: bytes(env, seed.wrapping_add(100)),
             schema_version: 1,
             expires_at,
+            proof_type: BytesN::from_array(env, &[1; 32]),
         }
     }
 
@@ -4762,7 +5160,14 @@ mod test {
     fn register_proofs_batch_rejects_duplicate_against_existing_chain_state() {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         let batch = make_batch(&env, &[9, 1, 10], 2_000);
         let result = client.try_register_proofs_batch(&batch, &issuer);
@@ -4786,6 +5191,7 @@ mod test {
             commitment_hash: bytes(&env, 102),
             schema_version: 0, // invalid: zero schema version
             expires_at: 2_000,
+            proof_type: bytes(&env, 1),
         });
         batch.push_back(batch_input(&env, 3, now)); // invalid: not in the future
 
@@ -4805,6 +5211,7 @@ mod test {
             commitment_hash: bytes(&env, 102),
             schema_version: 42, // never approved
             expires_at: 2_000,
+            proof_type: bytes(&env, 1),
         });
 
         let result = client.try_register_proofs_batch(&batch, &issuer);
@@ -4949,7 +5356,15 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
 
-        client.register_proof_with_activation(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000, &0);
+        client.register_proof_with_activation(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            &0,
+        );
 
         assert!(client.is_valid_proof(&proof_id));
         assert_eq!(client.get_proof_validity(&proof_id), ProofValidity::Active);
@@ -4972,8 +5387,16 @@ mod test {
             &1,
             &2_000,
             &now,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
-        client.register_proof(&bytes(&env, 3), &bytes(&env, 4), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 3),
+            &bytes(&env, 4),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         assert_eq!(
             client.get_proof_validity(&bytes(&env, 1)),
@@ -4996,6 +5419,7 @@ mod test {
             &1,
             &2_000,
             &(now + 500),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
 
         // Pending proofs cannot verify as valid.
@@ -5025,6 +5449,7 @@ mod test {
             &1,
             &2_000,
             &(now + 100),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
 
         env.ledger().set_timestamp(now + 99);
@@ -5051,6 +5476,7 @@ mod test {
             &1,
             &2_000,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::InvalidActivationTime)));
 
@@ -5062,6 +5488,7 @@ mod test {
             &1,
             &2_000,
             &2_001,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::InvalidActivationTime)));
 
@@ -5086,6 +5513,7 @@ mod test {
             &1,
             &(now + 200),
             &(now + 100),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
 
         env.ledger().set_timestamp(now + 300);
@@ -5107,6 +5535,7 @@ mod test {
             &1,
             &2_000,
             &(now + 100),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(
             client.get_proof_validity(&proof_id),
@@ -5193,21 +5622,878 @@ mod test {
             &env.ledger().network_id(),
             &client.address,
         );
-        assert_eq!(domain_sep, manual_domain_sep);
-        let manual_comm =
-            earnproof_shared::compute_domain_commitment(&env, &manual_domain_sep, &raw_commitment);
-        assert_eq!(domain_comm1, manual_comm);
+        issuer_registry.register_issuer(
+            &bytes(&env, 10),
+            &inactive_issuer,
+            &bytes(&env, 11),
+            &bytes(&env, 99),
+        );
+        issuer_registry.suspend_issuer(&bytes(&env, 10), &bytes(&env, 1));
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 7),
+            &bytes(&env, 8),
+            &inactive_issuer,
+            &1,
+            &2_000,
+            &0,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
+
+        // Duplicate proof id.
+        client.register_proof_with_activation(
+            &bytes(&env, 9),
+            &bytes(&env, 91),
+            &issuer,
+            &1,
+            &2_000,
+            &0,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 9),
+            &bytes(&env, 92),
+            &issuer,
+            &1,
+            &2_000,
+            &0,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
     }
 
     #[test]
-    fn register_and_verify_domain_separated_proof() {
+    fn get_proof_validity_reports_not_found() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        assert_eq!(
+            client.get_proof_validity(&bytes(&env, 99)),
+            ProofValidity::NotFound
+        );
+    }
+
+    // ── bounded batch proof revocation ───────────────────────────────────────
+
+    const ISSUER_TWO: &str = "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG";
+
+    fn ids(env: &Env, seeds: &[u8]) -> soroban_sdk::Vec<BytesN<32>> {
+        let mut v = soroban_sdk::Vec::new(env);
+        for &seed in seeds {
+            v.push_back(bytes(env, seed));
+        }
+        v
+    }
+
+    #[test]
+    fn revoke_proofs_batch_revokes_every_entry_in_order() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds = [1u8, 2, 3];
+        for &seed in &seeds {
+            client.register_proof_with_type_identifier(
+                &bytes(&env, seed),
+                &bytes(&env, seed + 100),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
+        }
+
+        client.revoke_proofs_batch(&ids(&env, &seeds));
+
+        for &seed in &seeds {
+            assert!(client.is_revoked(&bytes(&env, seed)));
+            assert!(!client.is_valid_proof(&bytes(&env, seed)));
+        }
+    }
+
+    #[test]
+    fn revoke_proofs_batch_emits_events_in_input_order() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::xdr::{ContractEventBody, ScAddress, ScVal};
+        use soroban_sdk::{Map, Symbol, TryFromVal, Val};
+
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds = [5u8, 6, 7];
+        for &seed in &seeds {
+            client.register_proof_with_type_identifier(
+                &bytes(&env, seed),
+                &bytes(&env, seed + 100),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
+        }
+
+        client.revoke_proofs_batch(&ids(&env, &seeds));
+
+        let events = env.events().all();
+        let proof_ids_in_event_order: std::vec::Vec<BytesN<32>> = events
+            .events()
+            .iter()
+            .filter_map(|event| {
+                let contract_id = event.contract_id.clone()?;
+                let emitting_contract =
+                    Address::try_from_val(&env, &ScVal::Address(ScAddress::Contract(contract_id)))
+                        .ok()?;
+                if emitting_contract != client.address {
+                    return None;
+                }
+                let ContractEventBody::V0(body) = &event.body;
+                let first_topic = body.topics.first()?;
+                let first_topic_val = Val::try_from_val(&env, first_topic).ok()?;
+                let discriminant = Symbol::try_from_val(&env, &first_topic_val).ok()?;
+                if discriminant != Symbol::new(&env, "proof_revoked_in_batch") {
+                    return None;
+                }
+                let data_val = Val::try_from_val(&env, &body.data).ok()?;
+                let map = Map::<Symbol, Val>::try_from_val(&env, &data_val).ok()?;
+                let raw = map.get(Symbol::new(&env, "proof_id_hash"))?;
+                BytesN::<32>::try_from_val(&env, &raw).ok()
+            })
+            .collect();
+
+        assert_eq!(
+            proof_ids_in_event_order,
+            std::vec![bytes(&env, 5), bytes(&env, 6), bytes(&env, 7)]
+        );
+    }
+
+    #[test]
+    fn revoke_proofs_batch_rejects_empty_batch() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let empty: soroban_sdk::Vec<BytesN<32>> = soroban_sdk::Vec::new(&env);
+
+        let result = client.try_revoke_proofs_batch(&empty);
+        assert_eq!(result, Err(Ok(ProofError::InvalidBatchSize)));
+    }
+
+    #[test]
+    fn revoke_proofs_batch_accepts_exact_limit_batch() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds: std::vec::Vec<u8> = (0..MAX_PROOF_BATCH_SIZE as u16).map(|i| i as u8).collect();
+        for &seed in &seeds {
+            client.register_proof_with_type_identifier(
+                &bytes(&env, seed),
+                &bytes(&env, seed.wrapping_add(100)),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
+        }
+
+        client.revoke_proofs_batch(&ids(&env, &seeds));
+
+        for &seed in &seeds {
+            assert!(client.is_revoked(&bytes(&env, seed)));
+        }
+    }
+
+    #[test]
+    fn revoke_proofs_batch_rejects_over_limit_batch() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds: std::vec::Vec<u8> = (0..(MAX_PROOF_BATCH_SIZE as u16 + 1))
+            .map(|i| i as u8)
+            .collect();
+        for &seed in &seeds {
+            client.register_proof_with_type_identifier(
+                &bytes(&env, seed),
+                &bytes(&env, seed.wrapping_add(100)),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
+        }
+
+        let result = client.try_revoke_proofs_batch(&ids(&env, &seeds));
+        assert_eq!(result, Err(Ok(ProofError::InvalidBatchSize)));
+
+        for &seed in &seeds {
+            assert!(!client.is_revoked(&bytes(&env, seed)));
+        }
+    }
+
+    #[test]
+    fn revoke_proofs_batch_rejects_duplicate_within_batch() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        let batch = ids(&env, &[1, 2, 1]); // duplicate of the first
+        let result = client.try_revoke_proofs_batch(&batch);
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRevoked)));
+
+        // Atomicity: even the entries that would have succeeded must not be committed.
+        assert!(!client.is_revoked(&bytes(&env, 1)));
+        assert!(!client.is_revoked(&bytes(&env, 2)));
+    }
+
+    #[test]
+    fn revoke_proofs_batch_rejects_already_revoked_entry() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.revoke_proof(&bytes(&env, 1));
+
+        let batch = ids(&env, &[2, 1]);
+        let result = client.try_revoke_proofs_batch(&batch);
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRevoked)));
+
+        // Entry 2 preceded the failing entry and must not have been committed.
+        assert!(!client.is_revoked(&bytes(&env, 2)));
+    }
+
+    #[test]
+    fn revoke_proofs_batch_rejects_unknown_proof_id() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        let batch = ids(&env, &[1, 99]);
+        let result = client.try_revoke_proofs_batch(&batch);
+        assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
+        assert!(!client.is_revoked(&bytes(&env, 1)));
+    }
+
+    #[test]
+    fn revoke_proofs_batch_supports_mixed_ownership_when_every_issuer_authorizes() {
+        let (env, client, _pc, ir, _ir_id) = setup();
+        let issuer_one = Address::from_str(&env, ISSUER);
+        let issuer_two = Address::from_str(&env, ISSUER_TWO);
+        ir.register_issuer(
+            &bytes(&env, 20),
+            &issuer_two,
+            &bytes(&env, 21),
+            &bytes(&env, 99),
+        );
+
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer_one,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer_two,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        // env.mock_all_auths() (from setup()) authorizes every address, so a
+        // mixed-ownership batch succeeds when both issuers would sign.
+        client.revoke_proofs_batch(&ids(&env, &[1, 2]));
+
+        assert!(client.is_revoked(&bytes(&env, 1)));
+        assert!(client.is_revoked(&bytes(&env, 2)));
+    }
+
+    #[test]
+    fn revoke_proofs_batch_rejects_mixed_ownership_without_the_second_issuers_auth() {
+        use soroban_sdk::IntoVal;
+
+        let (env, client, _pc, ir, _ir_id) = setup();
+        let issuer_one = Address::from_str(&env, ISSUER);
+        let issuer_two = Address::from_str(&env, ISSUER_TWO);
+        ir.register_issuer(
+            &bytes(&env, 20),
+            &issuer_two,
+            &bytes(&env, 21),
+            &bytes(&env, 99),
+        );
+
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer_one,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer_two,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        // Only issuer_one is authorized for this invocation; issuer_two's
+        // entry must not be smuggled through behind it.
+        env.set_auths(&[]);
+        let auth_entry = soroban_sdk::testutils::MockAuth {
+            address: &issuer_one,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "revoke_proofs_batch",
+                args: (ids(&env, &[1, 2]),).into_val(&env),
+                sub_invokes: &[],
+            },
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client
+                .mock_auths(&[auth_entry])
+                .revoke_proofs_batch(&ids(&env, &[1, 2]));
+        }));
+        assert!(
+            result.is_err(),
+            "batch must fail without issuer_two's authorization"
+        );
+        assert!(!client.is_revoked(&bytes(&env, 1)));
+        assert!(!client.is_revoked(&bytes(&env, 2)));
+    }
+
+    #[test]
+    fn revoke_proofs_batch_rejects_when_revocation_paused() {
+        let (env, client, pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        pc.set_scoped_pause(&PauseScope::Revocation, &true);
+
+        let result = client.try_revoke_proofs_batch(&ids(&env, &[1]));
+        assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
+        assert!(!client.is_revoked(&bytes(&env, 1)));
+    }
+
+    #[test]
+    fn revoke_proofs_batch_rejects_decommissioned_contract() {
+        let (env, client, ..) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let admin = Address::from_str(&env, ADMIN);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.nominate_successor(&admin);
+        client.activate_successor();
+
+        let result = client.try_revoke_proofs_batch(&ids(&env, &[1]));
+        assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
+    }
+
+    #[test]
+    fn admin_revoke_proofs_batch_revokes_every_entry() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds = [1u8, 2, 3];
+        for &seed in &seeds {
+            client.register_proof_with_type_identifier(
+                &bytes(&env, seed),
+                &bytes(&env, seed + 100),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
+        }
+
+        client.admin_revoke_proofs_batch(&ids(&env, &seeds));
+
+        for &seed in &seeds {
+            assert!(client.is_revoked(&bytes(&env, seed)));
+        }
+    }
+
+    #[test]
+    fn admin_revoke_proofs_batch_requires_admin_auth() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        env.set_auths(&[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.admin_revoke_proofs_batch(&ids(&env, &[1]));
+        }));
+        assert!(
+            result.is_err(),
+            "admin batch revocation must require admin auth"
+        );
+        assert!(!client.is_revoked(&bytes(&env, 1)));
+    }
+
+    #[test]
+    fn admin_revoke_proofs_batch_can_revoke_proofs_from_multiple_issuers_with_one_auth() {
+        let (env, client, _pc, ir, _ir_id) = setup();
+        let issuer_one = Address::from_str(&env, ISSUER);
+        let issuer_two = Address::from_str(&env, ISSUER_TWO);
+        ir.register_issuer(
+            &bytes(&env, 20),
+            &issuer_two,
+            &bytes(&env, 21),
+            &bytes(&env, 99),
+        );
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 101),
+            &issuer_one,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 2),
+            &bytes(&env, 102),
+            &issuer_two,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        // Only the admin needs to authorize; neither issuer does.
+        client.admin_revoke_proofs_batch(&ids(&env, &[1, 2]));
+
+        assert!(client.is_revoked(&bytes(&env, 1)));
+        assert!(client.is_revoked(&bytes(&env, 2)));
+    }
+
+    // ── proof dispute status lifecycle ──────────────────────────────────────────
+
+    const THIRD_PARTY: &str = "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG";
+
+    #[test]
+    fn open_dispute_by_issuer_is_classified_and_observable() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+
+        let dispute = client.get_dispute(&proof_id);
+        assert_eq!(dispute.status, DisputeStatus::Open);
+        assert_eq!(dispute.opened_by, issuer);
+        assert_eq!(dispute.opened_by_class, DisputeActorClass::Issuer);
+        assert_eq!(dispute.evidence_commitment, bytes(&env, 30));
+    }
+
+    #[test]
+    fn open_dispute_by_admin_and_third_party_are_classified_correctly() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let admin = Address::from_str(&env, ADMIN);
+        let third_party = Address::from_str(&env, THIRD_PARTY);
+
+        let proof_a = bytes(&env, 1);
+        let proof_b = bytes(&env, 2);
+        client.register_proof_with_type_identifier(
+            &proof_a,
+            &bytes(&env, 11),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.register_proof_with_type_identifier(
+            &proof_b,
+            &bytes(&env, 12),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        client.open_dispute(&proof_a, &admin, &bytes(&env, 30));
+        client.open_dispute(&proof_b, &third_party, &bytes(&env, 31));
+
+        assert_eq!(
+            client.get_dispute(&proof_a).opened_by_class,
+            DisputeActorClass::Admin
+        );
+        assert_eq!(
+            client.get_dispute(&proof_b).opened_by_class,
+            DisputeActorClass::ThirdParty
+        );
+    }
+
+    #[test]
+    fn open_dispute_requires_disputant_auth() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let third_party = Address::from_str(&env, THIRD_PARTY);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        env.set_auths(&[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.open_dispute(&proof_id, &third_party, &bytes(&env, 30));
+        }));
+        assert!(
+            result.is_err(),
+            "opening a dispute must require the disputant's auth"
+        );
+    }
+
+    #[test]
+    fn open_dispute_rejects_unknown_proof() {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 110);
-        let raw_commitment = bytes(&env, 111);
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof_with_domain(&proof_id, &raw_commitment, &issuer, &1, &10_000);
+        assert_eq!(
+            client.try_open_dispute(&proof_id, &issuer, &bytes(&env, 111)),
+            Err(Ok(ProofError::ProofNotFound))
+        );
+    }
 
+    #[test]
+    fn only_one_open_dispute_is_allowed_at_a_time() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let third_party = Address::from_str(&env, THIRD_PARTY);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+        let result = client.try_open_dispute(&proof_id, &third_party, &bytes(&env, 31));
+        assert_eq!(result, Err(Ok(ProofError::DisputeAlreadyOpen)));
+
+        // The rejected attempt must not have overwritten the existing dispute.
+        let dispute = client.get_dispute(&proof_id);
+        assert_eq!(dispute.opened_by, issuer);
+        assert_eq!(dispute.evidence_commitment, bytes(&env, 30));
+    }
+
+    #[test]
+    fn a_new_dispute_may_be_opened_once_the_prior_one_is_terminal() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let third_party = Address::from_str(&env, THIRD_PARTY);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+        client.withdraw_dispute(&proof_id);
+
+        // Withdrawn is terminal, not blocking: a new dispute may be opened.
+        client.open_dispute(&proof_id, &third_party, &bytes(&env, 31));
+        let dispute = client.get_dispute(&proof_id);
+        assert_eq!(dispute.status, DisputeStatus::Open);
+        assert_eq!(dispute.opened_by, third_party);
+        assert_eq!(dispute.evidence_commitment, bytes(&env, 31));
+    }
+
+    #[test]
+    fn withdraw_dispute_succeeds_for_the_real_opener() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let third_party = Address::from_str(&env, THIRD_PARTY);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.open_dispute(&proof_id, &third_party, &bytes(&env, 30));
+
+        client.withdraw_dispute(&proof_id);
+        let dispute = client.get_dispute(&proof_id);
+        assert_eq!(dispute.status, DisputeStatus::Withdrawn);
+        assert_eq!(dispute.updated_by, third_party);
+        assert_eq!(dispute.updated_by_class, DisputeActorClass::ThirdParty);
+    }
+
+    #[test]
+    fn withdraw_dispute_rejects_an_authorized_address_that_is_not_the_opener() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        // env.mock_all_auths() would authorize any caller for any
+        // require_auth, which would make a test that only checks "someone
+        // authorized this" pass even if the contract never checked *whose*
+        // authorization it required. Using an explicit MockAuth instead
+        // proves the contract requires the opener specifically: another
+        // party's own, valid authorization for this exact call is not
+        // enough.
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let third_party = Address::from_str(&env, THIRD_PARTY);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+
+        let auth_entry = MockAuth {
+            address: &third_party,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "withdraw_dispute",
+                args: (proof_id.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.mock_auths(&[auth_entry]).withdraw_dispute(&proof_id);
+        }));
+        assert!(
+            result.is_err(),
+            "a third party's own authorization must not withdraw the issuer's dispute"
+        );
+        assert_eq!(client.get_dispute(&proof_id).status, DisputeStatus::Open);
+    }
+
+    #[test]
+    fn withdraw_dispute_rejects_not_found_and_not_open() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        // No dispute at all.
+        let result = client.try_withdraw_dispute(&proof_id);
+        assert_eq!(result, Err(Ok(ProofError::DisputeNotFound)));
+
+        // Already withdrawn: not open.
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+        client.withdraw_dispute(&proof_id);
+        let result = client.try_withdraw_dispute(&proof_id);
+        assert_eq!(result, Err(Ok(ProofError::DisputeNotOpen)));
+    }
+
+    #[test]
+    fn resolve_dispute_is_admin_only_and_terminal() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let admin = Address::from_str(&env, ADMIN);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+
+        env.set_auths(&[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.resolve_dispute(&proof_id);
+        }));
+        assert!(
+            result.is_err(),
+            "resolving a dispute must require admin auth"
+        );
+
+        env.mock_all_auths();
+        client.resolve_dispute(&proof_id);
+        let dispute = client.get_dispute(&proof_id);
+        assert_eq!(dispute.status, DisputeStatus::Resolved);
+        assert_eq!(dispute.updated_by, admin);
+        assert_eq!(dispute.updated_by_class, DisputeActorClass::Admin);
+
+        // Terminal: cannot be resolved or rejected again.
+        assert_eq!(
+            client.try_resolve_dispute(&proof_id),
+            Err(Ok(ProofError::DisputeNotOpen))
+        );
+        assert_eq!(
+            client.try_reject_dispute(&proof_id),
+            Err(Ok(ProofError::DisputeNotOpen))
+        );
+    }
+
+    #[test]
+    fn reject_dispute_is_admin_only_and_terminal() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let admin = Address::from_str(&env, ADMIN);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+
+        env.set_auths(&[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.reject_dispute(&proof_id);
+        }));
+        assert!(
+            result.is_err(),
+            "rejecting a dispute must require admin auth"
+        );
+
+        env.mock_all_auths();
+        client.reject_dispute(&proof_id);
+        let dispute = client.get_dispute(&proof_id);
+        assert_eq!(dispute.status, DisputeStatus::Rejected);
+        assert_eq!(dispute.updated_by, admin);
+        assert_eq!(dispute.updated_by_class, DisputeActorClass::Admin);
+    }
+
+    #[test]
+    fn resolve_and_reject_reject_not_found_and_not_open() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        assert_eq!(
+            client.try_resolve_dispute(&proof_id),
+            Err(Ok(ProofError::DisputeNotFound))
+        );
+        assert_eq!(
+            client.try_reject_dispute(&proof_id),
+            Err(Ok(ProofError::DisputeNotFound))
+        );
+
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+        client.resolve_dispute(&proof_id);
+
+        assert_eq!(
+            client.try_resolve_dispute(&proof_id),
+            Err(Ok(ProofError::DisputeNotOpen))
+        );
+        assert_eq!(
+            client.try_reject_dispute(&proof_id),
+            Err(Ok(ProofError::DisputeNotOpen))
+        );
+    }
+
+    #[test]
+    fn get_dispute_reports_not_found() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let result = client.try_get_dispute(&bytes(&env, 99));
+        assert_eq!(result, Err(Ok(ProofError::DisputeNotFound)));
+    }
+
+    #[test]
+    fn dispute_status_is_independent_of_proof_validity_and_revocation() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        // Disputing an active, valid proof does not change its validity.
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
         assert!(client.is_valid_proof(&proof_id));
         assert!(client.verify_domain_commitment(&proof_id, &raw_commitment));
 
@@ -5221,6 +6507,16 @@ mod test {
     fn batch_validity_query_matches_individual_queries_in_order() {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.revoke_proof(&proof_id);
 
         let p1 = bytes(&env, 1);
         let p2 = bytes(&env, 2);
@@ -5249,12 +6545,104 @@ mod test {
     }
 
     #[test]
-    fn batch_validity_query_rejects_exceeding_max_batch_size() {
+    fn dispute_transitions_reject_when_disputes_are_paused() {
+        let (env, client, pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+
+        pc.set_scoped_pause(&earnproof_shared::PauseScope::Disputes, &true);
+
+        assert_eq!(
+            client.try_open_dispute(&bytes(&env, 2), &issuer, &bytes(&env, 31)),
+            Err(Ok(ProofError::ContractPaused))
+        );
+        assert_eq!(
+            client.try_withdraw_dispute(&proof_id),
+            Err(Ok(ProofError::ContractPaused))
+        );
+        assert_eq!(
+            client.try_resolve_dispute(&proof_id),
+            Err(Ok(ProofError::ContractPaused))
+        );
+        assert_eq!(
+            client.try_reject_dispute(&proof_id),
+            Err(Ok(ProofError::ContractPaused))
+        );
+
+        // Unrelated global pause does not block disputes: this scope is
+        // opted in explicitly, unlike Registration/Updates.
+        pc.set_scoped_pause(&earnproof_shared::PauseScope::Disputes, &false);
+        pc.pause();
+        client.withdraw_dispute(&proof_id);
+        assert_eq!(
+            client.get_dispute(&proof_id).status,
+            DisputeStatus::Withdrawn
+        );
+    }
+
+    #[test]
+    fn dispute_transitions_reject_on_decommissioned_contract() {
+        let (env, client, ..) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let admin = Address::from_str(&env, ADMIN);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        client.open_dispute(&proof_id, &issuer, &bytes(&env, 30));
+
+        client.nominate_successor(&admin);
+        client.activate_successor();
+
+        assert_eq!(
+            client.try_open_dispute(&bytes(&env, 2), &issuer, &bytes(&env, 31)),
+            Err(Ok(ProofError::ProofNotFound))
+        );
+        assert_eq!(
+            client.try_withdraw_dispute(&proof_id),
+            Err(Ok(ProofError::ProofNotFound))
+        );
+        assert_eq!(
+            client.try_resolve_dispute(&proof_id),
+            Err(Ok(ProofError::ProofNotFound))
+        );
+        assert_eq!(
+            client.try_reject_dispute(&proof_id),
+            Err(Ok(ProofError::ProofNotFound))
+        );
+    }
+
+    #[test]
+    fn dispute_events_carry_actor_class_and_ledger_metadata() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::xdr::{ContractEventBody, ScAddress, ScVal};
+        use soroban_sdk::{Map, Symbol, TryFromVal, Val};
+
         let (env, client, _pc, _ir, _ir_id) = setup();
-        let mut oversized_batch = soroban_sdk::Vec::new(&env);
-        for i in 0..51 {
-            oversized_batch.push_back(bytes(&env, i as u8));
-        }
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 1);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         let result = client.try_is_valid_proof_batch(&oversized_batch);
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
@@ -5328,10 +6716,24 @@ mod test {
         let (env, client, ..) = setup();
         let issuer = Address::from_str(&env, ISSUER);
 
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert_eq!(client.get_registry_epoch(), 1);
 
-        client.register_proof(&bytes(&env, 3), &bytes(&env, 4), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 3),
+            &bytes(&env, 4),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert_eq!(client.get_registry_epoch(), 2);
     }
 
@@ -5341,7 +6743,14 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert_eq!(client.get_registry_epoch(), 1);
 
         client.revoke_proof(&proof_id);
@@ -5354,7 +6763,14 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         client.admin_revoke_proof(&proof_id);
         assert_eq!(client.get_registry_epoch(), 2);
     }
@@ -5365,8 +6781,14 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         protocol_config.pause(&BytesN::from_array(&env, &[1u8; 32]));
 
-        let result =
-            client.try_register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        let result = client.try_register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert!(result.is_err());
         assert_eq!(client.get_registry_epoch(), 0);
     }
@@ -5377,7 +6799,14 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
 
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         client.revoke_proof(&proof_id);
         let epoch_after_first_revocation = client.get_registry_epoch();
 
@@ -5397,7 +6826,14 @@ mod test {
 
         let issuer = Address::from_str(&env, ISSUER);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+            client.register_proof_with_type_identifier(
+                &bytes(&env, 1),
+                &bytes(&env, 2),
+                &issuer,
+                &1,
+                &2_000,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
         }));
         assert!(result.is_err());
     }
@@ -5406,7 +6842,14 @@ mod test {
     fn registry_epoch_survives_an_upgrade() {
         let (env, client, ..) = setup();
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         let epoch_before = client.get_registry_epoch();
 
         let hash = bytes(&env, 0x88);
@@ -5424,12 +6867,13 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         let proof_id = bytes(&env, 1);
 
-        client.register_proof_with_payload(
+        client.register_proof_with_type_identifier_and_payload(
             &proof_id,
             &bytes(&env, 2),
             &issuer,
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             &soroban_sdk::Bytes::new(&env),
         );
 
@@ -5445,12 +6889,13 @@ mod test {
         protocol_config.set_schema_payload_limit(&1, &8);
 
         let payload_bytes = soroban_sdk::Bytes::from_array(&env, &[0xAB; 8]);
-        client.register_proof_with_payload(
+        client.register_proof_with_type_identifier_and_payload(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &issuer,
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             &payload_bytes,
         );
 
@@ -5468,12 +6913,13 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         protocol_config.set_schema_payload_limit(&1, &8);
 
-        let result = client.try_register_proof_with_payload(
+        let result = client.try_register_proof_with_type_identifier_and_payload(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &issuer,
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             &soroban_sdk::Bytes::from_array(&env, &[0xAB; 9]),
         );
         assert_eq!(result, Err(Ok(ProofError::MalformedInput)));
@@ -5488,12 +6934,13 @@ mod test {
             &env,
             &[0u8; earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT as usize],
         );
-        client.register_proof_with_payload(
+        client.register_proof_with_type_identifier_and_payload(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &issuer,
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             &ok_payload,
         );
         assert!(client.is_valid_proof(&bytes(&env, 1)));
@@ -5502,12 +6949,13 @@ mod test {
             &env,
             &[0u8; (earnproof_shared::DEFAULT_SCHEMA_PAYLOAD_LIMIT + 1) as usize],
         );
-        let result = client.try_register_proof_with_payload(
+        let result = client.try_register_proof_with_type_identifier_and_payload(
             &bytes(&env, 3),
             &bytes(&env, 4),
             &issuer,
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             &over_payload,
         );
         assert_eq!(result, Err(Ok(ProofError::MalformedInput)));
@@ -5520,12 +6968,13 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         protocol_config.deprecate_schema_version(&BytesN::from_array(&env, &[1u8; 32]), &1);
 
-        let result = client.try_register_proof_with_payload(
+        let result = client.try_register_proof_with_type_identifier_and_payload(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &issuer,
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             &soroban_sdk::Bytes::new(&env),
         );
         assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
@@ -5538,12 +6987,13 @@ mod test {
         protocol_config.set_schema_payload_limit(&1, &4);
         let proof_id = bytes(&env, 1);
 
-        let result = client.try_register_proof_with_payload(
+        let result = client.try_register_proof_with_type_identifier_and_payload(
             &proof_id,
             &bytes(&env, 2),
             &issuer,
             &1,
             &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             &soroban_sdk::Bytes::from_array(&env, &[0xAB; 5]),
         );
         assert!(result.is_err());
@@ -5551,6 +7001,58 @@ mod test {
         assert_eq!(client.get_registry_epoch(), 0);
         let payload_result = client.try_get_proof_payload(&proof_id);
         assert_eq!(payload_result, Err(Ok(ProofError::ProofNotFound)));
+    }
+
+    #[test]
+    fn configuration_digest_matches_host_helper_and_version_changes() {
+        let (env, client, _pc, _ir, ir_id) = setup();
+        let admin = client.get_admin();
+        let protocol_config = client.get_protocol_config();
+        let initial = client.get_config_digest();
+        assert_eq!(
+            ProofRegistryContractClient::get_config_digest_version(&client),
+            earnproof_shared::CONFIG_DIGEST_VERSION
+        );
+        assert_eq!(
+            initial,
+            earnproof_shared::proof_registry_digest(&env, &admin, &ir_id, &protocol_config, 1,)
+        );
+
+        let wasm_hash = bytes(&env, 0xd2);
+        client.approve_upgrade(&wasm_hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&wasm_hash);
+        assert_ne!(client.get_config_digest(), initial);
+    }
+
+    #[test]
+    fn ttl_status_tracks_only_caller_named_proof_entries() {
+        let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        let proof_id = bytes(&env, 0xe4);
+        let unknown_id = bytes(&env, 0xe5);
+        let issuer = Address::from_str(&env, ISSUER);
+
+        assert_eq!(
+            client.get_instance_ttl_status().health,
+            earnproof_shared::TtlHealth::Healthy
+        );
+        assert_eq!(
+            client.get_proof_ttl_status(&unknown_id).health,
+            earnproof_shared::TtlHealth::Missing
+        );
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 0xe6),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+        assert_eq!(
+            client.get_proof_ttl_status(&proof_id).health,
+            earnproof_shared::TtlHealth::Healthy
+        );
     }
 
     // ── structured proof validity reasons (issue 147) ──────────────────────────
@@ -5562,7 +7064,14 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         assert_eq!(client.proof_validity(&proof_id), ProofValidity::Valid);
         // The legacy boolean helper agrees for the happy path.
         assert!(client.is_valid_proof(&proof_id));
@@ -5582,7 +7091,14 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         client.revoke_proof(&proof_id);
         assert_eq!(client.proof_validity(&proof_id), ProofValidity::Revoked);
     }
@@ -5592,7 +7108,14 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         env.ledger().with_mut(|li| li.timestamp = 3_000);
         assert_eq!(client.proof_validity(&proof_id), ProofValidity::Expired);
         // Legacy helper also reports the proof as no longer valid.
@@ -5604,7 +7127,14 @@ mod test {
         let (env, client, _pc, issuer_registry, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         // Suspend the issuer registered by setup (issuer_id == bytes 9).
         let reason = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
         issuer_registry.suspend_issuer(&bytes(&env, 0x90), &bytes(&env, 9), &reason);
@@ -5700,7 +7230,14 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         client.revoke_proof(&proof_id);
         env.ledger().with_mut(|li| li.timestamp = 3_000);
         assert_eq!(client.proof_validity(&proof_id), ProofValidity::Revoked);
@@ -5731,7 +7268,14 @@ mod test {
         });
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &5_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &5_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         let record = client.get_proof(&proof_id);
         assert_eq!(record.created_ledger, 4_321);
         assert_eq!(record.created_at, 1_500);
@@ -5743,7 +7287,14 @@ mod test {
         let (env, client, _pc, _ir, _ir_id) = setup();
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
-        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        client.register_proof_with_type_identifier(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
         // register_proof publishes exactly one contract event carrying timing.
         assert_eq!(env.events().all().events().len(), 1);
     }
@@ -5755,7 +7306,14 @@ mod test {
         let issuer = Address::from_str(&env, ISSUER);
         // Expired at registration time: rejected, so no event and no record.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &0);
+            client.register_proof_with_type_identifier(
+                &bytes(&env, 1),
+                &bytes(&env, 2),
+                &issuer,
+                &1,
+                &0,
+                &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            );
         }));
         assert!(result.is_err());
         assert_eq!(env.events().all().events().len(), 0);

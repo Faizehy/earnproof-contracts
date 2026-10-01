@@ -110,17 +110,19 @@ fn per_record_namespaces_hold_one_entry_per_record() {
         15
     );
 
+    // Proof records, TTL trackers, per-issuer accounting, schema rate usage,
+    // dispute/archive state, upgrade approvals, and payload metadata all use
+    // independent persistent keys.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
         16
     );
 
-    // Two schema versions, one scoped pause, one schema payload limit, and
-    // the bounded change-history ring entries plus allowed WASM, upgrade
-    // history, and upgrade approval metadata entries exercised below.
+    // Schema history, proof-type approvals, predecessor links, payload
+    // limits, and bounded governance history each use independent keys.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        13
+        17
     );
 }
 

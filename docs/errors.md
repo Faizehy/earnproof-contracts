@@ -27,7 +27,7 @@ Backend mapping guidance, including how to handle a code this document does not 
 
 The protocol-config range is allocated but empty: that contract returns common errors only. The range stays reserved so a future protocol-config error cannot collide with anything.
 
-**Status** distinguishes a code that some contract path actually returns from one that is declared and reserved but produced by nothing in this release. Six codes are currently reserved, and the distinction matters in practice: see the ambiguity note below before writing a client that waits for one of them.
+**Status** distinguishes a code that some contract path actually returns from one that is declared and reserved but produced by nothing in this release. Seven codes are currently reserved, and the distinction matters in practice: see the ambiguity note below before writing a client that waits for one of them.
 
 **Retry** answers whether repeating the call can ever succeed:
 
@@ -87,6 +87,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 42 | `InvalidState` | `ContractError` | common | reserved | never | 400 |
 | 60 | `InvalidInput` | `ContractError` | common | returned | after-caller-change | 400 |
 | 62 | `IncompatibleInterfaceVersion` | `ContractError` | common | returned | after-caller-change | 400 |
+| 64 | `BatchTooLarge` | `ContractError` | common | returned | after-caller-change | 400 |
 | 80 | `ProtocolPaused` | `ContractError` | common | reserved | after-operator-action | 503 |
 | 200 | `IssuerAlreadyRegistered` | `IssuerError` | issuer-registry | returned | never | 409 |
 | 201 | `IssuerNotFound` | `IssuerError` | issuer-registry | returned | after-caller-change | 404 |
@@ -99,11 +100,12 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 209 | `MaxBelowActiveUsage` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 210 | `ReactivationCooldownActive` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 211 | `InvalidMetadataCommitment` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 212 | `BatchTooLarge` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 300 | `ProofAlreadyRegistered` | `ProofError` | proof-registry | returned | never | 409 |
 | 301 | `ProofNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 302 | `ProofAlreadyRevoked` | `ProofError` | proof-registry | returned | never | 400 |
 | 303 | `ProofExpired` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
-| 304 | `InvalidSchemaVersion` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 304 | `InvalidSchemaVersion` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 | 305 | `SchemaVersionNotApproved` | `ProofError` | proof-registry | reserved | after-operator-action | 400 |
 | 307 | `ContractPaused` | `ProofError` | proof-registry | returned | after-operator-action | 503 |
 | 308 | `IssuerInactive` | `ProofError` | proof-registry | returned | after-operator-action | 403 |
@@ -114,6 +116,8 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 313 | `DisputeAlreadyOpen` | `ProofError` | proof-registry | returned | never | 409 |
 | 314 | `DisputeNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 315 | `DisputeNotOpen` | `ProofError` | proof-registry | returned | never | 400 |
+| 316 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 317 | `InvalidProofContext` | `ProofError` | proof-registry | reserved | after-caller-change | 400 |
 
 ## Details
 
@@ -204,6 +208,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Bind a dependency whose interface version is compatible: same major and at least the minor and patch the consumer requires. Read the accepted version from the consumer before retrying.
 - Suggested HTTP status: 400
 - Client message: "Incompatible dependency version"
+
+### 64 - `BatchTooLarge`
+
+- Enum: `ContractError`
+- Domain: common
+- Status: returned
+- Retry: after-caller-change
+- Cause: get_schema_statuses was given more schema versions than the bounded batch limit.
+- Remediation: Split the request into batches of at most MAX_SCHEMA_STATUS_BATCH entries.
+- Suggested HTTP status: 400
+- Client message: "Request batch is too large"
 
 ### 80 - `ProtocolPaused`
 
@@ -337,6 +352,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Invalid identity digest"
 
+### 212 - `BatchTooLarge`
+
+- Enum: `IssuerError`
+- Domain: issuer-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: get_issuer_statuses was given more issuer identifiers than the bounded batch limit.
+- Remediation: Split the request into batches of at most MAX_ISSUER_STATUS_BATCH entries.
+- Suggested HTTP status: 400
+- Client message: "Request batch is too large"
+
 ### 300 - `ProofAlreadyRegistered`
 
 - Enum: `ProofError`
@@ -386,9 +412,9 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Enum: `ProofError`
 - Domain: proof-registry
 - Status: returned
-- Retry: after-operator-action
-- Cause: register_proof was given schema version zero, or a precondition that the registry currently reports through this same code failed: the protocol is paused, or the issuer address is not active.
-- Remediation: Check three things in order: that the schema version is non-zero, that is_paused is false, and that is_active_address is true for the issuer. This code is overloaded in the current release; see the ambiguity note in docs/errors.md.
+- Retry: after-caller-change
+- Cause: register_proof was given schema version zero.
+- Remediation: Use a nonzero schema version. Check protocol pause, issuer activity, schema approval, and proof-type approval separately when registration is rejected.
 - Suggested HTTP status: 400
 - Client message: "Invalid schema version"
 
@@ -501,5 +527,27 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Read the dispute's current status; it is terminal once withdrawn, resolved, or rejected.
 - Suggested HTTP status: 400
 - Client message: "Dispute is not open"
+
+### 316 - `UnsupportedProofType`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-operator-action
+- Cause: The proof type identifier is not supported by the protocol config.
+- Remediation: Call is_proof_type_approved on the protocol config contract to verify the proof type is approved. An operator must approve the proof type before it can be used for proof registration.
+- Suggested HTTP status: 400
+- Client message: "Proof type not supported"
+
+### 317 - `InvalidProofContext`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: reserved
+- Retry: after-caller-change
+- Cause: The network passphrase or native/issued asset identifier is not canonical, or the passphrase does not match the ledger network.
+- Remediation: Use the exact active Stellar network passphrase and either Native or a case-sensitive ASCII alphanumeric asset code with a valid account issuer.
+- Suggested HTTP status: 400
+- Client message: "Invalid proof network or asset context"
 
 <!-- END GENERATED -->

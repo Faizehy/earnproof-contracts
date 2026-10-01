@@ -357,8 +357,8 @@
   ],
 
   "ttl_constants": {
-    "TTL_THRESHOLD_LEDGERS": 50_000,
-    "TTL_EXTEND_TO_LEDGERS": 500_000,
+    "TTL_THRESHOLD_LEDGERS": 50000,
+    "TTL_EXTEND_TO_LEDGERS": 500000,
     "source": "earnproof-shared/src/lib.rs"
   },
 

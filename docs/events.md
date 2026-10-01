@@ -40,6 +40,13 @@ Each is asserted in [`tests/events/`](../tests/events/); the mapping is in
 | `unpaused` | `unpause` | `paused` (always `false`) |
 | `schema_approved` | `approve_schema_version` | `version` |
 | `schema_deprecated` | `deprecate_schema_version` | `version` |
+| `schema_predecessor_set` | `approve_schema_with_predecessor` | `version`, `predecessor` |
+
+`approve_schema_with_predecessor` approves a schema version and records the
+prior version it succeeds. It publishes `schema_predecessor_set` with the
+lineage link and `schema_approved` for the approval itself. A predecessor-less
+(root) approval publishes only `schema_approved`, exactly as
+`approve_schema_version` does.
 
 ### `issuer-registry`
 
@@ -75,13 +82,16 @@ documented `0` sentinel.
 
 | Topic | Emitted by | Payload |
 |---|---|---|
-| `proof_registered` | `register_proof` | `proof_id_hash`, `issuer_address`, `schema_version`, `created_ledger`, `created_at`, `expires_at` |
+| `proof_registered` | `register_proof` | `proof_id_hash`, `issuer_address`, `schema_version`, `created_ledger`, `created_at`, `expires_at`, `epoch` |
+| `proof_revoked` | `revoke_proof`, `admin_revoke_proof` | `proof_id_hash`, `revoked_at`, `revoked_ledger`, `by_admin`, `epoch` |
 
-`proof_registered` carries the on-chain creation timing (`created_ledger` and
-`created_at`), both sourced only from the host ledger environment, so an indexer
-can record deterministic audit timestamps without a follow-up `get_proof`.
-Revocation (`revoke_proof`, `admin_revoke_proof`) remains silent; proof state is
-read with `get_proof`, `is_valid_proof`, `proof_validity`, and `is_revoked`.
+`proof_registered` carries the on-chain creation timing, sourced from the
+ledger, and the registry epoch after the mutation. `proof_revoked` carries both
+revocation timing values and the epoch after revocation. The timing lets
+verifiers understand when a proof became invalid without a follow-up query;
+`by_admin` distinguishes an administrator revocation from an issuer revocation.
+For a legacy record without a recorded revocation sequence,
+`revoked_ledger` is `0` and `revoked_at` remains authoritative.
 
 ### Silent entry points
 
@@ -91,7 +101,6 @@ Not every mutation emits. These do not, and the omission is deliberate:
 |---|---|---|
 | `issuer-registry` | `initialize` | Only `protocol-config` announces initialization. An indexer keying deployment off an event should watch that contract. |
 | `proof-registry` | `initialize` | As above. |
-| `proof-registry` | `revoke_proof`, `admin_revoke_proof` | Revocation stores state without announcing it; read it with `is_revoked` / `proof_validity`. |
 
 ## Topic naming
 

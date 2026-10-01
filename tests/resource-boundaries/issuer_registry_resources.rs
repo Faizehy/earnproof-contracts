@@ -124,21 +124,21 @@ mod issuer_registry_resource_tests {
 
         // Suspend
         env.budget().reset_default();
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]));
         let cpu_suspend = env.budget().cpu_instruction_count();
         println!("[resource] suspend_issuer(): cpu={}", cpu_suspend);
         assert!(!client.is_active_issuer(&issuer_id));
 
         // Reactivate
         env.budget().reset_default();
-        client.reactivate_issuer(&issuer_id);
+        client.reactivate_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]));
         let cpu_reactivate = env.budget().cpu_instruction_count();
         println!("[resource] reactivate_issuer(): cpu={}", cpu_reactivate);
         assert!(client.is_active_issuer(&issuer_id));
 
         // Revoke
         env.budget().reset_default();
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]));
         let cpu_revoke = env.budget().cpu_instruction_count();
         println!("[resource] revoke_issuer(): cpu={}", cpu_revoke);
         assert!(!client.is_active_issuer(&issuer_id));
@@ -366,12 +366,12 @@ mod issuer_registry_resource_tests {
 
         // Operation 9: suspend_issuer
         env.budget().reset_default();
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]));
         println!("  - suspend_issuer(): cpu={}", env.budget().cpu_instruction_count());
 
         // Operation 10: reactivate_issuer
         env.budget().reset_default();
-        client.reactivate_issuer(&issuer_id);
+        client.reactivate_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]));
         println!("  - reactivate_issuer(): cpu={}", env.budget().cpu_instruction_count());
 
         // Operation 11: rotate_issuer_address
@@ -382,7 +382,7 @@ mod issuer_registry_resource_tests {
 
         // Operation 12: revoke_issuer
         env.budget().reset_default();
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]));
         println!("  - revoke_issuer(): cpu={}", env.budget().cpu_instruction_count());
 
         println!("[resource-baseline] issuer-registry: complete\n");

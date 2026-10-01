@@ -94,6 +94,8 @@ fuzz_target!(|data: &[u8]| {
         metadata_uri_hash,
         metadata_revision: (created_at as u32).wrapping_add(1),
         metadata_hash: metadata_hash.clone(),
+        metadata_uri_hash,
+        metadata_revision: (created_at as u32).wrapping_add(1),
         provenance_commitment: metadata_hash,
         status,
         created_at,

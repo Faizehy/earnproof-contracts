@@ -56,8 +56,13 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
         encoded_keys_in(env, &deployment.config_id, StorageClass::Persistent),
         sorted(std::vec![
             encoded(env, schema_version_key(env, 1)),
+            encoded(env, proof_type_approved_key(env, &bytes32(env, 1))),
+            encoded(env, schema_version_key(env, 2)),
+            encoded(env, schema_predecessor_key(env, 2)),
             encoded(env, schema_version_index_key(env, 0)),
             encoded(env, config_history_ring_key(env, 0)),
+            encoded(env, config_history_ring_key(env, 1)),
+            encoded(env, config_history_ring_key(env, 2)),
         ]),
         "protocol-config persistent keys"
     );
@@ -98,8 +103,8 @@ fn reconstructed_keys_match_the_keys_the_contracts_write() {
             encoded(env, issuer_registry_key(env)),
             encoded(env, protocol_config_key(env)),
             encoded(env, genesis_key()),
-            encoded(env, registry_epoch_key(env)),
             encoded(env, instance_live_until_key(env)),
+            encoded(env, registry_epoch_key(env)),
         ]),
         "proof-registry instance keys"
     );

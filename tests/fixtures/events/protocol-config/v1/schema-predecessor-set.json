@@ -1,0 +1,22 @@
+{
+  "event": "SchemaPredecessorSet",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["SchemaPredecessorSet"],
+  "payload": {
+    "version": {
+      "type": "U32",
+      "description": "Schema version whose lineage link is being recorded.",
+      "example": 3
+    },
+    "predecessor": {
+      "type": "U32",
+      "description": "Prior schema version that the approved version intentionally succeeds.",
+      "example": 1
+    }
+  },
+  "emitted_by": "approve_schema_with_predecessor",
+  "description": "Emitted when an approved schema version records the prior version it intentionally succeeds, so off-chain consumers can verify schema lineage.",
+  "compatibility": "additive"
+}

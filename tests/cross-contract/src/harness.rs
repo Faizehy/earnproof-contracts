@@ -210,6 +210,7 @@ impl Deployment<'_> {
         let config = ProtocolConfigContractClient::new(&env, &config_id);
         config.initialize(&admin);
         config.approve_schema_version(&APPROVED_SCHEMA);
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
         let issuers_id = env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -294,12 +295,13 @@ impl Deployment<'_> {
     /// Attempts a registration expected to succeed, and returns its proof id.
     pub fn register(&self, discriminator: u8) -> BytesN<32> {
         let proof_id = hash(&self.env, discriminator);
-        self.proofs.register_proof(
+        self.proofs.register_proof_with_type_identifier(
             &proof_id,
             &commitment(&self.env, discriminator),
             &self.issuer,
             &APPROVED_SCHEMA,
             &self.expiry(),
+            &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
         );
         proof_id
     }
@@ -325,12 +327,13 @@ impl Deployment<'_> {
         let before = self.footprint(proof_id);
 
         let rejection = outcome_of(|| {
-            self.proofs.try_register_proof(
+            self.proofs.try_register_proof_with_type_identifier(
                 proof_id,
                 &commitment(&self.env, 0xC0),
                 issuer,
                 &schema_version,
                 &expires_at,
+                &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
             )
         });
 

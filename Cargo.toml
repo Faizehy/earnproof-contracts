@@ -16,6 +16,7 @@ members = [
   "tests/ttl",
   "tests/storage-keys",
   "tests/error-catalog",
+  "tests/compatibility",
   "tests/ledger-snapshots",
   "tests/address-validation",
   "fuzz"
