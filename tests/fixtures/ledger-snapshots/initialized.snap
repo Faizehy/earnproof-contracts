@@ -1,7 +1,7 @@
 # scenario: initialized
 # revision: 12
-# reason: Reconciled upstream registry, schema lineage, payload limit, and proof timing state
-# body-digest: 4cda8f5b06c3b21a7a14357b582e0d13ce0813787a2d07ed5e4944a28c187195
+# reason: Add the stable issuer index count to the initialized and active ledger states
+# body-digest: 780b3dea1e435962ed06317e47660fe25975089ca466441d4c931fd2c9d47701
 
 [ledger]
 sequence = 1000
@@ -14,6 +14,7 @@ issuer-registry instance [sym:ContractVersion] = u32:1
 issuer-registry instance [sym:Genesis] = {sym:genesis_id: bytes:1bb3d1dc4dc8313672e6dc56c6b7051f74fd611eb1b8d59faa5d787789e4e115, sym:initialized_at_ledger: u32:1000}
 issuer-registry instance [sym:InstanceLiveUntil] = u32:501000
 issuer-registry instance [sym:IssuerEpoch] = u64:0
+issuer-registry instance [sym:IssuerIndexCount] = u32:0
 issuer-registry instance [sym:MaxActiveIssuers] = u32:4294967295
 issuer-registry instance [sym:ReactivationCooldown] = u64:0
 proof-registry instance [sym:Admin] = addr:admin
@@ -25,18 +26,16 @@ proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 proof-registry instance [sym:RegistryEpoch] = u32:0
 protocol-config instance [sym:Admin] = addr:admin
 protocol-config instance [sym:ConfigHistoryTotal] = u32:1
-protocol-config instance [sym:ConfigVersion] = u32:3
+protocol-config instance [sym:ConfigVersion] = u32:2
 protocol-config instance [sym:ContractVersion] = u32:1
 protocol-config instance [sym:Genesis] = {sym:genesis_id: bytes:fc884b881dd72470b277e7f17051834343fce924e5328f844966e438d3a07cd3, sym:initialized_at_ledger: u32:1000}
 protocol-config instance [sym:Paused] = false
 protocol-config persistent [sym:ConfigHistoryRing, u32:0] = {sym:category: [sym:SchemaApproval], sym:config_version: u32:2, sym:ledger: u32:1000, sym:proposal_commitment: bytes:8f88362ee8034de8dfd2d681d099066cada58b40ee0bbbc2321309d0b4f4d43f, sym:timestamp: u64:1000}
-protocol-config persistent [sym:ProofTypeApproved, bytes:0101010101010101010101010101010101010101010101010101010101010101] = true
 protocol-config persistent [sym:SchemaVersion, u32:1] = true
 
 [events]
 protocol-config topics=[sym:initialized] data={sym:admin: addr:admin}
 protocol-config topics=[sym:schema_approved] data={sym:version: u32:1}
-protocol-config topics=[sym:proof_type_approved_event] data={sym:proof_type: bytes:0101010101010101010101010101010101010101010101010101010101010101}
 
 [verdicts]
 protocol-config.is_paused = false

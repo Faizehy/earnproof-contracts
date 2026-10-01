@@ -53,16 +53,15 @@ impl Deployment {
     }
 
     /// Registers the fixture proof and returns its identifier.
-    pub fn register_proof(&self, expires_at: u64, predecessor: Option<BytesN<32>>) -> BytesN<32> {
+    pub fn register_proof(&self, expires_at: u64) -> BytesN<32> {
         let proof_id = bytes(&self.env, PROOF_ID);
-        self.proofs.register_proof(
+        self.proofs.register_proof_with_type_identifier(
             &proof_id,
             &bytes(&self.env, COMMITMENT),
             &self.issuer,
             &SCHEMA_VERSION,
             &expires_at,
-            &predecessor,
-            &soroban_sdk::BytesN::from_array(&self.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
         );
         proof_id
     }
@@ -136,7 +135,7 @@ pub fn deployment() -> Deployment {
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&SCHEMA_VERSION);
-    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+    config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);

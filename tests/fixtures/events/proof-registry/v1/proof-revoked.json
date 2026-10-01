@@ -22,7 +22,7 @@
     },
     "by_admin": {
       "type": "bool",
-      "description": "True when the registry admin revoked the proof, false when the issuing party did.",
+      "description": "True when the admin revoked the proof via admin_revoke_proof; false when the issuer revoked it via revoke_proof.",
       "example": false
     },
     "epoch": {
@@ -32,6 +32,6 @@
     }
   },
   "emitted_by": "revoke_proof, admin_revoke_proof",
-  "description": "Emitted once when a proof is revoked, with the effective revocation timing and registry epoch.",
+  "description": "Published once a revocation commits, whether initiated by the issuer or the admin. A repeated revocation attempt fails before this point and publishes nothing.",
   "compatibility": "additive"
 }

@@ -41,7 +41,8 @@ mod tests {
         let admin = admin_addr(env);
         protocol_config_client.initialize(&admin);
         protocol_config_client.approve_schema_version(&1);
-        protocol_config_client.approve_proof_type(&soroban_sdk::BytesN::from_array(env, &[1; 32]));
+        protocol_config_client
+            .approve_proof_type(&soroban_sdk::BytesN::from_array(env, &[1u8; 32]));
 
         let issuer_registry_id = env.register(IssuerRegistryContract, ());
         let issuer_registry_client = IssuerRegistryContractClient::new(env, &issuer_registry_id);
@@ -116,14 +117,13 @@ mod tests {
         let proof_id = bytes(&env, 1);
         let commitment = bytes(&env, 2);
         let expires_at = 2_000;
-        client.register_proof(
+        client.register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &issuer,
             &1,
             &expires_at,
-            &None,
-            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
 
         let current_ledger = TtlTestHarness::current_ledger(&env);
@@ -147,14 +147,13 @@ mod tests {
         let proof_id = bytes(&env, 5);
         let commitment = bytes(&env, 6);
         let expires_at = 2_000;
-        client.register_proof(
+        client.register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &issuer,
             &1,
             &expires_at,
-            &None,
-            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
 
         let current_ledger = TtlTestHarness::current_ledger(&env);
@@ -183,14 +182,13 @@ mod tests {
         let proof_id = bytes(&env, 7);
         let commitment = bytes(&env, 8);
         let expires_at = 5_000;
-        client.register_proof(
+        client.register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &issuer,
             &1,
             &expires_at,
-            &None,
-            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
 
         assert!(client.is_valid_proof(&proof_id));
@@ -212,14 +210,13 @@ mod tests {
         let proof_id = bytes(&env, 15);
         let commitment = bytes(&env, 16);
         let expires_at = 5_000;
-        client.register_proof(
+        client.register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &issuer,
             &1,
             &expires_at,
-            &None,
-            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
 
         assert!(client.is_valid_proof(&proof_id));

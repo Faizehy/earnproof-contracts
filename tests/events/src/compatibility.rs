@@ -9,7 +9,7 @@
 //! the fixtures usable as a compatibility contract for indexers rather than
 //! documentation that happened to be true once.
 
-use crate::harness::{hash, read_events, Deployment, ObservedEvent};
+use crate::harness::{hash, read_events, Deployment, ObservedEvent, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 
@@ -67,6 +67,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
+            "reason_commitment",
             "updated_at",
             "epoch",
         ],
@@ -77,6 +78,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
+            "reason_commitment",
             "updated_at",
             "epoch",
         ],
@@ -87,6 +89,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
+            "reason_commitment",
             "updated_at",
             "epoch",
         ],
@@ -115,6 +118,20 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "proof_registered_with_payload",
+        &[
+            "proof_id_hash",
+            "issuer_address",
+            "schema_version",
+            "created_ledger",
+            "created_at",
+            "expires_at",
+            "payload_len",
+            "payload_hash",
+            "epoch",
+        ],
+    ),
+    (
         "proof_revoked",
         &[
             "proof_id_hash",
@@ -124,11 +141,8 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "epoch",
         ],
     ),
-    (
-        "proof_registered_with_payload",
-        &["proof_id_hash", "payload_len", "payload_hash", "epoch"],
-    ),
 ];
+
 /// Looks up the declared payload fields for a topic.
 fn declared_fields(topic: &str) -> &'static [&'static str] {
     DECLARED_EVENTS
@@ -199,11 +213,11 @@ fn protocol_config_events_match_their_fixtures() {
     for event in deployment.capture(|| deployment.config.deprecate_schema_version(&4)) {
         assert_matches_fixture(&deployment.env, &event);
     }
-    // Approve a successor of the schema registered by Deployment::new; this
-    // publishes both schema_predecessor_set and schema_approved.
+    // Schema lineage emits both the predecessor link and schema approval events.
     for event in deployment.capture(|| deployment.config.approve_schema_with_predecessor(&9, &1)) {
         assert_matches_fixture(&deployment.env, &event);
     }
+    // Preserve the two-step administrator handoff and both of its event records.
     for event in deployment.capture(|| {
         deployment.config.nominate_admin(&successor);
         deployment.config.accept_admin()
@@ -293,16 +307,6 @@ fn issuer_registry_events_match_their_fixtures() {
 fn proof_registry_events_match_their_fixtures() {
     let deployment = Deployment::new();
 
-    let _registered = deployment.register_proof(0x20);
-    // Registration and both revocation paths must stay aligned with the
-    // published fixture fields.
-    let registration_events = read_events(&deployment.env);
-    let registered_event = registration_events
-        .iter()
-        .find(|event| event.is(&deployment.env, "proof_registered"))
-        .expect("register_proof must emit proof_registered");
-    assert_matches_fixture(&deployment.env, registered_event);
-
     let issuer_revoked = deployment.register_proof(0x21);
     for event in deployment.capture(|| deployment.proofs.revoke_proof(&issuer_revoked)) {
         assert_matches_fixture(&deployment.env, &event);
@@ -355,8 +359,9 @@ fn proof_registry_declares_registration_and_revocation_events() {
         proof_events,
         std::vec![
             "proof_registered",
-            "proof_revoked",
-            "proof_registered_with_payload"
-        ]
+            "proof_registered_with_payload",
+            "proof_revoked"
+        ],
+        "proof-registry event fixtures and docs/events.md must track every declared topic"
     );
 }

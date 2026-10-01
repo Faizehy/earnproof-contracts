@@ -59,12 +59,7 @@ fn apply(deployment: &Deployment, update: Update) {
         Update::Pause => deployment.config.pause(),
         Update::Unpause => deployment.config.unpause(),
         Update::DeprecateSchema => deployment.config.deprecate_schema_version(&APPROVED_SCHEMA),
-        Update::ApproveSchema => {
-            deployment.config.approve_schema_version(&APPROVED_SCHEMA);
-            deployment
-                .config
-                .approve_proof_type(&soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]));
-        }
+        Update::ApproveSchema => deployment.config.approve_schema_version(&APPROVED_SCHEMA),
         Update::SuspendIssuer => deployment
             .issuers
             .suspend_issuer(&deployment.issuer_id, &reason),
@@ -92,14 +87,13 @@ fn permits_registration(update: Update) -> bool {
 /// Attempts a registration and reports whether it was accepted.
 fn attempt(deployment: &Deployment, discriminator: u8) -> bool {
     let rejection = outcome_of(|| {
-        deployment.proofs.try_register_proof(
+        deployment.proofs.try_register_proof_with_type_identifier(
             &hash(&deployment.env, discriminator),
             &commitment(&deployment.env, discriminator),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &deployment.expiry(),
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
     });
     rejection == Rejection::Accepted

@@ -49,7 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 54] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 59] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "ActiveIssuerCount",
@@ -108,6 +108,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 54] = [
     },
     StorageNamespace {
         contract: "issuer-registry",
+        namespace: "GovernanceAssignment",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "GovernanceRoleAssignment",
+        owner: "governance operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
         namespace: "InstanceLiveUntil",
         arity: 0,
         class: StorageClass::Instance,
@@ -128,6 +136,22 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 54] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "u64",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "IssuerIndex",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "BytesN<32>",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "IssuerIndexCount",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
         owner: "registry operator",
     },
     StorageNamespace {
@@ -464,6 +488,22 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 54] = [
         arity: 1,
         class: StorageClass::Persistent,
         value: "bool",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SchemaVersionIndex",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SchemaVersionIndexCount",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
         owner: "protocol operator",
     },
     StorageNamespace {

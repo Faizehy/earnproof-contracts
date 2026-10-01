@@ -12,28 +12,43 @@
     },
     "issuer_address": {
       "type": "Address",
-      "description": "Issuer address authorized for the registered proof.",
+      "description": "Public address of the issuer that registered the proof.",
       "example": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
     },
     "schema_version": {
       "type": "u32",
-      "description": "Approved schema version associated with this proof.",
+      "description": "Approved schema version used by this proof.",
       "example": 1
     },
     "created_ledger": {
       "type": "u32",
       "description": "Ledger sequence at which the proof was registered.",
-      "example": 4241
+      "example": 4242
     },
     "created_at": {
       "type": "u64",
       "description": "Ledger timestamp at which the proof was registered.",
-      "example": 1400
+      "example": 1500
     },
     "expires_at": {
       "type": "u64",
       "description": "Ledger timestamp at which the proof expires.",
-      "example": 101400
+      "example": 50000
+    },
+    "disclosure_policy_hash": {
+      "type": "BytesN<32>",
+      "description": "SHA-256 commitment to the canonical selective-disclosure policy; all-zero denotes a legacy registration without a policy commitment.",
+      "example": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "proof_type": {
+      "type": "u32",
+      "description": "Numeric schema proof type selected at registration.",
+      "example": 0
+    },
+    "commitment_algorithm": {
+      "type": "u32",
+      "description": "Numeric commitment algorithm selected at registration.",
+      "example": 0
     },
     "epoch": {
       "type": "u32",
@@ -42,6 +57,6 @@
     }
   },
   "emitted_by": "register_proof",
-  "description": "Published once a proof registration commits with its issuer, schema, creation and expiry timing, and registry epoch. The commitment is omitted and must be read back with get_proof.",
+  "description": "Published once a proof registration commits, carrying the public record fields, disclosure policy commitment, numeric policy identifiers, creation timing, and registry epoch but not the proof commitment or policy bytes.",
   "compatibility": "additive"
 }

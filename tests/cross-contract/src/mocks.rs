@@ -6,6 +6,7 @@
 //! ```text
 //! protocol-config: is_paused() -> bool
 //!                  is_schema_version_approved(u32) -> bool
+//!                  is_proof_type_approved(BytesN<32>) -> bool
 //! issuer-registry: is_active_address(Address) -> bool
 //! ```
 //!
@@ -113,12 +114,12 @@ impl RejectsSchemaRead {
         Err(MockError::DependencyRejected)
     }
 
-    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> Result<bool, MockError> {
-        Ok(true)
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
     }
 }
 
-/// Rejects boundary 3, after both `protocol-config` reads have succeeded.
+/// Rejects the issuer-registry read after the protocol-config reads succeed.
 #[contract]
 pub struct RejectsIssuerRead;
 
@@ -233,6 +234,10 @@ impl ConfigWithoutSchemaRead {
 
     pub fn is_scope_paused(_env: Env, _scope: PauseScope) -> bool {
         false
+    }
+
+    pub fn is_proof_type_approved(_env: Env, _proof_type: BytesN<32>) -> bool {
+        true
     }
 }
 

@@ -22,7 +22,7 @@
 
 use crate::harness::{authorize, hash, issuer_id_hash, Deployment, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, BytesN, IntoVal, Val};
+use soroban_sdk::{Address, IntoVal, Val};
 
 /// The identity attempting the call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -569,21 +569,19 @@ fn matrix() -> std::vec::Vec<Case> {
                     &d.issuer,
                     &APPROVED_SCHEMA,
                     &expires_at,
-                    &None::<BytesN<32>>,
-                    &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                 )
                     .into_val(&d.env);
                 match identity {
                     Identity::Missing => d
                         .proofs
-                        .try_register_proof(
+                        .try_register_proof_with_type_identifier(
                             &proof_id,
                             &commitment,
                             &d.issuer,
                             &APPROVED_SCHEMA,
                             &expires_at,
-                            &None,
-                            &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
+                            &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                         )
                         .is_ok(),
                     // The realistic "wrong" signer is a *different active
@@ -594,32 +592,36 @@ fn matrix() -> std::vec::Vec<Case> {
                             &d.env,
                             &d.second_issuer,
                             &d.proofs_address,
-                            "register_proof",
+                            "register_proof_with_type_identifier",
                             args.clone(),
                         );
                         d.proofs
-                            .try_register_proof(
+                            .try_register_proof_with_type_identifier(
                                 &proof_id,
                                 &commitment,
                                 &d.issuer,
                                 &APPROVED_SCHEMA,
                                 &expires_at,
-                                &None,
-                                &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
+                                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                             )
                             .is_ok()
                     }
                     Identity::Authorized => {
-                        authorize(&d.env, &d.issuer, &d.proofs_address, "register_proof", args);
+                        authorize(
+                            &d.env,
+                            &d.issuer,
+                            &d.proofs_address,
+                            "register_proof_with_type_identifier",
+                            args,
+                        );
                         d.proofs
-                            .try_register_proof(
+                            .try_register_proof_with_type_identifier(
                                 &proof_id,
                                 &commitment,
                                 &d.issuer,
                                 &APPROVED_SCHEMA,
                                 &expires_at,
-                                &None,
-                                &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
+                                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                             )
                             .is_ok()
                     }
@@ -691,6 +693,11 @@ fn matrix() -> std::vec::Vec<Case> {
         },
     ]
 }
+    /// A fresh, unrelated address that holds no authority anywhere. Generated
+    /// on demand so every negative attempt uses a distinct identity.
+    pub fn attacker(&self) -> Address {
+        Address::generate(&self.env)
+    }
 
 /// Guards against a mutating entry point being added without a documented
 /// authorization expectation. Bump only together with

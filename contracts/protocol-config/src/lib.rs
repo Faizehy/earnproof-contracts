@@ -1,15 +1,18 @@
 #![no_std]
 
 use earnproof_shared::{
-    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
-    MigrationStatus, PauseScope, SchemaRateLimit, SchemaStatusResult, SchemaVersionState,
-    CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT, DEFAULT_SCHEMA_RATE_LIMIT,
-    DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_STATUS_BATCH, MIGRATION_STATUS_VERSION,
-    PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
+    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
+    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
+    MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
+    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
+    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
+    SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Vec,
+    contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
+    Vec,
 };
 
 #[contract]
@@ -23,12 +26,11 @@ enum DataKey {
     ScopedPause(PauseScope),
     ConfigVersion,
     SchemaVersion(u32),
+    SchemaPredecessor(u32),
+    SchemaPolicy(u32),
+    CommitmentAlgorithm(u32),
     ProofTypeApproved(BytesN<32>),
     PendingAdmin,
-    /// Optional lineage link: maps an approved schema version to the prior
-    /// version it intentionally succeeds. Absent for root (predecessor-less) and
-    /// legacy schemas.
-    SchemaPredecessor(u32),
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
     AllowedWasm(BytesN<32>),
@@ -41,12 +43,13 @@ enum DataKey {
     Genesis,
     /// Governed per-schema-version auxiliary payload size bound (bytes).
     SchemaPayloadLimit(u32),
-    /// Governed registration-rate policy for a schema version.
-    SchemaRateLimit(u32),
     /// Ring-buffer slot holding one bounded change-history summary.
     ConfigHistoryRing(u32),
     /// Monotonic count of change-history entries ever appended.
     ConfigHistoryTotal,
+    CriticalActionPolicy,
+    CriticalActionProposal(BytesN<32>),
+    CriticalActionNonce,
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -101,6 +104,12 @@ pub struct SchemaDeprecated {
 }
 
 #[contractevent]
+pub struct SchemaPredecessorSet {
+    pub version: u32,
+    pub predecessor: u32,
+}
+
+#[contractevent]
 pub struct ProofTypeApprovedEvent {
     pub proof_type: BytesN<32>,
 }
@@ -108,6 +117,19 @@ pub struct ProofTypeApprovedEvent {
 #[contractevent]
 pub struct ProofTypeDeprecatedEvent {
     pub proof_type: BytesN<32>,
+}
+
+#[contractevent]
+pub struct SchemaPolicySet {
+    pub version: u32,
+    pub proof_type_count: u32,
+    pub max_validity_seconds: u64,
+}
+
+#[contractevent]
+pub struct CommitmentAlgorithmPolicySet {
+    pub algorithm: u32,
+    pub supported: bool,
 }
 
 #[contractevent]
@@ -129,20 +151,42 @@ pub struct ContractDecommissioned {
     pub activated_by: Address,
 }
 
-/// Emitted when an approved schema version records the prior version it
-/// intentionally succeeds, so off-chain consumers can verify schema lineage.
-#[contractevent]
-pub struct SchemaPredecessorSet {
-    pub version: u32,
-    pub predecessor: u32,
-}
-
 /// Emitted when the admin sets or updates the maximum auxiliary payload size
 /// accepted for a schema version.
 #[contractevent]
 pub struct SchemaPayloadLimitSet {
     pub version: u32,
     pub max_size: u32,
+}
+
+#[contractevent]
+pub struct CriticalActionProposed {
+    pub proposal_id: BytesN<32>,
+    pub proposer: Address,
+}
+
+#[contractevent]
+pub struct CriticalActionApproved {
+    pub proposal_id: BytesN<32>,
+    pub signer: Address,
+}
+
+#[contractevent]
+pub struct CriticalActionCancelled {
+    pub proposal_id: BytesN<32>,
+    pub cancelled_by: Address,
+}
+
+#[contractevent]
+pub struct CriticalActionExecuted {
+    pub proposal_id: BytesN<32>,
+}
+
+#[contractevent]
+pub struct CriticalActionPolicySet {
+    pub enabled: bool,
+    pub threshold: u32,
+    pub signer_count: u32,
 }
 
 // ── upgrade events ───────────────────────────────────────────────────────────
@@ -235,40 +279,6 @@ impl ProtocolConfigContract {
         PROTOCOL_CONFIG_INTERFACE_VERSION
     }
 
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env)?;
-        let admin = Self::get_admin(env.clone())?;
-        Self::require_valid_principal(&new_admin)?;
-        Self::require_auth(&admin);
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-        AdminChanged { new_admin }.publish(&env);
-        Ok(())
-    }
-
-    pub fn keepalive_instance(env: Env) -> bool {
-        if !env.storage().instance().has(&DataKey::Admin) {
-            return false;
-        }
-        Self::extend_instance_ttl(env);
-        true
-    }
-
-    pub fn keepalive_schema_version(env: Env, version: u32) -> bool {
-        if version == 0 {
-            return false;
-        }
-        let key = DataKey::SchemaVersion(version);
-        if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                TTL_THRESHOLD_LEDGERS,
-                TTL_EXTEND_TO_LEDGERS,
-            );
-            true
-        } else {
-            false
-        }
-    }
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
@@ -294,9 +304,10 @@ impl ProtocolConfigContract {
             .get(&DataKey::PendingAdmin)
             .ok_or(ContractError::NotFound)?;
         Self::require_auth(&pending_admin);
-        let new_admin = pending_admin.clone();
 
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
 
         Self::bump_config_version(env.clone());
@@ -305,7 +316,15 @@ impl ProtocolConfigContract {
             ConfigChangeCategory::AdminRotation,
             Self::commit(&env, pending_admin.clone()),
         );
-        AdminTransferAccepted { new_admin }.publish(&env);
+        AdminChanged {
+            new_admin: pending_admin.clone(),
+        }
+        .publish(&env);
+
+        AdminTransferAccepted {
+            new_admin: pending_admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -448,232 +467,29 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
-    pub fn approve_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env)?;
-        let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
-        Self::ensure_nonzero_version(version)?;
-        env.storage()
-            .persistent()
-            .set(&DataKey::SchemaVersion(version), &true);
-        Self::extend_schema_ttl(env.clone(), version);
-        Self::bump_config_version(env.clone());
-        Self::append_config_history(
-            env.clone(),
-            ConfigChangeCategory::SchemaApproval,
-            Self::commit(&env, version),
-        );
-        SchemaApproved { version }.publish(&env);
-        Ok(())
+    pub fn keepalive_instance(env: Env) -> bool {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return false;
+        }
+        Self::extend_instance_ttl(env);
+        true
     }
 
-    /// Approves `version` and records `predecessor` as the prior schema version
-    /// it intentionally succeeds.
-    ///
-    /// A `predecessor` of `0` means the version is a lineage root — this is
-    /// equivalent to [`Self::approve_schema_version`] and records no link.
-    ///
-    /// # Validation (all before any state mutation)
-    /// - `version` must be non-zero.
-    /// - `predecessor` must not equal `version` (no self-predecessor).
-    /// - A non-zero `predecessor` must already be a known schema version
-    ///   (approved or deprecated); an unknown predecessor is rejected before
-    ///   anything is written.
-    /// - The predecessor chain must not reach back to `version` (no cycle) and
-    ///   must be no deeper than [`MAX_SCHEMA_LINEAGE_DEPTH`].
-    ///
-    /// # Immutability
-    /// A version's predecessor is fixed at activation. Re-approving a version
-    /// with the same predecessor is idempotent; supplying a different predecessor
-    /// after the version already exists is rejected with
-    /// [`ContractError::InvalidState`].
-    pub fn approve_schema_with_predecessor(
-        env: Env,
-        version: u32,
-        predecessor: u32,
-    ) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env)?;
-        let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
-        Self::ensure_nonzero_version(version)?;
-
-        if predecessor == version {
-            return Err(ContractError::InvalidInput);
-        }
-
-        // Predecessor immutability: if this version already carries a lineage
-        // link, it may not be changed once set.
-        let existing_predecessor = Self::stored_predecessor(env.clone(), version);
-        if let Some(existing) = existing_predecessor {
-            if existing != predecessor {
-                return Err(ContractError::InvalidState);
-            }
-        } else if predecessor != 0 && Self::schema_version_exists(env.clone(), version) {
-            // The version was already activated as a root; giving it a
-            // predecessor afterwards would rewrite its lineage.
-            return Err(ContractError::InvalidState);
-        }
-
-        if predecessor != 0 {
-            // Unknown predecessors fail before any state mutation.
-            if !Self::schema_version_exists(env.clone(), predecessor) {
-                return Err(ContractError::InvalidState);
-            }
-            // Reject cycles within the bounded lineage depth.
-            if Self::lineage_reaches(env.clone(), predecessor, version) {
-                return Err(ContractError::InvalidState);
-            }
-        }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::SchemaVersion(version), &true);
-        Self::extend_schema_ttl(env.clone(), version);
-
-        if predecessor != 0 {
-            env.storage()
-                .persistent()
-                .set(&DataKey::SchemaPredecessor(version), &predecessor);
-            env.storage().persistent().extend_ttl(
-                &DataKey::SchemaPredecessor(version),
-                TTL_THRESHOLD_LEDGERS,
-                TTL_EXTEND_TO_LEDGERS,
-            );
-            SchemaPredecessorSet {
-                version,
-                predecessor,
-            }
-            .publish(&env);
-        }
-
-        Self::bump_config_version(env.clone());
-        Self::append_config_history(
-            env.clone(),
-            ConfigChangeCategory::SchemaApproval,
-            Self::commit(&env, version),
-        );
-        SchemaApproved { version }.publish(&env);
-        Ok(())
-    }
-
-    /// Returns the recorded predecessor of `version`, or `None` for a root or
-    /// legacy schema that has no lineage link. This is a pure read and extends
-    /// no TTL.
-    pub fn get_schema_predecessor(env: Env, version: u32) -> Option<u32> {
-        Self::stored_predecessor(env, version)
-    }
-
-    /// Returns the lineage of `version` from the version itself back toward its
-    /// root, `[version, predecessor, predecessor_of_predecessor, ...]`.
-    ///
-    /// A root or legacy schema yields a single-element chain. The walk is capped
-    /// at [`MAX_SCHEMA_LINEAGE_DEPTH`] links, so it always terminates even if
-    /// storage were ever inconsistent. This is a pure read and extends no TTL.
-    pub fn get_schema_lineage(env: Env, version: u32) -> soroban_sdk::Vec<u32> {
-        let mut chain = soroban_sdk::Vec::new(&env);
-        if version == 0 {
-            return chain;
-        }
-        chain.push_back(version);
-        let mut current = version;
-        let mut depth = 0;
-        while depth < MAX_SCHEMA_LINEAGE_DEPTH {
-            match Self::stored_predecessor(env.clone(), current) {
-                Some(predecessor) => {
-                    chain.push_back(predecessor);
-                    current = predecessor;
-                    depth += 1;
-                }
-                None => break,
-            }
-        }
-        chain
-    }
-
-    pub fn deprecate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env)?;
-        let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
-        Self::ensure_nonzero_version(version)?;
-        env.storage()
-            .persistent()
-            .set(&DataKey::SchemaVersion(version), &false);
-        Self::extend_schema_ttl(env.clone(), version);
-        Self::bump_config_version(env.clone());
-        Self::append_config_history(
-            env.clone(),
-            ConfigChangeCategory::SchemaDeprecation,
-            Self::commit(&env, version),
-        );
-        SchemaDeprecated { version }.publish(&env);
-        Ok(())
-    }
-
-    /// Returns the lifecycle state of each supplied schema version, in the same
-    /// order as the request.
-    ///
-    /// This lets a client that evaluates several proof types check schema
-    /// approval and deprecation in one call instead of one query per version.
-    ///
-    /// # Bounding
-    /// The batch is rejected with [`ContractError::BatchTooLarge`] when it
-    /// carries more than [`MAX_SCHEMA_STATUS_BATCH`] versions. The check runs
-    /// before any storage read, so an oversized request cannot force unbounded
-    /// host work. An empty batch is valid and yields an empty response.
-    ///
-    /// # Duplicates and unknown versions
-    /// Input order is preserved and each occurrence produces its own entry, so a
-    /// repeated version appears once per occurrence. A version that was never
-    /// approved — including version `0` — is reported as
-    /// [`SchemaVersionState::Unknown`]; one that was approved and later withdrawn
-    /// is [`SchemaVersionState::Deprecated`], distinct from `Unknown`.
-    ///
-    /// # No side effects
-    /// This is a pure read: unlike [`Self::is_schema_version_approved`] it does
-    /// not extend any schema TTL, and it never bumps the config version, so a
-    /// caller can query freely without mutating schema TTL or governance state.
-    pub fn get_schema_statuses(
-        env: Env,
-        versions: Vec<u32>,
-    ) -> Result<Vec<SchemaStatusResult>, ContractError> {
-        if versions.len() > MAX_SCHEMA_STATUS_BATCH {
-            return Err(ContractError::BatchTooLarge);
-        }
-
-        let mut results = Vec::new(&env);
-        for version in versions.iter() {
-            let state = if version == 0 {
-                SchemaVersionState::Unknown
-            } else {
-                let key = DataKey::SchemaVersion(version);
-                // Read without extending the TTL: a status query must not touch
-                // schema lifetime or governance state.
-                match env.storage().persistent().get::<DataKey, bool>(&key) {
-                    Some(true) => SchemaVersionState::Approved,
-                    Some(false) => SchemaVersionState::Deprecated,
-                    None => SchemaVersionState::Unknown,
-                }
-            };
-            results.push_back(SchemaStatusResult { version, state });
-        }
-        Ok(results)
-    }
-
-    pub fn is_schema_version_approved(env: Env, version: u32) -> bool {
+    pub fn keepalive_schema_version(env: Env, version: u32) -> bool {
         if version == 0 {
             return false;
         }
-
         let key = DataKey::SchemaVersion(version);
-        let approved = env.storage().persistent().get(&key).unwrap_or(false);
         if env.storage().persistent().has(&key) {
             env.storage().persistent().extend_ttl(
                 &key,
                 TTL_THRESHOLD_LEDGERS,
                 TTL_EXTEND_TO_LEDGERS,
             );
+            true
+        } else {
+            false
         }
-        approved
     }
 
     pub fn keepalive_proof_type(env: Env, proof_type: BytesN<32>) -> bool {
@@ -694,10 +510,11 @@ impl ProtocolConfigContract {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        let key = DataKey::ProofTypeApproved(proof_type.clone());
+        env.storage().persistent().set(&key, &true);
         env.storage()
             .persistent()
-            .set(&DataKey::ProofTypeApproved(proof_type.clone()), &true);
-        Self::extend_proof_type_ttl(env.clone(), proof_type.clone());
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
         Self::bump_config_version(env.clone());
         ProofTypeApprovedEvent { proof_type }.publish(&env);
         Ok(())
@@ -707,10 +524,11 @@ impl ProtocolConfigContract {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        let key = DataKey::ProofTypeApproved(proof_type.clone());
+        env.storage().persistent().set(&key, &false);
         env.storage()
             .persistent()
-            .set(&DataKey::ProofTypeApproved(proof_type.clone()), &false);
-        Self::extend_proof_type_ttl(env.clone(), proof_type.clone());
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
         Self::bump_config_version(env.clone());
         ProofTypeDeprecatedEvent { proof_type }.publish(&env);
         Ok(())
@@ -729,49 +547,126 @@ impl ProtocolConfigContract {
         approved
     }
 
-    /// Sets a bounded ledger-window registration limit for a schema. A zero
-    /// maximum intentionally pauses new registrations; a zero window is invalid.
-    pub fn set_schema_rate_limit(
+    pub fn approve_schema_with_predecessor(
         env: Env,
         version: u32,
-        limit: SchemaRateLimit,
+        predecessor: u32,
     ) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
         Self::ensure_nonzero_version(version)?;
-        if limit.window_ledgers == 0 {
+        if predecessor == version {
             return Err(ContractError::InvalidInput);
         }
+
+        let existing = Self::stored_predecessor(env.clone(), version);
+        if existing.is_some_and(|stored| stored != predecessor)
+            || (existing.is_none() && predecessor != 0 && Self::schema_version_exists(env.clone(), version))
+        {
+            return Err(ContractError::InvalidState);
+        }
+        if predecessor != 0
+            && (!Self::schema_version_exists(env.clone(), predecessor)
+                || Self::lineage_reaches(env.clone(), predecessor, version))
+        {
+            return Err(ContractError::InvalidState);
+        }
+
         env.storage()
             .persistent()
-            .set(&DataKey::SchemaRateLimit(version), &limit);
-        env.storage().persistent().extend_ttl(
-            &DataKey::SchemaRateLimit(version),
-            TTL_THRESHOLD_LEDGERS,
-            TTL_EXTEND_TO_LEDGERS,
-        );
-        Self::bump_config_version(env);
+            .set(&DataKey::SchemaVersion(version), &true);
+        Self::extend_schema_ttl(env.clone(), version);
+        if predecessor != 0 {
+            let key = DataKey::SchemaPredecessor(version);
+            env.storage().persistent().set(&key, &predecessor);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            SchemaPredecessorSet {
+                version,
+                predecessor,
+            }
+            .publish(&env);
+        }
+        Self::bump_config_version(env.clone());
+        SchemaApproved { version }.publish(&env);
         Ok(())
     }
 
-    /// Returns the configured schema rate policy or the unbounded compatibility default.
-    pub fn get_schema_rate_limit(env: Env, version: u32) -> SchemaRateLimit {
+    pub fn get_schema_predecessor(env: Env, version: u32) -> Option<u32> {
+        Self::stored_predecessor(env, version)
+    }
+
+    pub fn get_schema_lineage(env: Env, version: u32) -> Vec<u32> {
+        let mut chain = Vec::new(&env);
         if version == 0 {
-            return SchemaRateLimit {
-                max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
-                window_ledgers: DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
-            };
+            return chain;
         }
-        let key = DataKey::SchemaRateLimit(version);
-        let value = env
-            .storage()
+        chain.push_back(version);
+        let mut current = version;
+        let mut depth = 0;
+        while depth < MAX_SCHEMA_LINEAGE_DEPTH {
+            match Self::stored_predecessor(env.clone(), current) {
+                Some(predecessor) => {
+                    chain.push_back(predecessor);
+                    current = predecessor;
+                    depth += 1;
+                }
+                None => break,
+            }
+        }
+        chain
+    }
+
+    pub fn approve_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
+        Self::ensure_nonzero_version(version)?;
+        env.storage()
             .persistent()
-            .get(&key)
-            .unwrap_or(SchemaRateLimit {
-                max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
-                window_ledgers: DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
-            });
+            .set(&DataKey::SchemaVersion(version), &true);
+        Self::extend_schema_ttl(env.clone(), version);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaApproval,
+            Self::commit(&env, version),
+        );
+        SchemaApproved { version }.publish(&env);
+        Ok(())
+    }
+
+    pub fn deprecate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
+        Self::ensure_nonzero_version(version)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion(version), &false);
+        Self::extend_schema_ttl(env.clone(), version);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaDeprecation,
+            Self::commit(&env, version),
+        );
+        SchemaDeprecated { version }.publish(&env);
+        Ok(())
+    }
+
+    pub fn is_schema_version_approved(env: Env, version: u32) -> bool {
+        if version == 0 {
+            return false;
+        }
+
+        let key = DataKey::SchemaVersion(version);
+        let approved = env.storage().persistent().get(&key).unwrap_or(false);
         if env.storage().persistent().has(&key) {
             env.storage().persistent().extend_ttl(
                 &key,
@@ -779,7 +674,116 @@ impl ProtocolConfigContract {
                 TTL_EXTEND_TO_LEDGERS,
             );
         }
-        value
+        approved
+    }
+
+    pub fn set_schema_policy(
+        env: Env,
+        version: u32,
+        proof_types: Vec<u32>,
+        max_validity_seconds: u64,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
+            || proof_types.is_empty()
+            || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
+            || max_validity_seconds == 0
+            || max_validity_seconds > MAX_SCHEMA_VALIDITY_SECONDS
+        {
+            return Err(ContractError::InvalidInput);
+        }
+        for index in 0..proof_types.len() {
+            let value = proof_types.get(index).ok_or(ContractError::InvalidInput)?;
+            for prior in 0..index {
+                if proof_types.get(prior) == Some(value) {
+                    return Err(ContractError::InvalidInput);
+                }
+            }
+        }
+
+        let policy = SchemaPolicy {
+            proof_types: proof_types.clone(),
+            max_validity_seconds,
+        };
+        let key = DataKey::SchemaPolicy(version);
+        env.storage().persistent().set(&key, &policy);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaPolicy,
+            Self::commit(&env, (version, policy)),
+        );
+        SchemaPolicySet {
+            version,
+            proof_type_count: proof_types.len(),
+            max_validity_seconds,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_schema_policy(env: Env, version: u32) -> SchemaPolicy {
+        if version == 0 {
+            return Self::legacy_schema_policy(&env);
+        }
+        let key = DataKey::SchemaPolicy(version);
+        let policy = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Self::legacy_schema_policy(&env));
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        policy
+    }
+
+    pub fn set_commitment_algorithm(
+        env: Env,
+        algorithm: u32,
+        supported: bool,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if algorithm != LEGACY_COMMITMENT_ALGORITHM && algorithm != SHA256_COMMITMENT_ALGORITHM_V1 {
+            return Err(ContractError::InvalidInput);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::CommitmentAlgorithm(algorithm), &supported);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::CommitmentAlgorithmPolicy,
+            Self::commit(&env, (algorithm, supported)),
+        );
+        CommitmentAlgorithmPolicySet {
+            algorithm,
+            supported,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn is_algorithm_supported(env: Env, algorithm: u32) -> bool {
+        if algorithm != LEGACY_COMMITMENT_ALGORITHM && algorithm != SHA256_COMMITMENT_ALGORITHM_V1 {
+            return false;
+        }
+        env.storage()
+            .instance()
+            .get(&DataKey::CommitmentAlgorithm(algorithm))
+            .unwrap_or(true)
     }
 
     pub fn get_config_version(env: Env) -> u32 {
@@ -803,6 +807,7 @@ impl ProtocolConfigContract {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
         Self::ensure_nonzero_version(version)?;
         env.storage()
             .persistent()
@@ -815,6 +820,212 @@ impl ProtocolConfigContract {
             Self::commit(&env, (version, max_size)),
         );
         SchemaPayloadLimitSet { version, max_size }.publish(&env);
+        Ok(())
+    }
+
+    pub fn get_critical_action_policy(env: Env) -> CriticalActionPolicy {
+        Self::critical_action_policy(&env)
+    }
+
+    /// Bootstrap or replace the critical-action policy. Once threshold
+    /// approvals are enabled, policy changes must themselves be approved.
+    pub fn set_critical_action_policy(
+        env: Env,
+        policy: CriticalActionPolicy,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if Self::critical_action_policy(&env).enabled {
+            return Err(ContractError::ThresholdApprovalRequired);
+        }
+        Self::validate_critical_action_policy(&policy)?;
+        Self::store_critical_action_policy(env, policy)
+    }
+
+    pub fn propose_critical_action(
+        env: Env,
+        action: CriticalAction,
+    ) -> Result<BytesN<32>, ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let policy = Self::critical_action_policy(&env);
+        if !policy.enabled {
+            return Err(ContractError::InvalidState);
+        }
+        if !matches!(
+            &action,
+            CriticalAction::SchemaApproval(_)
+                | CriticalAction::SchemaDeprecation(_)
+                | CriticalAction::SchemaPayloadLimit(_, _)
+                | CriticalAction::ApprovalPolicyUpdate(_)
+        ) {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let nonce = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::CriticalActionNonce)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::InvalidState)?;
+        let proposal_id = Self::critical_action_commitment(&env, &action, nonce);
+        let created_at = env.ledger().sequence();
+        let expires_at = created_at
+            .checked_add(CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS)
+            .ok_or(ContractError::InvalidInput)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::CriticalActionNonce, &nonce);
+        let proposal = CriticalActionProposal {
+            category: action.category(),
+            action,
+            policy,
+            proposer: admin.clone(),
+            approvals: Vec::new(&env),
+            created_at,
+            expires_at,
+        };
+        let key = DataKey::CriticalActionProposal(proposal_id.clone());
+        env.storage().persistent().set(&key, &proposal);
+        env.storage().persistent().extend_ttl(
+            &key,
+            TTL_THRESHOLD_LEDGERS,
+            CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+        );
+        Self::extend_instance_ttl(env.clone());
+        CriticalActionProposed {
+            proposal_id: proposal_id.clone(),
+            proposer: admin,
+        }
+        .publish(&env);
+        Ok(proposal_id)
+    }
+
+    pub fn get_critical_action_proposal(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<CriticalActionProposal> {
+        let key = DataKey::CriticalActionProposal(proposal_id);
+        let proposal = env.storage().persistent().get(&key);
+        if proposal.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+            );
+        }
+        proposal
+    }
+
+    pub fn approve_critical_action(
+        env: Env,
+        proposal_id: BytesN<32>,
+        signer: Address,
+    ) -> Result<(), ContractError> {
+        let mut proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
+            .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::ensure_proposal_live(&env, &proposal)?;
+        Self::require_auth(&signer);
+        if !proposal.policy.signers.contains(&signer) {
+            return Err(ContractError::Unauthorized);
+        }
+        if proposal.approvals.contains(&signer) {
+            return Err(ContractError::AlreadyExists);
+        }
+        proposal.approvals.push_back(signer.clone());
+        env.storage().persistent().set(
+            &DataKey::CriticalActionProposal(proposal_id.clone()),
+            &proposal,
+        );
+        CriticalActionApproved {
+            proposal_id,
+            signer,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_critical_action(env: Env, proposal_id: BytesN<32>) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let key = DataKey::CriticalActionProposal(proposal_id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(ContractError::ApprovalProposalNotFound);
+        }
+        env.storage().persistent().remove(&key);
+        CriticalActionCancelled {
+            proposal_id,
+            cancelled_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn execute_critical_action(env: Env, proposal_id: BytesN<32>) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
+            .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::ensure_proposal_live(&env, &proposal)?;
+        if proposal.approvals.len() < proposal.policy.threshold {
+            return Err(ContractError::InsufficientApprovals);
+        }
+        let commitment = Self::commit(&env, proposal.action.clone());
+        match proposal.action.clone() {
+            CriticalAction::SchemaApproval(version) => {
+                Self::ensure_nonzero_version(version)?;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::SchemaVersion(version), &true);
+                Self::extend_schema_ttl(env.clone(), version);
+                Self::record_critical_action_change(
+                    env.clone(),
+                    ConfigChangeCategory::SchemaApproval,
+                    commitment,
+                );
+                SchemaApproved { version }.publish(&env);
+            }
+            CriticalAction::SchemaDeprecation(version) => {
+                Self::ensure_nonzero_version(version)?;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::SchemaVersion(version), &false);
+                Self::extend_schema_ttl(env.clone(), version);
+                Self::record_critical_action_change(
+                    env.clone(),
+                    ConfigChangeCategory::SchemaDeprecation,
+                    commitment,
+                );
+                SchemaDeprecated { version }.publish(&env);
+            }
+            CriticalAction::SchemaPayloadLimit(version, max_size) => {
+                Self::ensure_nonzero_version(version)?;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::SchemaPayloadLimit(version), &max_size);
+                Self::extend_schema_payload_limit_ttl(env.clone(), version);
+                Self::record_critical_action_change(
+                    env.clone(),
+                    ConfigChangeCategory::SchemaPayloadLimit,
+                    commitment,
+                );
+                SchemaPayloadLimitSet { version, max_size }.publish(&env);
+            }
+            CriticalAction::ApprovalPolicyUpdate(policy) => {
+                Self::validate_critical_action_policy(&policy)?;
+                Self::store_critical_action_policy_with_commitment(env.clone(), policy, commitment);
+            }
+            CriticalAction::IssuerRegistryReplacement(_)
+            | CriticalAction::ProtocolConfigReplacement(_) => {
+                return Err(ContractError::InvalidInput);
+            }
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CriticalActionProposal(proposal_id.clone()));
+        CriticalActionExecuted { proposal_id }.publish(&env);
         Ok(())
     }
 
@@ -1025,50 +1236,6 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
-    /// Reads a version's recorded predecessor without touching any TTL. Returns
-    /// `None` for a root or legacy schema.
-    fn stored_predecessor(env: Env, version: u32) -> Option<u32> {
-        if version == 0 {
-            return None;
-        }
-        env.storage()
-            .persistent()
-            .get::<DataKey, u32>(&DataKey::SchemaPredecessor(version))
-    }
-
-    /// True when a schema version has a stored record, whether currently
-    /// approved or deprecated. A deprecated version keeps its key, so it stays a
-    /// valid predecessor.
-    fn schema_version_exists(env: Env, version: u32) -> bool {
-        version != 0
-            && env
-                .storage()
-                .persistent()
-                .has(&DataKey::SchemaVersion(version))
-    }
-
-    /// Walks the lineage starting at `from` and reports whether it reaches
-    /// `target` within [`MAX_SCHEMA_LINEAGE_DEPTH`] links. Used to reject a
-    /// predecessor whose own ancestry loops back to the version being approved,
-    /// and to bound how deep a lineage may grow.
-    fn lineage_reaches(env: Env, from: u32, target: u32) -> bool {
-        let mut current = from;
-        let mut depth = 0;
-        while current != 0 {
-            if current == target {
-                return true;
-            }
-            if depth >= MAX_SCHEMA_LINEAGE_DEPTH {
-                // Treat an over-deep chain as reaching the target so the new
-                // link is rejected rather than extending an unbounded lineage.
-                return true;
-            }
-            current = Self::stored_predecessor(env.clone(), current).unwrap_or(0);
-            depth += 1;
-        }
-        false
-    }
-
     fn require_valid_principal(address: &Address) -> Result<(), ContractError> {
         if !earnproof_shared::is_valid_principal_address(address) {
             return Err(ContractError::InvalidInput);
@@ -1096,14 +1263,6 @@ impl ProtocolConfigContract {
     fn extend_schema_ttl(env: Env, version: u32) {
         env.storage().persistent().extend_ttl(
             &DataKey::SchemaVersion(version),
-            TTL_THRESHOLD_LEDGERS,
-            TTL_EXTEND_TO_LEDGERS,
-        );
-    }
-
-    fn extend_proof_type_ttl(env: Env, proof_type: BytesN<32>) {
-        env.storage().persistent().extend_ttl(
-            &DataKey::ProofTypeApproved(proof_type),
             TTL_THRESHOLD_LEDGERS,
             TTL_EXTEND_TO_LEDGERS,
         );
@@ -1237,6 +1396,150 @@ impl ProtocolConfigContract {
     fn require_auth(address: &Address) {
         address.require_auth();
     }
+
+    fn stored_predecessor(env: Env, version: u32) -> Option<u32> {
+        let key = DataKey::SchemaPredecessor(version);
+        let predecessor = env.storage().persistent().get(&key);
+        if predecessor.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        }
+        predecessor
+    }
+
+    fn schema_version_exists(env: Env, version: u32) -> bool {
+        version != 0 && env.storage().persistent().has(&DataKey::SchemaVersion(version))
+    }
+
+    fn lineage_reaches(env: Env, start: u32, target: u32) -> bool {
+        let mut current = start;
+        for _ in 0..MAX_SCHEMA_LINEAGE_DEPTH {
+            if current == target {
+                return true;
+            }
+            match Self::stored_predecessor(env.clone(), current) {
+                Some(predecessor) => current = predecessor,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    fn legacy_schema_policy(env: &Env) -> SchemaPolicy {
+        SchemaPolicy {
+            proof_types: soroban_sdk::vec![env, LEGACY_PROOF_TYPE],
+            max_validity_seconds: MAX_SCHEMA_VALIDITY_SECONDS,
+        }
+    }
+
+    fn critical_action_policy(env: &Env) -> CriticalActionPolicy {
+        env.storage()
+            .instance()
+            .get(&DataKey::CriticalActionPolicy)
+            .unwrap_or(CriticalActionPolicy {
+                enabled: false,
+                threshold: 0,
+                signers: Vec::new(env),
+            })
+    }
+
+    fn ensure_critical_action_policy_disabled(env: &Env) -> Result<(), ContractError> {
+        if Self::critical_action_policy(env).enabled {
+            Err(ContractError::ThresholdApprovalRequired)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_critical_action_policy(policy: &CriticalActionPolicy) -> Result<(), ContractError> {
+        if !policy.enabled {
+            return if policy.threshold == 0 && policy.signers.is_empty() {
+                Ok(())
+            } else {
+                Err(ContractError::InvalidApprovalPolicy)
+            };
+        }
+        if policy.signers.is_empty()
+            || policy.signers.len() > MAX_CRITICAL_ACTION_SIGNERS
+            || policy.threshold == 0
+            || policy.threshold > policy.signers.len()
+        {
+            return Err(ContractError::InvalidApprovalPolicy);
+        }
+        for (index, signer) in policy.signers.iter().enumerate() {
+            if !earnproof_shared::is_valid_principal_address(&signer) {
+                return Err(ContractError::InvalidApprovalPolicy);
+            }
+            for earlier in 0..index {
+                if policy.signers.get(earlier as u32).unwrap() == signer {
+                    return Err(ContractError::InvalidApprovalPolicy);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn store_critical_action_policy(
+        env: Env,
+        policy: CriticalActionPolicy,
+    ) -> Result<(), ContractError> {
+        let commitment = Self::commit(&env, policy.clone());
+        Self::store_critical_action_policy_with_commitment(env, policy, commitment);
+        Ok(())
+    }
+
+    fn store_critical_action_policy_with_commitment(
+        env: Env,
+        policy: CriticalActionPolicy,
+        commitment: BytesN<32>,
+    ) {
+        env.storage()
+            .instance()
+            .set(&DataKey::CriticalActionPolicy, &policy);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::ApprovalPolicyUpdate,
+            commitment,
+        );
+        CriticalActionPolicySet {
+            enabled: policy.enabled,
+            threshold: policy.threshold,
+            signer_count: policy.signers.len(),
+        }
+        .publish(&env);
+    }
+
+    fn ensure_proposal_live(
+        env: &Env,
+        proposal: &CriticalActionProposal,
+    ) -> Result<(), ContractError> {
+        if env.ledger().sequence() >= proposal.expires_at {
+            return Err(ContractError::ApprovalProposalExpired);
+        }
+        Ok(())
+    }
+
+    fn critical_action_commitment(env: &Env, action: &CriticalAction, nonce: u32) -> BytesN<32> {
+        let commitment = (
+            Symbol::new(env, "critical_action_v1"),
+            env.current_contract_address(),
+            action.category(),
+            action.clone(),
+            nonce,
+        );
+        env.crypto().sha256(&commitment.to_xdr(env)).to_bytes()
+    }
+
+    fn record_critical_action_change(
+        env: Env,
+        category: ConfigChangeCategory,
+        commitment: BytesN<32>,
+    ) {
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(env, category, commitment);
+    }
 }
 
 #[cfg(test)]
@@ -1245,12 +1548,12 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
-        ConfigChangeCategory, ContractError, SchemaStatusResult, SchemaVersionState,
-        MAX_SCHEMA_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
+        ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
+        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
-        testutils::{storage::Persistent as _, Ledger as _},
-        vec, Address, BytesN, Env, Vec,
+        testutils::{storage::Persistent as _, Address as _, Ledger as _},
+        Address, BytesN, Env, Vec,
     };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
@@ -1339,261 +1642,6 @@ mod test {
                     > TTL_THRESHOLD_LEDGERS
             );
         });
-    }
-
-    // ── bounded batch schema status query tests ───────────────────────────────
-
-    #[test]
-    fn batch_schema_status_reports_states_in_request_order() {
-        let (env, client, _admin) = setup();
-        client.approve_schema_version(&1);
-        client.approve_schema_version(&2);
-        client.deprecate_schema_version(&2);
-        // Version 3 is never approved; version 0 is always unknown.
-
-        let request = vec![&env, 3u32, 2u32, 1u32, 0u32];
-        let results = client.get_schema_statuses(&request);
-
-        let expected = vec![
-            &env,
-            SchemaStatusResult {
-                version: 3,
-                state: SchemaVersionState::Unknown,
-            },
-            SchemaStatusResult {
-                version: 2,
-                state: SchemaVersionState::Deprecated,
-            },
-            SchemaStatusResult {
-                version: 1,
-                state: SchemaVersionState::Approved,
-            },
-            SchemaStatusResult {
-                version: 0,
-                state: SchemaVersionState::Unknown,
-            },
-        ];
-        assert_eq!(results, expected);
-    }
-
-    #[test]
-    fn batch_schema_status_preserves_duplicate_versions() {
-        let (env, client, _admin) = setup();
-        client.approve_schema_version(&5);
-
-        let request = vec![&env, 5u32, 5u32, 5u32];
-        let results = client.get_schema_statuses(&request);
-
-        assert_eq!(results.len(), 3);
-        for entry in results.iter() {
-            assert_eq!(entry.version, 5);
-            assert_eq!(entry.state, SchemaVersionState::Approved);
-        }
-    }
-
-    #[test]
-    fn batch_schema_status_empty_request_returns_empty_response() {
-        let (env, client, _admin) = setup();
-        let request: Vec<u32> = Vec::new(&env);
-        let results = client.get_schema_statuses(&request);
-        assert_eq!(results.len(), 0);
-    }
-
-    #[test]
-    fn batch_schema_status_at_maximum_is_accepted() {
-        let (env, client, _admin) = setup();
-        let mut request: Vec<u32> = Vec::new(&env);
-        for version in 1..=MAX_SCHEMA_STATUS_BATCH {
-            request.push_back(version);
-        }
-        let results = client.get_schema_statuses(&request);
-        assert_eq!(results.len(), MAX_SCHEMA_STATUS_BATCH);
-        for entry in results.iter() {
-            assert_eq!(entry.state, SchemaVersionState::Unknown);
-        }
-    }
-
-    #[test]
-    fn batch_schema_status_over_maximum_is_rejected_before_reads() {
-        let (env, client, _admin) = setup();
-        let mut request: Vec<u32> = Vec::new(&env);
-        for version in 1..=(MAX_SCHEMA_STATUS_BATCH + 1) {
-            request.push_back(version);
-        }
-        let result = client.try_get_schema_statuses(&request);
-        assert_eq!(result, Err(Ok(ContractError::BatchTooLarge)));
-    }
-
-    #[test]
-    fn batch_schema_status_does_not_mutate_ttl_or_governance() {
-        let (env, client, _admin) = setup();
-        client.approve_schema_version(&1);
-
-        // Advance the ledger until the schema entry's remaining TTL drops below
-        // the extension threshold, so that any accidental extension would be
-        // observable as the TTL jumping back up.
-        env.ledger().set_sequence_number(460_000);
-
-        let ttl_before = env.as_contract(&client.address, || {
-            env.storage()
-                .persistent()
-                .get_ttl(&DataKey::SchemaVersion(1))
-        });
-        assert!(ttl_before < TTL_THRESHOLD_LEDGERS);
-        let config_version_before = client.get_config_version();
-
-        let request = vec![&env, 1u32];
-        let results = client.get_schema_statuses(&request);
-        assert_eq!(results.get(0).unwrap().state, SchemaVersionState::Approved);
-
-        let ttl_after = env.as_contract(&client.address, || {
-            env.storage()
-                .persistent()
-                .get_ttl(&DataKey::SchemaVersion(1))
-        });
-        // The query neither extended the schema TTL nor bumped governance state.
-        assert_eq!(ttl_after, ttl_before);
-        assert_eq!(client.get_config_version(), config_version_before);
-    }
-
-    // ── schema lineage and predecessor tests ──────────────────────────────────
-
-    #[test]
-    fn root_approval_records_no_predecessor() {
-        let (env, client, _admin) = setup();
-        client.approve_schema_with_predecessor(&1, &0);
-
-        assert!(client.is_schema_version_approved(&1));
-        assert_eq!(client.get_schema_predecessor(&1), None);
-        assert_eq!(client.get_schema_lineage(&1), vec![&env, 1u32]);
-    }
-
-    #[test]
-    fn successor_records_link_and_lineage_chain() {
-        let (env, client, _admin) = setup();
-        client.approve_schema_version(&1);
-        client.approve_schema_with_predecessor(&2, &1);
-        client.approve_schema_with_predecessor(&3, &2);
-
-        assert_eq!(client.get_schema_predecessor(&2), Some(1));
-        assert_eq!(client.get_schema_predecessor(&3), Some(2));
-        assert_eq!(client.get_schema_lineage(&3), vec![&env, 3u32, 2u32, 1u32]);
-        assert_eq!(client.get_schema_lineage(&2), vec![&env, 2u32, 1u32]);
-    }
-
-    #[test]
-    fn legacy_schema_is_queryable_without_a_predecessor() {
-        let (env, client, _admin) = setup();
-        // Approved through the predecessor-unaware entry point.
-        client.approve_schema_version(&5);
-
-        assert_eq!(client.get_schema_predecessor(&5), None);
-        assert_eq!(client.get_schema_lineage(&5), vec![&env, 5u32]);
-    }
-
-    #[test]
-    fn unknown_predecessor_is_rejected_before_state_mutation() {
-        let (_env, client, _admin) = setup();
-        let result = client.try_approve_schema_with_predecessor(&2, &99);
-        assert_eq!(result, Err(Ok(ContractError::InvalidState)));
-        // No mutation: the version was not approved and records no lineage.
-        assert!(!client.is_schema_version_approved(&2));
-        assert_eq!(client.get_schema_predecessor(&2), None);
-    }
-
-    #[test]
-    fn self_predecessor_is_rejected() {
-        let (_env, client, _admin) = setup();
-        let result = client.try_approve_schema_with_predecessor(&4, &4);
-        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
-        assert!(!client.is_schema_version_approved(&4));
-    }
-
-    #[test]
-    fn predecessor_is_immutable_after_activation() {
-        let (_env, client, _admin) = setup();
-        client.approve_schema_version(&1);
-        client.approve_schema_version(&2);
-        client.approve_schema_with_predecessor(&3, &1);
-
-        // Re-approving with the same predecessor is idempotent.
-        client.approve_schema_with_predecessor(&3, &1);
-        assert_eq!(client.get_schema_predecessor(&3), Some(1));
-
-        // Changing the predecessor after activation is rejected.
-        let changed = client.try_approve_schema_with_predecessor(&3, &2);
-        assert_eq!(changed, Err(Ok(ContractError::InvalidState)));
-        assert_eq!(client.get_schema_predecessor(&3), Some(1));
-    }
-
-    #[test]
-    fn a_root_cannot_gain_a_predecessor_after_activation() {
-        let (_env, client, _admin) = setup();
-        client.approve_schema_version(&1);
-        client.approve_schema_version(&2);
-
-        // Version 2 was activated as a root; it cannot be given a predecessor.
-        let result = client.try_approve_schema_with_predecessor(&2, &1);
-        assert_eq!(result, Err(Ok(ContractError::InvalidState)));
-        assert_eq!(client.get_schema_predecessor(&2), None);
-    }
-
-    #[test]
-    fn back_edge_that_would_form_a_cycle_is_rejected() {
-        let (_env, client, _admin) = setup();
-        client.approve_schema_version(&1);
-        client.approve_schema_with_predecessor(&2, &1);
-
-        // Pointing 1 back at 2 would close a cycle 1 -> 2 -> 1; it is rejected,
-        // and the existing lineage is left intact.
-        let result = client.try_approve_schema_with_predecessor(&1, &2);
-        assert_eq!(result, Err(Ok(ContractError::InvalidState)));
-        assert_eq!(client.get_schema_predecessor(&1), None);
-        assert_eq!(client.get_schema_predecessor(&2), Some(1));
-    }
-
-    #[test]
-    fn a_deprecated_schema_remains_a_valid_predecessor() {
-        let (env, client, _admin) = setup();
-        client.approve_schema_version(&1);
-        client.deprecate_schema_version(&1);
-
-        // A withdrawn version keeps its record, so a migration can still succeed
-        // it explicitly.
-        client.approve_schema_with_predecessor(&2, &1);
-        assert_eq!(client.get_schema_predecessor(&2), Some(1));
-        assert_eq!(client.get_schema_lineage(&2), vec![&env, 2u32, 1u32]);
-    }
-
-    #[test]
-    fn lineage_depth_is_bounded() {
-        use earnproof_shared::MAX_SCHEMA_LINEAGE_DEPTH;
-        let (_env, client, _admin) = setup();
-
-        // Build the deepest chain the rules allow: version 1 as root, then a
-        // successor for every additional allowed link.
-        client.approve_schema_version(&1);
-        for version in 2..=(MAX_SCHEMA_LINEAGE_DEPTH + 1) {
-            client.approve_schema_with_predecessor(&version, &(version - 1));
-        }
-
-        // One link past the bound is rejected rather than extending an
-        // unbounded lineage.
-        let too_deep = MAX_SCHEMA_LINEAGE_DEPTH + 2;
-        let result =
-            client.try_approve_schema_with_predecessor(&too_deep, &(MAX_SCHEMA_LINEAGE_DEPTH + 1));
-        assert_eq!(result, Err(Ok(ContractError::InvalidState)));
-        assert!(!client.is_schema_version_approved(&too_deep));
-    }
-
-    #[test]
-    fn lineage_query_of_unknown_version_is_empty_or_singleton() {
-        let (env, client, _admin) = setup();
-        // Version 0 is never a schema; its lineage is empty.
-        assert_eq!(client.get_schema_lineage(&0), Vec::<u32>::new(&env));
-        // An unknown non-zero version has only itself and no predecessor.
-        assert_eq!(client.get_schema_lineage(&7), vec![&env, 7u32]);
-        assert_eq!(client.get_schema_predecessor(&7), None);
     }
 
     // ── upgrade governance tests ──────────────────────────────────────────────
@@ -2453,6 +2501,170 @@ mod test {
         client.set_schema_payload_limit(&1, &2_048);
         client.set_schema_payload_limit(&1, &16);
         assert_eq!(client.get_schema_payload_limit(&1), 16);
+    }
+
+    fn enabled_policy(env: &Env, threshold: u32) -> (CriticalActionPolicy, Vec<Address>) {
+        let signers = Vec::from_array(
+            env,
+            [
+                Address::generate(env),
+                Address::generate(env),
+                Address::generate(env),
+            ],
+        );
+        (
+            CriticalActionPolicy {
+                enabled: true,
+                threshold,
+                signers: signers.clone(),
+            },
+            signers,
+        )
+    }
+
+    #[test]
+    fn critical_action_requires_mixed_signer_threshold_and_consumes_proposal() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 2);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(42));
+
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        assert_eq!(
+            client.try_approve_critical_action(&proposal_id, &signers.get(0).unwrap()),
+            Err(Ok(ContractError::AlreadyExists))
+        );
+        let outsider = Address::generate(&env);
+        assert_eq!(
+            client.try_approve_critical_action(&proposal_id, &outsider),
+            Err(Ok(ContractError::Unauthorized))
+        );
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::InsufficientApprovals))
+        );
+        client.approve_critical_action(&proposal_id, &signers.get(1).unwrap());
+        client.execute_critical_action(&proposal_id);
+
+        assert!(client.is_schema_version_approved(&42));
+        assert_eq!(client.get_critical_action_proposal(&proposal_id), None);
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::ApprovalProposalNotFound))
+        );
+    }
+
+    #[test]
+    fn approvals_are_bound_to_action_category_and_parameters() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let approval = client.propose_critical_action(&CriticalAction::SchemaApproval(12));
+        let deprecation = client.propose_critical_action(&CriticalAction::SchemaDeprecation(12));
+        let changed_parameters =
+            client.propose_critical_action(&CriticalAction::SchemaApproval(13));
+        assert_ne!(approval, deprecation);
+        assert_ne!(approval, changed_parameters);
+
+        client.approve_critical_action(&approval, &signers.get(0).unwrap());
+        client.execute_critical_action(&approval);
+        assert!(client.is_schema_version_approved(&12));
+        assert!(!client.is_schema_version_approved(&13));
+        assert!(client
+            .get_critical_action_proposal(&changed_parameters)
+            .is_some());
+    }
+
+    #[test]
+    fn cancelled_proposal_cannot_be_executed() {
+        let (_env, client, _admin) = setup();
+        let (policy, _) = enabled_policy(&client.env, 1);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(7));
+
+        client.cancel_critical_action(&proposal_id);
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::ApprovalProposalNotFound))
+        );
+    }
+
+    #[test]
+    fn expired_proposal_cannot_be_executed() {
+        let (env, client, _admin) = setup();
+        let (policy, _) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(7));
+        let proposal = client.get_critical_action_proposal(&proposal_id).unwrap();
+
+        env.ledger()
+            .set_sequence_number(proposal.created_at + CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS);
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::ApprovalProposalExpired))
+        );
+    }
+
+    #[test]
+    fn failed_execution_keeps_proposal_and_configuration_unchanged() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(0));
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        let cursor_before = client.get_config_history_cursor();
+
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert!(!client.is_schema_version_approved(&0));
+        assert_eq!(client.get_config_history_cursor(), cursor_before);
+        assert!(client.get_critical_action_proposal(&proposal_id).is_some());
+    }
+
+    #[test]
+    fn policy_updates_are_threshold_governed_but_emergency_pause_is_immediate() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let (next_policy, _) = enabled_policy(&env, 2);
+
+        assert_eq!(
+            client.try_set_critical_action_policy(&next_policy),
+            Err(Ok(ContractError::ThresholdApprovalRequired))
+        );
+        let proposal_id = client
+            .propose_critical_action(&CriticalAction::ApprovalPolicyUpdate(next_policy.clone()));
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        client.execute_critical_action(&proposal_id);
+        assert_eq!(client.get_critical_action_policy(), next_policy);
+
+        client.pause();
+        assert!(client.is_paused());
+    }
+
+    #[test]
+    fn critical_action_policy_rejects_invalid_threshold_and_duplicate_signers() {
+        let (env, client, _admin) = setup();
+        let signer = Address::generate(&env);
+        let duplicate_signers = Vec::from_array(&env, [signer.clone(), signer]);
+        let duplicate_policy = CriticalActionPolicy {
+            enabled: true,
+            threshold: 1,
+            signers: duplicate_signers,
+        };
+        assert_eq!(
+            client.try_set_critical_action_policy(&duplicate_policy),
+            Err(Ok(ContractError::InvalidApprovalPolicy))
+        );
+
+        let (mut policy, _) = enabled_policy(&env, 1);
+        policy.threshold = 4;
+        assert_eq!(
+            client.try_set_critical_action_policy(&policy),
+            Err(Ok(ContractError::InvalidApprovalPolicy))
+        );
     }
 
     // ── bounded configuration change history (issue #193) ────────────────────

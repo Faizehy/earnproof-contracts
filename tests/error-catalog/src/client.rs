@@ -145,7 +145,6 @@ fn an_automatic_retry_loop_only_repeats_operator_action_codes() {
             "ContractPaused",
             "IssuerInactive",
             "UnsupportedSchema",
-            "UnsupportedProofType",
         ]
     );
 }

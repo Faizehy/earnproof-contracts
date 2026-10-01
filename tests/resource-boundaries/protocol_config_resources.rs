@@ -40,7 +40,6 @@ mod protocol_config_resource_tests {
 
         // Must succeed at exact limit
         client.approve_schema_version(&version);
-        client.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
         assert!(client.is_schema_version_approved(&version));
 
         // Print resource evidence (reproducible)
@@ -69,7 +68,6 @@ mod protocol_config_resource_tests {
         env.budget().reset_default();
 
         client.approve_schema_version(&version);
-        client.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
         assert!(client.is_schema_version_approved(&version));
 
         let cpu_approve = env.budget().cpu_instruction_count();

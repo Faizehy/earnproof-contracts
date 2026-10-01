@@ -16,7 +16,7 @@ use soroban_sdk::{Address, IntoVal};
 #[test]
 fn restoration_returns_the_record_unchanged() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE, None);
+    let proof_id = deployment.register_proof(FAR_FUTURE);
     let before = deployment.proofs.get_proof(&proof_id);
 
     deployment.idle(TTL_EXTEND_TO_LEDGERS + 1);
@@ -28,7 +28,7 @@ fn restoration_returns_the_record_unchanged() {
 #[test]
 fn a_restoring_call_re_extends_the_entry_to_the_target() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE, None);
+    let proof_id = deployment.register_proof(FAR_FUTURE);
     deployment.idle(TTL_EXTEND_TO_LEDGERS + 1);
 
     // `get_proof` restores (minimum TTL) and then applies the contract's own
@@ -41,7 +41,7 @@ fn a_restoring_call_re_extends_the_entry_to_the_target() {
 #[test]
 fn restoration_costs_an_extra_write_and_rent_bump() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE, None);
+    let proof_id = deployment.register_proof(FAR_FUTURE);
 
     deployment.proofs.get_proof(&proof_id);
     let live = deployment.env.cost_estimate().resources();
@@ -63,7 +63,7 @@ fn restoration_costs_an_extra_write_and_rent_bump() {
 #[test]
 fn an_expired_proof_is_not_valid_after_restoration() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(2_000, None);
+    let proof_id = deployment.register_proof(2_000);
 
     deployment.idle(TTL_EXTEND_TO_LEDGERS + 1);
     deployment.env.ledger().set_timestamp(2_001);
@@ -78,7 +78,7 @@ fn an_expired_proof_is_not_valid_after_restoration() {
 #[test]
 fn a_revoked_proof_stays_revoked_after_restoration() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE, None);
+    let proof_id = deployment.register_proof(FAR_FUTURE);
     deployment.proofs.revoke_proof(&proof_id);
     let revoked_at = deployment.proofs.get_proof(&proof_id).revoked_at;
 
@@ -99,20 +99,19 @@ fn a_revoked_proof_stays_revoked_after_restoration() {
 #[test]
 fn a_restored_proof_id_cannot_be_re_registered() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE, None);
+    let proof_id = deployment.register_proof(FAR_FUTURE);
     deployment.idle(TTL_EXTEND_TO_LEDGERS + 1);
 
     // A new registration under an existing identifier must fail even though the
     // entry was archived a moment ago. Anything else would let an archived
     // commitment be replaced.
-    let result = deployment.proofs.try_register_proof(
+    let result = deployment.proofs.try_register_proof_with_type_identifier(
         &proof_id,
         &bytes(&deployment.env, 99),
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
-        &None,
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
@@ -125,7 +124,7 @@ fn a_restored_proof_id_cannot_be_re_registered() {
 #[test]
 fn restoration_does_not_weaken_revocation_authorization() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE, None);
+    let proof_id = deployment.register_proof(FAR_FUTURE);
     deployment.idle(TTL_EXTEND_TO_LEDGERS + 1);
 
     // Authorization is re-evaluated from scratch: a stranger cannot revoke the
@@ -159,7 +158,7 @@ fn restoration_does_not_weaken_revocation_authorization() {
 #[test]
 fn a_long_idle_deployment_recovers_every_contract_on_the_next_call() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE, None);
+    let proof_id = deployment.register_proof(FAR_FUTURE);
 
     // Twice the extension target with no traffic at all: every instance entry,
     // the issuer record, the reverse index and the schema flag are archived.
@@ -167,14 +166,13 @@ fn a_long_idle_deployment_recovers_every_contract_on_the_next_call() {
 
     // A registration exercises all three contracts in one invocation.
     let second_proof = bytes(&deployment.env, 7);
-    deployment.proofs.register_proof(
+    deployment.proofs.register_proof_with_type_identifier(
         &second_proof,
         &bytes(&deployment.env, 8),
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
-        &None,
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     assert!(deployment.proofs.is_valid_proof(&second_proof));
@@ -196,7 +194,7 @@ fn the_proof_registry_instance_is_only_extended_at_initialize() {
     assert_eq!(deployment.proof_instance_ttl(), TTL_EXTEND_TO_LEDGERS);
 
     deployment.idle(TTL_EXTEND_TO_LEDGERS + 1);
-    deployment.register_proof(FAR_FUTURE, None);
+    deployment.register_proof(FAR_FUTURE);
 
     let minimum = deployment.env.ledger().get().min_persistent_entry_ttl;
     assert_eq!(deployment.proof_instance_ttl(), minimum - 1);
@@ -205,7 +203,7 @@ fn the_proof_registry_instance_is_only_extended_at_initialize() {
 #[test]
 fn restoration_preserves_the_proof_storage_key() {
     let deployment = deployment();
-    let proof_id = deployment.register_proof(FAR_FUTURE, None);
+    let proof_id = deployment.register_proof(FAR_FUTURE);
     deployment.idle(TTL_EXTEND_TO_LEDGERS + 1);
     deployment.proofs.get_proof(&proof_id);
 

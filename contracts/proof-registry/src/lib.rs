@@ -471,6 +471,55 @@ impl ProofRegistryContract {
         Ok(())
     }
 
+    /// Registers a proof with an issuer-approved stable proof-type identifier
+    /// and no predecessor. Kept as a separate endpoint so callers that do not
+    /// participate in supersession retain the upstream registration surface.
+    pub fn register_proof_with_type_identifier(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        proof_type: BytesN<32>,
+    ) -> Result<(), ProofError> {
+        Self::register_proof(
+            env,
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            None,
+            proof_type,
+        )
+    }
+
+    /// Registers a proof linked to an optional predecessor. The predecessor
+    /// and proof-type arguments are explicit in the ABI for deterministic
+    /// cross-contract callers.
+    pub fn register_proof_with_predecessor(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        predecessor_id_hash: Option<BytesN<32>>,
+        proof_type: BytesN<32>,
+    ) -> Result<(), ProofError> {
+        Self::register_proof(
+            env,
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            predecessor_id_hash,
+            proof_type,
+        )
+    }
+
     pub fn register_proof(
         env: Env,
         proof_id_hash: BytesN<32>,
@@ -561,6 +610,7 @@ impl ProofRegistryContract {
             Self::extend_proof_key_ttl(env.clone(), &successors_key);
         }
         Self::consume_schema_rate_limit(&env, &protocol_client, schema_version)?;
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
         Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
 
         // Creation timing is sourced only from the host ledger environment so
@@ -572,6 +622,7 @@ impl ProofRegistryContract {
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
+            disclosure_policy_hash: BytesN::from_array(&env, &[0; 32]),
             issuer_address: issuer_address.clone(),
             status: ProofStatus::Active,
             schema_version,
@@ -581,6 +632,7 @@ impl ProofRegistryContract {
             revoked_ledger: 0,
             predecessor_id_hash,
             proof_type: Some(proof_type),
+            sequence_number,
             created_ledger,
             activates_at: 0,
         };
@@ -667,6 +719,7 @@ impl ProofRegistryContract {
         }
 
         Self::consume_schema_rate_limit(&env, &protocol_client, schema_version)?;
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
         Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
 
         let now = env.ledger().timestamp();
@@ -674,6 +727,7 @@ impl ProofRegistryContract {
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
+            disclosure_policy_hash: BytesN::from_array(&env, &[0; 32]),
             issuer_address,
             status: ProofStatus::Active,
             schema_version,
@@ -683,6 +737,7 @@ impl ProofRegistryContract {
             revoked_ledger: 0,
             predecessor_id_hash: None,
             proof_type: None,
+            sequence_number,
             created_ledger,
             activates_at: 0,
         };
@@ -706,6 +761,48 @@ impl ProofRegistryContract {
             epoch,
         }
         .publish(&env);
+        Ok(())
+    }
+
+    /// Registers a proof with an issuer-approved stable type identifier and
+    /// bounded auxiliary payload metadata.
+    pub fn register_proof_with_type_identifier_and_payload(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        proof_type: BytesN<32>,
+        payload: Bytes,
+    ) -> Result<(), ProofError> {
+        let id = proof_id_hash.clone();
+        Self::register_proof_with_payload(
+            env.clone(),
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            payload,
+        )?;
+
+        let protocol_config =
+            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
+        if !protocol_client.is_proof_type_approved(&proof_type) {
+            return Err(ProofError::UnsupportedProofType);
+        }
+
+        let key = DataKey::Proof(id);
+        let mut record: ProofRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ProofError::ProofNotFound)?;
+        record.proof_type = Some(proof_type);
+        env.storage().persistent().set(&key, &record);
+        Self::extend_proof_key_ttl(env, &key);
         Ok(())
     }
 
@@ -791,9 +888,13 @@ impl ProofRegistryContract {
 
         let now = env.ledger().timestamp();
         let created_ledger = env.ledger().sequence();
+        Self::consume_schema_rate_limit(&env, &protocol_client, schema_version)?;
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
+        Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
         let record = ProofRecord {
             proof_id_hash,
             commitment_hash,
+            disclosure_policy_hash: BytesN::from_array(&env, &[0; 32]),
             issuer_address,
             status: ProofStatus::Active,
             schema_version,
@@ -805,6 +906,7 @@ impl ProofRegistryContract {
             activates_at,
             predecessor_id_hash: None,
             proof_type: None,
+            sequence_number,
         };
 
         env.storage().persistent().set(&key, &record);
@@ -894,9 +996,14 @@ impl ProofRegistryContract {
                 return Err(ProofError::ProofAlreadyRegistered);
             }
 
+            Self::consume_schema_rate_limit(&env, &protocol_client, entry.schema_version)?;
+            let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
+            Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
+
             let record = ProofRecord {
                 proof_id_hash: entry.proof_id_hash.clone(),
                 commitment_hash: entry.commitment_hash.clone(),
+                disclosure_policy_hash: BytesN::from_array(&env, &[0; 32]),
                 issuer_address: issuer_address.clone(),
                 status: ProofStatus::Active,
                 schema_version: entry.schema_version,
@@ -908,6 +1015,7 @@ impl ProofRegistryContract {
                 activates_at: 0,
                 predecessor_id_hash: None,
                 proof_type: None,
+                sequence_number,
             };
 
             env.storage().persistent().set(&key, &record);
@@ -1527,6 +1635,15 @@ impl ProofRegistryContract {
             .unwrap_or(0);
         (active, lifetime, max_active, max_lifetime)
     }
+
+    fn next_issuer_proof_sequence(env: &Env, issuer: &Address) -> Result<u64, ProofError> {
+        let (_, lifetime, _, _) = Self::get_issuer_proof_usage(env.clone(), issuer.clone());
+        lifetime
+            .checked_add(1)
+            .map(u64::from)
+            .ok_or(ProofError::ProofCountOverflow)
+    }
+
     fn consume_issuer_proof_capacity(env: &Env, issuer: &Address) -> Result<(), ProofError> {
         let (active, lifetime, max_active, max_lifetime) =
             Self::get_issuer_proof_usage(env.clone(), issuer.clone());
@@ -4010,6 +4127,8 @@ mod test {
             revoked_ledger: 0,
             predecessor_id_hash: None,
             proof_type: None,
+            disclosure_policy_hash: bytes(&env, 0),
+            sequence_number: 0,
             created_ledger: 0,
             activates_at: 0,
         };

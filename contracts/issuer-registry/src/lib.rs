@@ -1,14 +1,17 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, GenesisRecord, InterfaceVersion, IssuerError, IssuerPolicyCommitments,
-    IssuerQueryStatus, IssuerRecord, IssuerStatus, IssuerStatusResult, MigrationStatus,
-    SigningKeyCommitment, TtlStatus, UpgradeApproval, UpgradeReceipt,
+    ContractError, GenesisRecord, GovernanceRole, GovernanceRoleAssignment, InterfaceVersion,
+    IssuerError, IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord, IssuerStatus,
+    IssuerStatusResult, MigrationStatus, RotationRecord, SigningKeyCommitment, TtlStatus,
+    UpgradeApproval, UpgradeReceipt,
     ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
     METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
     TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
+
+const ISSUER_ROTATION_EXPIRY_LEDGERS: u32 = 518_400;
 
 #[contract]
 pub struct IssuerRegistryContract;
@@ -38,19 +41,46 @@ enum DataKey {
     PendingSigningKey(BytesN<32>),
     SigningKeyHistory(BytesN<32>, u32),
     SigningKeyHistoryCount(BytesN<32>),
+    RotationHistory(BytesN<32>, u32),
+    RotationCount(BytesN<32>),
+    ExecutedProposal(BytesN<32>),
     IssuerPolicy(BytesN<32>),
-    /// Monotonic mutation counter exposed in issuer events and cache invalidation.
+    /// Monotonic epoch, advanced once per externally visible issuer mutation.
+    /// Off-chain consumers poll it as a cheap cache-invalidation signal.
     IssuerEpoch,
-    /// Governed ceiling on the number of simultaneously active issuers.
+    /// Governed maximum number of issuers that may hold `Active` status at once.
     MaxActiveIssuers,
-    /// Current count of issuers with `IssuerStatus::Active`.
+    /// Current number of issuers holding `Active` status.
     ActiveIssuerCount,
-    /// Governed cooldown, in seconds, a suspended issuer must wait before
-    /// reactivation is permitted.
+    /// Governed minimum ledger-time cooldown, in seconds, enforced before a
+    /// suspended issuer may be reactivated.
     ReactivationCooldown,
-    /// Ledger timestamp at or after which a specific suspended issuer may be
-    /// reactivated. Fixed at suspension time from the cooldown then in force.
+    /// Per-issuer earliest ledger time at which reactivation is permitted.
     ReactivatableAt(BytesN<32>),
+    PendingIssuerRotation(BytesN<32>),
+    GovernanceAssignment(GovernanceRole, Address),
+}
+
+#[contractevent]
+pub struct GovernanceRoleGranted {
+    pub assignment: GovernanceRoleAssignment,
+    pub granted_by: Address,
+}
+
+#[contractevent]
+pub struct GovernanceRoleRemoved {
+    pub role: GovernanceRole,
+    pub address: Address,
+    pub removed_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingIssuerRotation {
+    pub old_address: Address,
+    pub new_address: Address,
+    pub nominated_at_ledger: u32,
+    pub expires_at_ledger: u32,
 }
 
 #[contractevent]
@@ -75,6 +105,7 @@ pub struct AdminTransferCancelled {
 /// Emitted when the admin adds a WASM hash to the upgrade allowlist.
 #[contractevent]
 pub struct UpgradeAllowlisted {
+    pub proposal_id: BytesN<32>,
     pub wasm_hash: BytesN<32>,
     pub new_contract_version: u32,
     pub approved_by: Address,
@@ -84,6 +115,7 @@ pub struct UpgradeAllowlisted {
 /// applying it.
 #[contractevent]
 pub struct UpgradeRevoked {
+    pub proposal_id: BytesN<32>,
     pub wasm_hash: BytesN<32>,
     pub revoked_by: Address,
 }
@@ -147,6 +179,7 @@ pub struct IssuerSuspended {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -160,6 +193,7 @@ pub struct IssuerReactivated {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -173,6 +207,7 @@ pub struct IssuerRevoked {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -187,6 +222,20 @@ pub struct IssuerAddressRotated {
     pub new_address: Address,
     pub updated_at: u64,
     pub epoch: u64,
+}
+
+#[contractevent]
+pub struct IssuerRotationNominated {
+    pub issuer_id_hash: BytesN<32>,
+    pub old_address: Address,
+    pub new_address: Address,
+    pub expires_at_ledger: u32,
+}
+
+#[contractevent]
+pub struct IssuerRotationCancelled {
+    pub issuer_id_hash: BytesN<32>,
+    pub cancelled_by: Address,
 }
 
 // ── capacity and cooldown governance events ─────────────────────────────────
@@ -208,12 +257,14 @@ pub struct ReactivationCooldownChanged {
 
 #[contractevent]
 pub struct SuccessorNominated {
+    pub proposal_id: BytesN<32>,
     pub successor: Address,
     pub nominated_by: Address,
 }
 
 #[contractevent]
 pub struct ContractDecommissioned {
+    pub proposal_id: BytesN<32>,
     pub old_instance: Address,
     pub successor_instance: Address,
     pub activated_by: Address,
@@ -225,6 +276,93 @@ pub struct ContractDecommissioned {
 
 #[contractimpl]
 impl IssuerRegistryContract {
+    pub fn grant_governance_role(
+        env: Env,
+        proposal_id: BytesN<32>,
+        role: GovernanceRole,
+        address: Address,
+        activation_ledger: u32,
+        expiration_ledger: Option<u32>,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
+        Self::require_auth(&admin);
+        Self::require_valid_issuer_address(&address).map_err(|_| ContractError::InvalidAddress)?;
+        if role == GovernanceRole::Recovery
+            || expiration_ledger
+                .map(|expiration| expiration <= activation_ledger)
+                .unwrap_or(false)
+        {
+            return Err(ContractError::InvalidTimingConfig);
+        }
+        Self::consume_proposal(&env, &proposal_id).map_err(|_| ContractError::InvalidInput)?;
+        let assignment = GovernanceRoleAssignment {
+            role,
+            address: address.clone(),
+            activation_ledger,
+            expiration_ledger,
+            proposal_id,
+        };
+        let key = DataKey::GovernanceAssignment(role, address);
+        env.storage().persistent().set(&key, &assignment);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        GovernanceRoleGranted {
+            assignment,
+            granted_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_governance_assignment(
+        env: Env,
+        role: GovernanceRole,
+        address: Address,
+    ) -> Option<GovernanceRoleAssignment> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GovernanceAssignment(role, address))
+    }
+
+    pub fn remove_governance_role(
+        env: Env,
+        role: GovernanceRole,
+        address: Address,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
+        Self::require_auth(&admin);
+        let key = DataKey::GovernanceAssignment(role, address.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(ContractError::NotFound);
+        }
+        env.storage().persistent().remove(&key);
+        GovernanceRoleRemoved {
+            role,
+            address,
+            removed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn suspend_issuer_by_role(
+        env: Env,
+        proposal_id: BytesN<32>,
+        issuer_id_hash: BytesN<32>,
+        reason_commitment: BytesN<32>,
+        actor: Address,
+    ) -> Result<(), IssuerError> {
+        Self::set_status_as(
+            env,
+            proposal_id,
+            issuer_id_hash,
+            IssuerStatus::Suspended,
+            reason_commitment,
+            Some(actor),
+        )
+    }
+
     pub fn is_decommissioned(env: Env) -> bool {
         env.storage()
             .instance()
@@ -238,6 +376,40 @@ impl IssuerRegistryContract {
         } else {
             Ok(())
         }
+    }
+
+    pub fn is_proposal_executed(env: Env, proposal_id: BytesN<32>) -> bool {
+        if proposal_id == BytesN::from_array(&env, &[0u8; 32]) {
+            return false;
+        }
+        let domain_key = earnproof_shared::proposal_domain_key(
+            &env,
+            soroban_sdk::Symbol::new(&env, "issuer_registry"),
+            &proposal_id,
+        );
+        env.storage()
+            .persistent()
+            .has(&DataKey::ExecutedProposal(domain_key))
+    }
+
+    fn consume_proposal(env: &Env, proposal_id: &BytesN<32>) -> Result<(), ContractError> {
+        if proposal_id == &BytesN::from_array(env, &[0u8; 32]) {
+            return Err(ContractError::InvalidInput);
+        }
+        let domain_key = earnproof_shared::proposal_domain_key(
+            env,
+            soroban_sdk::Symbol::new(env, "issuer_registry"),
+            proposal_id,
+        );
+        let key = DataKey::ExecutedProposal(domain_key);
+        if env.storage().persistent().has(&key) {
+            return Err(ContractError::AlreadyExists);
+        }
+        env.storage().persistent().set(&key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        Ok(())
     }
 
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
@@ -378,15 +550,21 @@ impl IssuerRegistryContract {
             .ok_or(ContractError::NotInitialized)
     }
 
-    pub fn nominate_successor(env: Env, successor: Address) -> Result<(), IssuerError> {
+    pub fn nominate_successor(
+        env: Env,
+        proposal_id: BytesN<32>,
+        successor: Address,
+    ) -> Result<(), IssuerError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_valid_issuer_address(&successor)?;
         Self::require_auth(&admin);
+        Self::consume_proposal(&env, &proposal_id).map_err(|_| IssuerError::InvalidTransition)?;
         env.storage()
             .instance()
             .set(&DataKey::Successor, &successor);
         SuccessorNominated {
+            proposal_id,
             successor: successor.clone(),
             nominated_by: admin,
         }
@@ -398,7 +576,7 @@ impl IssuerRegistryContract {
         env.storage().instance().get(&DataKey::Successor)
     }
 
-    pub fn activate_successor(env: Env) -> Result<(), IssuerError> {
+    pub fn activate_successor(env: Env, proposal_id: BytesN<32>) -> Result<(), IssuerError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
@@ -408,10 +586,12 @@ impl IssuerRegistryContract {
             .get(&DataKey::Successor)
             .ok_or(IssuerError::IssuerNotFound)?;
 
+        Self::consume_proposal(&env, &proposal_id).map_err(|_| IssuerError::InvalidTransition)?;
         env.storage()
             .instance()
             .set(&DataKey::Decommissioned, &true);
         ContractDecommissioned {
+            proposal_id,
             old_instance: env.current_contract_address(),
             successor_instance: successor,
             activated_by: admin,
@@ -776,11 +956,13 @@ impl IssuerRegistryContract {
 
     pub fn suspend_issuer(
         env: Env,
+        proposal_id: BytesN<32>,
         issuer_id_hash: BytesN<32>,
         reason_commitment: BytesN<32>,
     ) -> Result<(), IssuerError> {
         Self::set_status(
             env,
+            proposal_id,
             issuer_id_hash,
             IssuerStatus::Suspended,
             reason_commitment,
@@ -789,19 +971,28 @@ impl IssuerRegistryContract {
 
     pub fn reactivate_issuer(
         env: Env,
-        issuer_id_hash: BytesN<32>,
-        reason_commitment: BytesN<32>,
-    ) -> Result<(), IssuerError> {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Active, reason_commitment)
-    }
-
-    pub fn revoke_issuer(
-        env: Env,
+        proposal_id: BytesN<32>,
         issuer_id_hash: BytesN<32>,
         reason_commitment: BytesN<32>,
     ) -> Result<(), IssuerError> {
         Self::set_status(
             env,
+            proposal_id,
+            issuer_id_hash,
+            IssuerStatus::Active,
+            reason_commitment,
+        )
+    }
+
+    pub fn revoke_issuer(
+        env: Env,
+        proposal_id: BytesN<32>,
+        issuer_id_hash: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::set_status(
+            env,
+            proposal_id,
             issuer_id_hash,
             IssuerStatus::Revoked,
             reason_commitment,
@@ -816,26 +1007,113 @@ impl IssuerRegistryContract {
         Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_valid_issuer_address(&new_address)?;
-        Self::require_auth(&admin);
-
         let key = DataKey::Issuer(issuer_id_hash.clone());
-        let mut record: IssuerRecord = env
+        let record: IssuerRecord = env
             .storage()
             .persistent()
             .get(&key)
             .ok_or(IssuerError::IssuerNotFound)?;
-
         if record.status == IssuerStatus::Revoked {
             return Err(IssuerError::IssuerRevoked);
+        }
+        if record.status != IssuerStatus::Active {
+            return Err(IssuerError::IssuerInactive);
         }
         if new_address == record.issuer_address {
             return Err(IssuerError::InvalidAddress);
         }
-
         let new_address_key = DataKey::AddressIssuer(new_address.clone());
         if env.storage().persistent().has(&new_address_key) {
             return Err(IssuerError::IssuerAddressAlreadyRegistered);
         }
+        Self::require_auth(&record.issuer_address);
+        let now_ledger = env.ledger().sequence();
+        let expires_at_ledger = now_ledger.saturating_add(ISSUER_ROTATION_EXPIRY_LEDGERS);
+        let pending = PendingIssuerRotation {
+            old_address: record.issuer_address.clone(),
+            new_address: new_address.clone(),
+            nominated_at_ledger: now_ledger,
+            expires_at_ledger,
+        };
+        env.storage().persistent().set(
+            &DataKey::PendingIssuerRotation(issuer_id_hash.clone()),
+            &pending,
+        );
+        Self::extend_issuer_key_ttl(
+            env.clone(),
+            &DataKey::PendingIssuerRotation(issuer_id_hash.clone()),
+        );
+        IssuerRotationNominated {
+            issuer_id_hash,
+            old_address: record.issuer_address,
+            new_address,
+            expires_at_ledger,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_pending_issuer_rotation(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+    ) -> Option<PendingIssuerRotation> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingIssuerRotation(issuer_id_hash))
+    }
+
+    pub fn cancel_issuer_address_rotation(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        let key = DataKey::PendingIssuerRotation(issuer_id_hash.clone());
+        let pending: PendingIssuerRotation = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(IssuerError::InvalidTransition)?;
+        Self::require_auth(&pending.old_address);
+        env.storage().persistent().remove(&key);
+        IssuerRotationCancelled {
+            issuer_id_hash,
+            cancelled_by: pending.old_address,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn accept_issuer_address_rotation(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
+        let pending_key = DataKey::PendingIssuerRotation(issuer_id_hash.clone());
+        let pending: PendingIssuerRotation = env
+            .storage()
+            .persistent()
+            .get(&pending_key)
+            .ok_or(IssuerError::InvalidTransition)?;
+        if env.ledger().sequence() >= pending.expires_at_ledger {
+            return Err(IssuerError::InvalidTransition);
+        }
+        let issuer_key = DataKey::Issuer(issuer_id_hash.clone());
+        let mut record: IssuerRecord = env
+            .storage()
+            .persistent()
+            .get(&issuer_key)
+            .ok_or(IssuerError::IssuerNotFound)?;
+        if record.status == IssuerStatus::Revoked {
+            return Err(IssuerError::IssuerRevoked);
+        }
+        if record.status != IssuerStatus::Active || record.issuer_address != pending.old_address {
+            return Err(IssuerError::IssuerInactive);
+        }
+        Self::require_valid_issuer_address(&pending.new_address)?;
+        let new_address_key = DataKey::AddressIssuer(pending.new_address.clone());
+        if env.storage().persistent().has(&new_address_key) {
+            return Err(IssuerError::IssuerAddressAlreadyRegistered);
+        }
+        Self::require_auth(&pending.new_address);
 
         let old_address = record.issuer_address.clone();
         env.storage()
@@ -844,26 +1122,84 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .remove(&DataKey::AddressTtl(old_address.clone()));
-        record.issuer_address = new_address.clone();
+        record.issuer_address = pending.new_address.clone();
         let now = env.ledger().timestamp();
         record.updated_at = now;
-        env.storage().persistent().set(&key, &record);
+        env.storage().persistent().set(&issuer_key, &record);
         env.storage()
             .persistent()
-            .set(&new_address_key, &issuer_id_hash);
-        Self::extend_issuer_key_ttl(env.clone(), &key);
-        Self::extend_address_ttl(env.clone(), new_address.clone());
+            .set(&new_address_key, &issuer_id_hash.clone());
+        env.storage().persistent().remove(&pending_key);
+        Self::extend_issuer_key_ttl(env.clone(), &issuer_key);
+        Self::extend_address_ttl(env.clone(), pending.new_address.clone());
+
+        let count_key = DataKey::RotationCount(issuer_id_hash.clone());
+        let rotation_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let rotation_record = RotationRecord {
+            old_address: old_address.clone(),
+            new_address: pending.new_address.clone(),
+            rotated_at: now,
+            ledger_sequence: env.ledger().sequence(),
+        };
+
+        let history_key = DataKey::RotationHistory(issuer_id_hash.clone(), rotation_count);
+        env.storage()
+            .persistent()
+            .set(&history_key, &rotation_record);
+        env.storage()
+            .persistent()
+            .set(&count_key, &(rotation_count + 1));
+        Self::extend_issuer_key_ttl(env.clone(), &history_key);
+        Self::extend_issuer_key_ttl(env.clone(), &count_key);
 
         let epoch = Self::bump_epoch(&env);
         IssuerAddressRotated {
             issuer_id_hash,
             old_address,
-            new_address,
+            new_address: pending.new_address,
             updated_at: now,
             epoch,
         }
         .publish(&env);
         Ok(())
+    }
+
+    pub fn get_rotation_count(env: Env, issuer_id_hash: BytesN<32>) -> Result<u32, IssuerError> {
+        let _ = Self::get_issuer(env.clone(), issuer_id_hash.clone())?;
+        let count_key = DataKey::RotationCount(issuer_id_hash);
+        Ok(env.storage().persistent().get(&count_key).unwrap_or(0))
+    }
+
+    pub fn get_rotation_history(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<soroban_sdk::Vec<RotationRecord>, IssuerError> {
+        let _ = Self::get_issuer(env.clone(), issuer_id_hash.clone())?;
+        if limit == 0 || limit > 50 {
+            return Err(IssuerError::InvalidTransition);
+        }
+
+        let count = Self::get_rotation_count(env.clone(), issuer_id_hash.clone())?;
+        if offset >= count {
+            return Ok(soroban_sdk::Vec::new(&env));
+        }
+
+        let end = count.min(offset.saturating_add(limit));
+        let mut history = soroban_sdk::Vec::new(&env);
+        for i in offset..end {
+            let history_key = DataKey::RotationHistory(issuer_id_hash.clone(), i);
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<_, RotationRecord>(&history_key)
+            {
+                history.push_back(record);
+            }
+        }
+        Ok(history)
     }
 
     pub fn get_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<IssuerRecord, IssuerError> {
@@ -1211,6 +1547,7 @@ impl IssuerRegistryContract {
     /// Caller must be the authorized admin.
     pub fn approve_upgrade(
         env: Env,
+        proposal_id: BytesN<32>,
         wasm_hash: BytesN<32>,
         new_version: u32,
     ) -> Result<(), ContractError> {
@@ -1250,6 +1587,7 @@ impl IssuerRegistryContract {
         Self::extend_instance_ttl(env.clone());
 
         UpgradeAllowlisted {
+            proposal_id,
             wasm_hash,
             new_contract_version: new_version,
             approved_by: admin,
@@ -1259,7 +1597,11 @@ impl IssuerRegistryContract {
     }
 
     /// Admin-only: remove a hash from the allowlist without applying it.
-    pub fn revoke_upgrade(env: Env, wasm_hash: BytesN<32>) -> Result<(), ContractError> {
+    pub fn revoke_upgrade(
+        env: Env,
+        proposal_id: BytesN<32>,
+        wasm_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
         Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
         Self::require_auth(&admin);
@@ -1273,6 +1615,7 @@ impl IssuerRegistryContract {
         env.storage().instance().remove(&DataKey::UpgradeApproval);
 
         UpgradeRevoked {
+            proposal_id,
             wasm_hash,
             revoked_by: admin,
         }
@@ -1420,9 +1763,11 @@ impl IssuerRegistryContract {
     ///
     /// # Authorization
     /// Only the admin can revoke.
-    pub fn revoke_upgrade_approval(env: Env) -> Result<(), ContractError> {
+    pub fn revoke_upgrade_approval(env: Env, proposal_id: BytesN<32>) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
         Self::require_auth(&admin);
+
+        Self::consume_proposal(&env, &proposal_id)?;
 
         // Allow revocation even if no approval exists (idempotent)
         env.storage().instance().remove(&DataKey::UpgradeApproval);
@@ -1472,16 +1817,40 @@ impl IssuerRegistryContract {
 
     fn set_status(
         env: Env,
+        proposal_id: BytesN<32>,
         issuer_id_hash: BytesN<32>,
         status: IssuerStatus,
         reason_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::set_status_as(
+            env,
+            proposal_id,
+            issuer_id_hash,
+            status,
+            reason_commitment,
+            None,
+        )
+    }
+
+    fn set_status_as(
+        env: Env,
+        proposal_id: BytesN<32>,
+        issuer_id_hash: BytesN<32>,
+        status: IssuerStatus,
+        reason_commitment: BytesN<32>,
+        actor: Option<Address>,
     ) -> Result<(), IssuerError> {
         Self::assert_operational(&env);
         if reason_commitment == BytesN::from_array(&env, &[0u8; 32]) {
             return Err(IssuerError::InvalidAddress);
         }
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
-        Self::require_auth(&admin);
+        if let Some(actor) = actor {
+            Self::require_active_role(&env, GovernanceRole::IssuerManagement, &actor)?;
+        } else {
+            Self::require_auth(&admin);
+        }
+        Self::consume_proposal(&env, &proposal_id).map_err(|_| IssuerError::InvalidTransition)?;
 
         let key = DataKey::Issuer(issuer_id_hash.clone());
         let mut record: IssuerRecord = env
@@ -1499,11 +1868,8 @@ impl IssuerRegistryContract {
         // effective are written together in a single persistent `set`, so a
         // status change is never stored without its effective ledger and
         // timestamp. Timing is sourced only from the host ledger environment.
-        let effective_ledger = env.ledger().sequence();
         let now = env.ledger().timestamp();
-        record.status = status.clone();
-        record.reason_commitment = Some(reason_commitment.clone());
-
+        let effective_ledger = env.ledger().sequence();
         // Enforce cooldown and capacity, and adjust the active-issuer count, per
         // transition. All checks that can reject the call run before any state
         // is written, so a rejected transition mutates nothing.
@@ -1543,7 +1909,12 @@ impl IssuerRegistryContract {
             }
         }
 
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingIssuerRotation(issuer_id_hash.clone()));
+
         record.status = status.clone();
+        record.reason_commitment = Some(reason_commitment.clone());
         record.updated_at = now;
         record.status_effective_ledger = effective_ledger;
         record.status_effective_timestamp = now;
@@ -1556,6 +1927,7 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
+                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -1564,6 +1936,7 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
+                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -1572,11 +1945,34 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
+                reason_commitment,
                 updated_at: now,
                 epoch,
             }
             .publish(&env),
         }
+        Ok(())
+    }
+
+    fn require_active_role(
+        env: &Env,
+        role: GovernanceRole,
+        actor: &Address,
+    ) -> Result<(), IssuerError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        if actor == &admin {
+            Self::require_auth(actor);
+            return Ok(());
+        }
+        let assignment: GovernanceRoleAssignment = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GovernanceAssignment(role, actor.clone()))
+            .ok_or(IssuerError::InvalidTransition)?;
+        if !assignment.is_active_at(env.ledger().sequence()) {
+            return Err(IssuerError::InvalidTransition);
+        }
+        Self::require_auth(actor);
         Ok(())
     }
 
@@ -1724,8 +2120,7 @@ mod test {
     };
     use soroban_sdk::{
         testutils::{
-            storage::Persistent as _, Address as _, Events as _, Ledger as _, MockAuth,
-            MockAuthInvoke,
+            storage::Persistent as _, Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke,
         },
         vec, Address, BytesN, Env, IntoVal, Vec,
     };
@@ -1790,22 +2185,14 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.suspend_issuer(
-            &issuer_id,
-            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
-        );
+        let reason = soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]);
+        client.suspend_issuer(&bytes(&env, 0x90), &issuer_id, &reason);
         assert!(!client.is_active_issuer(&issuer_id));
 
-        client.reactivate_issuer(
-            &issuer_id,
-            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
-        );
+        client.reactivate_issuer(&bytes(&env, 0x91), &issuer_id, &reason);
         assert!(client.is_active_issuer(&issuer_id));
 
-        client.revoke_issuer(
-            &issuer_id,
-            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
-        );
+        client.revoke_issuer(&bytes(&env, 0x92), &issuer_id, &reason);
         assert!(!client.is_active_issuer(&issuer_id));
     }
 
@@ -1843,15 +2230,10 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(
-            &issuer_id,
-            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
-        );
+        let reason = soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]);
+        client.revoke_issuer(&bytes(&env, 0x90), &issuer_id, &reason);
 
-        let result = client.try_reactivate_issuer(
-            &issuer_id,
-            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
-        );
+        let result = client.try_reactivate_issuer(&bytes(&env, 0x91), &issuer_id, &reason);
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
     }
 
@@ -1898,22 +2280,28 @@ mod test {
             &active,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 10),
-            &bytes(&env, 99),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
         client.register_issuer(
             &suspended,
             &Address::from_str(&env, ISSUER_TWO),
             &bytes(&env, 11),
-            &bytes(&env, 99),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
-        client.suspend_issuer(&suspended, &bytes(&env, 99));
+        client.suspend_issuer(
+            &suspended,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
         client.register_issuer(
             &revoked,
             &Address::generate(&env),
             &bytes(&env, 12),
-            &bytes(&env, 99),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
-        client.revoke_issuer(&revoked, &bytes(&env, 99));
+        client.revoke_issuer(
+            &revoked,
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
+        );
 
         // Deliberately out of registration order to prove request order wins.
         let request = vec![
@@ -1955,7 +2343,7 @@ mod test {
             &issuer_id,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 2),
-            &bytes(&env, 99),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
 
         let request = vec![
@@ -2015,7 +2403,7 @@ mod test {
             &issuer_id,
             &Address::from_str(&env, ISSUER_ONE),
             &bytes(&env, 8),
-            &bytes(&env, 99),
+            &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
 
         let request = vec![&env, issuer_id.clone()];
@@ -2045,7 +2433,7 @@ mod test {
         let hash = bytes(&env, 0xab);
 
         assert!(!client.is_upgrade_allowed(&hash));
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&bytes(&env, 0x90), &hash, &2);
         assert!(client.is_upgrade_allowed(&hash));
     }
 
@@ -2054,15 +2442,15 @@ mod test {
         let (env, client, _admin) = setup();
         let hash = bytes(&env, 0xcd);
 
-        client.approve_upgrade(&hash, &2);
-        client.revoke_upgrade(&hash);
+        client.approve_upgrade(&bytes(&env, 0x90), &hash, &2);
+        client.revoke_upgrade_approval(&bytes(&env, 0x91));
         assert!(!client.is_upgrade_allowed(&hash));
     }
 
     #[test]
     fn approve_upgrade_rejects_downgrade_version() {
         let (env, client, _admin) = setup();
-        let res = client.try_approve_upgrade(&bytes(&env, 1), &1);
+        let res = client.try_approve_upgrade(&bytes(&env, 0x90), &bytes(&env, 1), &1);
         assert_eq!(res, Err(Ok(ContractError::InvalidInput)));
     }
 
@@ -2163,7 +2551,7 @@ mod test {
         client.upgrade_contract(&hash_v2, &2);
 
         // Attempting to allowlist version 1 after reaching version 2.
-        let res = client.try_approve_upgrade(&old_hash, &1);
+        let res = client.try_approve_upgrade(&bytes(&env, 0x91), &old_hash, &1);
         assert_eq!(res, Err(Ok(ContractError::InvalidInput)));
     }
 
@@ -2272,6 +2660,7 @@ mod test {
             &bytes(&env, 99),
         );
         client.revoke_issuer(
+            &bytes(&env, 0x90),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -2301,6 +2690,7 @@ mod test {
             &bytes(&env, 99),
         );
         client.suspend_issuer(
+            &bytes(&env, 0x90),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -2326,10 +2716,12 @@ mod test {
             &bytes(&env, 99),
         );
         client.suspend_issuer(
+            &bytes(&env, 0x90),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
         client.reactivate_issuer(
+            &bytes(&env, 0x91),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -2355,6 +2747,7 @@ mod test {
             &bytes(&env, 99),
         );
         client.revoke_issuer(
+            &bytes(&env, 0x90),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -2376,12 +2769,9 @@ mod test {
 
         client.register_issuer(&issuer_id, &old_address, &bytes(&env, 2), &bytes(&env, 99));
         client.rotate_issuer_address(&issuer_id, &new_address);
-
-        assert_eq!(
-            env.events().all().events().len(),
-            1,
-            "expected exactly one event on address rotation"
-        );
+        assert_eq!(client.get_issuer(&issuer_id).issuer_address, old_address);
+        client.accept_issuer_address_rotation(&issuer_id);
+        assert_eq!(client.get_issuer(&issuer_id).issuer_address, new_address);
     }
 
     /// rotate_issuer_address on a revoked issuer panics and emits no success event.
@@ -2394,6 +2784,7 @@ mod test {
 
         client.register_issuer(&issuer_id, &old_address, &bytes(&env, 2), &bytes(&env, 99));
         client.revoke_issuer(
+            &bytes(&env, 0x90),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -2434,6 +2825,7 @@ mod test {
 
         // suspend
         client.suspend_issuer(
+            &bytes(&env, 0x90),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -2441,17 +2833,20 @@ mod test {
 
         // reactivate
         client.reactivate_issuer(
+            &bytes(&env, 0x91),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
         assert_eq!(env.events().all().events().len(), 1);
 
-        // rotate address
+        // nominate and accept address rotation
         client.rotate_issuer_address(&issuer_id, &new_address);
+        client.accept_issuer_address_rotation(&issuer_id);
         assert_eq!(env.events().all().events().len(), 1);
 
         // revoke
         client.revoke_issuer(
+            &bytes(&env, 0x92),
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -2500,20 +2895,18 @@ mod test {
         // simply for the wrong address. If require_auth(&admin) were ever
         // weakened to accept any authorized caller, this is what would stop
         // silently passing.
+        let reason = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
         env.mock_auths(&[MockAuth {
             address: &issuer_address,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "revoke_issuer",
-                args: (issuer_id.clone(),).into_val(&env),
+                args: (bytes(&env, 0x90), issuer_id.clone(), reason.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }]);
 
-        let result = client.try_revoke_issuer(
-            &issuer_id,
-            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
-        );
+        let result = client.try_revoke_issuer(&bytes(&env, 0x90), &issuer_id, &reason);
         assert!(
             result.is_err(),
             "the issuer's own valid signature must not authorize revoking itself; only the admin's signature may"
@@ -2536,7 +2929,7 @@ mod test {
         assert_eq!(client.get_contract_version(), 1);
 
         // Valid: upgrade to next version
-        client.approve_upgrade(&bytes(&env, 1), &2);
+        client.approve_upgrade(&bytes(&env, 0x90), &bytes(&env, 1), &2);
         assert!(client.is_upgrade_allowed(&bytes(&env, 1)));
     }
 
@@ -2565,7 +2958,7 @@ mod test {
     fn contract_version_equal_current_rejected() {
         let (env, client, _admin) = setup();
         // Current version is 1; attempting version 1 is rejected
-        let res = client.try_approve_upgrade(&bytes(&env, 1), &1);
+        let res = client.try_approve_upgrade(&bytes(&env, 1), &bytes(&env, 0x90), &1);
         assert_eq!(res, Err(Ok(ContractError::InvalidInput)));
     }
 
@@ -2573,7 +2966,7 @@ mod test {
     fn contract_version_below_current_rejected() {
         let (env, client, _admin) = setup();
         // Current version is 1; attempting version 0 is rejected
-        let res = client.try_approve_upgrade(&bytes(&env, 1), &0);
+        let res = client.try_approve_upgrade(&bytes(&env, 1), &bytes(&env, 0x90), &0);
         assert_eq!(res, Err(Ok(ContractError::InvalidInput)));
     }
 
@@ -2587,7 +2980,7 @@ mod test {
 
         // Attempt to allowlist a downgrade
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.approve_upgrade(&hash, &0);
+            client.approve_upgrade(&hash, &bytes(&env, 0x90), &0);
         }));
 
         // Must have panicked
@@ -2958,6 +3351,7 @@ mod test {
         let result = client.try_get_genesis();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
     }
+
     // ── issuer metadata URI hash commitments (issue 179) ───────────────────────
 
     #[test]
@@ -3077,7 +3471,7 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(&issuer_id, &bytes(&env, 99));
+        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0x11),
@@ -3143,7 +3537,7 @@ mod test {
             li.sequence_number = 900;
             li.timestamp = 9_000;
         });
-        client.suspend_issuer(&issuer_id, &bytes(&env, 99));
+        client.suspend_issuer(&issuer_id, &bytes(&env, 98));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Suspended);
         assert_eq!(record.status_effective_ledger, 900);
@@ -3161,26 +3555,27 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
+        let reason = soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 10;
             li.timestamp = 100;
         });
-        client.suspend_issuer(&issuer_id, &bytes(&env, 99));
+        client.suspend_issuer(&issuer_id, &bytes(&env, 98));
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 10);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 20;
             li.timestamp = 200;
         });
-        client.reactivate_issuer(&issuer_id, &bytes(&env, 99));
+        client.reactivate_issuer(&issuer_id, &bytes(&env, 98));
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 20);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 30;
             li.timestamp = 300;
         });
-        client.revoke_issuer(&issuer_id, &bytes(&env, 99));
+        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Revoked);
         assert_eq!(record.status_effective_ledger, 30);
@@ -3202,7 +3597,7 @@ mod test {
             li.sequence_number = 40;
             li.timestamp = 400;
         });
-        client.revoke_issuer(&issuer_id, &bytes(&env, 99));
+        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
         let before = client.get_issuer(&issuer_id);
 
         // A revoked issuer cannot be reactivated; the rejected call must not
@@ -3211,7 +3606,7 @@ mod test {
             li.sequence_number = 50;
             li.timestamp = 500;
         });
-        let result = client.try_reactivate_issuer(&issuer_id, &bytes(&env, 99));
+        let result = client.try_reactivate_issuer(&issuer_id, &bytes(&env, 98));
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
         let after = client.get_issuer(&issuer_id);
         assert_eq!(
@@ -3221,6 +3616,166 @@ mod test {
         assert_eq!(
             after.status_effective_timestamp,
             before.status_effective_timestamp
+        );
+    }
+
+    #[test]
+    fn issuer_rotation_requires_acceptance_and_can_be_cancelled() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 0x31);
+        let old_address = Address::from_str(&env, ISSUER_ONE);
+        let new_address = Address::from_str(&env, ISSUER_TWO);
+        client.register_issuer(&issuer_id, &old_address, &bytes(&env, 2), &bytes(&env, 99));
+        client.rotate_issuer_address(&issuer_id, &new_address);
+
+        let pending = client.get_pending_issuer_rotation(&issuer_id).unwrap();
+        assert_eq!(pending.old_address, old_address);
+        assert_eq!(pending.new_address, new_address);
+        assert_eq!(client.get_issuer(&issuer_id).issuer_address, old_address);
+        assert!(client.is_active_address(&old_address));
+        assert!(!client.is_active_address(&new_address));
+
+        client.cancel_issuer_address_rotation(&issuer_id);
+        assert!(client.get_pending_issuer_rotation(&issuer_id).is_none());
+        assert_eq!(client.get_issuer(&issuer_id).issuer_address, old_address);
+    }
+
+    #[test]
+    fn only_the_replacement_address_can_accept_rotation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let old_address = Address::generate(&env);
+        let new_address = Address::generate(&env);
+        let issuer_id = bytes(&env, 0x30);
+        client.initialize(&admin);
+        client.register_issuer(&issuer_id, &old_address, &bytes(&env, 2), &bytes(&env, 99));
+        client.rotate_issuer_address(&issuer_id, &new_address);
+
+        env.mock_auths(&[MockAuth {
+            address: &old_address,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "accept_issuer_address_rotation",
+                args: (issuer_id.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client
+            .try_accept_issuer_address_rotation(&issuer_id)
+            .is_err());
+        assert_eq!(client.get_issuer(&issuer_id).issuer_address, old_address);
+    }
+
+    #[test]
+    fn issuer_rotation_expiry_boundary_and_status_change_prevent_acceptance() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 0x32);
+        let old_address = Address::from_str(&env, ISSUER_ONE);
+        let new_address = Address::from_str(&env, ISSUER_TWO);
+        client.register_issuer(&issuer_id, &old_address, &bytes(&env, 2), &bytes(&env, 99));
+        client.rotate_issuer_address(&issuer_id, &new_address);
+        let expiry = client
+            .get_pending_issuer_rotation(&issuer_id)
+            .unwrap()
+            .expires_at_ledger;
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number = expiry);
+        assert_eq!(
+            client.try_accept_issuer_address_rotation(&issuer_id),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+
+        let second_id = bytes(&env, 0x33);
+        let second_address = Address::generate(&env);
+        client.register_issuer(
+            &second_id,
+            &second_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        client.rotate_issuer_address(&second_id, &new_address);
+        client.suspend_issuer(&bytes(&env, 0x34), &second_id, &bytes(&env, 1));
+        assert!(client.get_pending_issuer_rotation(&second_id).is_none());
+        assert_eq!(
+            client.try_accept_issuer_address_rotation(&second_id),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+
+        let third_id = bytes(&env, 0x3B);
+        let third_address = Address::generate(&env);
+        client.register_issuer(&third_id, &third_address, &bytes(&env, 4), &bytes(&env, 97));
+        client.rotate_issuer_address(&third_id, &Address::generate(&env));
+        client.revoke_issuer(&bytes(&env, 0x3C), &third_id, &bytes(&env, 1));
+        assert!(client.get_pending_issuer_rotation(&third_id).is_none());
+    }
+
+    #[test]
+    fn issuer_rotation_acceptance_moves_address_and_rejects_replay() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 0x35);
+        let old_address = Address::from_str(&env, ISSUER_ONE);
+        let new_address = Address::from_str(&env, ISSUER_TWO);
+        client.register_issuer(&issuer_id, &old_address, &bytes(&env, 2), &bytes(&env, 99));
+        client.rotate_issuer_address(&issuer_id, &new_address);
+        client.accept_issuer_address_rotation(&issuer_id);
+        assert_eq!(client.get_issuer(&issuer_id).issuer_address, new_address);
+        assert!(!client.is_active_address(&old_address));
+        assert!(client.is_active_address(&new_address));
+        assert_eq!(
+            client.try_accept_issuer_address_rotation(&issuer_id),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+    }
+
+    #[test]
+    fn expiring_issuer_management_role_authorizes_only_inside_its_window() {
+        let (env, client, _admin) = setup();
+        let delegate = Address::generate(&env);
+        let issuer_id = bytes(&env, 0x36);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        let activation = env.ledger().sequence();
+        let expiration = activation + 2;
+        client.grant_governance_role(
+            &bytes(&env, 0x37),
+            &GovernanceRole::IssuerManagement,
+            &delegate,
+            &activation,
+            &Some(expiration),
+        );
+        let assignment = client
+            .get_governance_assignment(&GovernanceRole::IssuerManagement, &delegate)
+            .unwrap();
+        assert!(assignment.is_active_at(activation));
+        assert!(!assignment.is_pending_at(activation));
+        client.suspend_issuer_by_role(&bytes(&env, 0x38), &issuer_id, &bytes(&env, 1), &delegate);
+
+        let second_id = bytes(&env, 0x39);
+        let second_address = Address::from_str(&env, ISSUER_TWO);
+        client.register_issuer(
+            &second_id,
+            &second_address,
+            &bytes(&env, 3),
+            &bytes(&env, 98),
+        );
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number = expiration);
+        assert_eq!(
+            client.try_suspend_issuer_by_role(
+                &bytes(&env, 0x3A),
+                &second_id,
+                &bytes(&env, 1),
+                &delegate,
+            ),
+            Err(Ok(IssuerError::InvalidTransition))
         );
     }
 }
@@ -3259,7 +3814,11 @@ mod upgrade_timelock_tests {
 
         let start_ledger = env.ledger().sequence();
 
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        client.approve_upgrade(
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &make_wasm_hash(&env),
+            &2,
+        );
 
         env.as_contract(&client.address, || {
             let approval: Option<UpgradeApproval> =
@@ -3275,7 +3834,11 @@ mod upgrade_timelock_tests {
 
         let start = env.ledger().sequence();
 
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        client.approve_upgrade(
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &make_wasm_hash(&env),
+            &2,
+        );
 
         env.as_contract(&client.address, || {
             let approval: Option<UpgradeApproval> =
@@ -3293,7 +3856,11 @@ mod upgrade_timelock_tests {
 
         let start = env.ledger().sequence();
 
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        client.approve_upgrade(
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &make_wasm_hash(&env),
+            &2,
+        );
 
         env.as_contract(&client.address, || {
             let approval: Option<UpgradeApproval> =
@@ -3310,7 +3877,11 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         // First approval
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        client.approve_upgrade(
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &make_wasm_hash(&env),
+            &2,
+        );
 
         let (first_created, first_earliest, first_expires) =
             env.as_contract(&client.address, || {
@@ -3329,7 +3900,11 @@ mod upgrade_timelock_tests {
             .set_sequence_number(env.ledger().sequence() + 1000);
 
         // Re-approve (outside as_contract closure)
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        client.approve_upgrade(
+            &BytesN::from_array(&env, &[2u8; 32]),
+            &make_wasm_hash(&env),
+            &2,
+        );
 
         env.as_contract(&client.address, || {
             let approval2: Option<UpgradeApproval> =
@@ -3359,7 +3934,7 @@ mod upgrade_timelock_tests {
 
         let hash = make_wasm_hash(&env);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&hash, &BytesN::from_array(&env, &[1u8; 32]), &2);
 
         // Try immediately (before timelock)
         let result = client.try_upgrade_contract(&hash, &2);
@@ -3377,7 +3952,7 @@ mod upgrade_timelock_tests {
 
         let hash = make_wasm_hash(&env);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&hash, &BytesN::from_array(&env, &[1u8; 32]), &2);
 
         // Advance to exactly earliest_execution
         env.ledger()
@@ -3394,7 +3969,7 @@ mod upgrade_timelock_tests {
 
         let hash = make_wasm_hash(&env);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&hash, &BytesN::from_array(&env, &[1u8; 32]), &2);
 
         // One ledger before timelock
         env.ledger()
@@ -3411,7 +3986,7 @@ mod upgrade_timelock_tests {
 
         let hash = make_wasm_hash(&env);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&hash, &BytesN::from_array(&env, &[1u8; 32]), &2);
 
         // Advance past expiry
         env.ledger()
@@ -3432,7 +4007,7 @@ mod upgrade_timelock_tests {
 
         let hash = make_wasm_hash(&env);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&hash, &BytesN::from_array(&env, &[1u8; 32]), &2);
 
         // Advance to exactly expires_at
         env.ledger()
@@ -3453,7 +4028,7 @@ mod upgrade_timelock_tests {
 
         let hash = make_wasm_hash(&env);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&hash, &BytesN::from_array(&env, &[1u8; 32]), &2);
 
         // Attempt execute before timelock (fails)
         let _ = client.try_upgrade_contract(&hash, &2);
@@ -3527,7 +4102,11 @@ mod upgrade_timelock_tests {
         env.ledger().set_sequence_number(10_000_000);
 
         // Must not panic — saturating_add used
-        let result = client.try_approve_upgrade(&make_wasm_hash(&env), &2);
+        let result = client.try_approve_upgrade(
+            &make_wasm_hash(&env),
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &2,
+        );
 
         assert!(
             result.is_ok(),
@@ -3553,7 +4132,7 @@ mod upgrade_timelock_tests {
 
         let hash = make_wasm_hash(&env);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&hash, &BytesN::from_array(&env, &[1u8; 32]), &2);
 
         // Advance past timelock
         env.ledger()
@@ -3579,7 +4158,7 @@ mod upgrade_timelock_tests {
         let approved_hash = make_wasm_hash(&env);
         let different_hash = BytesN::from_array(&env, &[2u8; 32]);
 
-        client.approve_upgrade(&approved_hash, &2);
+        client.approve_upgrade(&approved_hash, &BytesN::from_array(&env, &[1u8; 32]), &2);
 
         env.ledger()
             .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
@@ -3603,7 +4182,11 @@ mod upgrade_timelock_tests {
         client.initialize(&admin);
         env.set_auths(&[]);
 
-        let result = client.try_approve_upgrade(&make_wasm_hash(&env), &2);
+        let result = client.try_approve_upgrade(
+            &make_wasm_hash(&env),
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &2,
+        );
 
         assert!(result.is_err(), "Non-admin must not approve");
     }
@@ -3617,7 +4200,11 @@ mod upgrade_timelock_tests {
 
         env.mock_all_auths();
         client.initialize(&admin);
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        client.approve_upgrade(
+            &make_wasm_hash(&env),
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &2,
+        );
         env.set_auths(&[]);
 
         let result = client.try_upgrade_contract(&make_wasm_hash(&env), &2);
@@ -3634,7 +4221,11 @@ mod upgrade_timelock_tests {
 
         env.mock_all_auths();
         client.initialize(&admin);
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        client.approve_upgrade(
+            &make_wasm_hash(&env),
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &2,
+        );
         env.set_auths(&[]);
 
         let result = client.try_revoke_upgrade_approval();

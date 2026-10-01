@@ -190,14 +190,13 @@ fn cross_contract_rejection_publishes_nothing_from_either_contract() {
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x91),
             &hash(&deployment.env, 0x92),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -231,6 +230,7 @@ const FORBIDDEN_FIELDS: &[&str] = &[
     "signature",
     "key",
     "seed",
+    "commitment",
 ];
 
 /// Asserts that no payload field name resembles protected data.

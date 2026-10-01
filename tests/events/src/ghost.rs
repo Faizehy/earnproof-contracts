@@ -71,14 +71,13 @@ fn duplicate_proof_id_emits_no_event() {
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &proof_id,
             &hash(&deployment.env, 0x22),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -109,14 +108,13 @@ fn registration_while_paused_emits_no_event() {
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x31),
             &hash(&deployment.env, 0x32),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -131,14 +129,13 @@ fn unapproved_schema_emits_no_event() {
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x41),
             &hash(&deployment.env, 0x42),
             &deployment.issuer,
             &99, // never approved
             &expires,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -154,14 +151,13 @@ fn deprecated_schema_emits_no_event() {
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x43),
             &hash(&deployment.env, 0x44),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -191,14 +187,13 @@ fn revoked_issuer_registration_emits_no_event() {
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x51),
             &hash(&deployment.env, 0x52),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -215,14 +210,13 @@ fn suspended_issuer_registration_emits_no_event() {
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x53),
             &hash(&deployment.env, 0x54),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &expires,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -315,14 +309,13 @@ fn already_expired_proof_emits_no_event() {
     let past = deployment.env.ledger().timestamp() - 1;
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x61),
             &hash(&deployment.env, 0x62),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &past,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 
@@ -336,14 +329,13 @@ fn expiry_equal_to_now_emits_no_event() {
     let now = deployment.env.ledger().timestamp();
 
     let events = attempt_failure(&deployment, || {
-        deployment.proofs.register_proof(
+        deployment.proofs.register_proof_with_type_identifier(
             &hash(&deployment.env, 0x63),
             &hash(&deployment.env, 0x64),
             &deployment.issuer,
             &APPROVED_SCHEMA,
             &now,
-            &None,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
     });
 

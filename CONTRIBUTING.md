@@ -35,6 +35,7 @@ cargo build --workspace
 - Include negative tests for authorization failures and invalid transitions.
 - Keep private income data off-chain.
 - Update deployment docs and manifests when contract addresses or initialization flows change.
+- ///undone but
 
 ## Definition of Done
 

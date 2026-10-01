@@ -79,6 +79,7 @@ mod tests {
         let issuer_registry = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
         config.initialize(&admin);
         config.approve_schema_version(&1);
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
         issuer_registry.initialize(&admin);
         issuer_registry.register_issuer(
             &bytes(&env, 1),
@@ -95,25 +96,23 @@ mod tests {
         assert_eq!(bad_init, Err(Ok(ContractError::InvalidInput)));
 
         proof_client.initialize(&admin, &issuer_registry_id, &config_id);
-        let result = proof_client.try_register_proof(
+        let result = proof_client.try_register_proof_with_type_identifier(
             &bytes(&env, 3),
             &bytes(&env, 4),
             &Address::from_str(&env, ZERO_ADDR),
             &1,
             &1_000,
-            &None,
-            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(result, Err(Ok(ProofError::InvalidAddress)));
 
-        let self_result = proof_client.try_register_proof(
+        let self_result = proof_client.try_register_proof_with_type_identifier(
             &bytes(&env, 5),
             &bytes(&env, 6),
             &proof_id,
             &1,
             &1_000,
-            &None,
-            &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
         assert_eq!(self_result, Err(Ok(ProofError::InvalidAddress)));
     }

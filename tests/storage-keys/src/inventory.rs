@@ -158,8 +158,8 @@ fn lookup_helpers_agree_with_the_inventory() {
             "AddressIssuer",
             "AddressTtl",
             "Issuer",
-            "IssuerTtl",
-            "ReactivatableAt"
+            "IssuerIndex",
+            "IssuerTtl"
         ]
     );
 

@@ -10,7 +10,7 @@
 
 use crate::harness::{authorize, hash, Deployment, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, BytesN, IntoVal};
+use soroban_sdk::{Address, IntoVal};
 
 /// Attempts every privileged `protocol-config` mutation signed by `signer`,
 /// returning `(entry point, accepted?)` pairs.
@@ -201,22 +201,20 @@ fn a_rotated_out_issuer_address_loses_issuer_status() {
             &old,
             &APPROVED_SCHEMA,
             &expires_at,
-            &None::<BytesN<32>>,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
             .into_val(&deployment.env),
     );
     assert!(
         deployment
             .proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &proof_id,
                 &commitment,
                 &old,
                 &APPROVED_SCHEMA,
                 &expires_at,
-                &None,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
             )
             .is_err(),
         "a rotated-out issuer address must not register proofs"
@@ -235,22 +233,20 @@ fn a_rotated_out_issuer_address_loses_issuer_status() {
             &replacement,
             &APPROVED_SCHEMA,
             &expires_at,
-            &None::<BytesN<32>>,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
             .into_val(&deployment.env),
     );
     assert!(
         deployment
             .proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &proof_id,
                 &commitment,
                 &replacement,
                 &APPROVED_SCHEMA,
                 &expires_at,
-                &None,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
             )
             .is_ok(),
         "the replacement address must be able to register proofs"

@@ -83,7 +83,7 @@ mod tests {
         let config = ProtocolConfigContractClient::new(&clock.env, &config_id);
         config.initialize(&admin);
         config.approve_schema_version(&1);
-        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&clock.env, &[1; 32]));
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&clock.env, &[1u8; 32]));
         let issuers_id = clock.env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&clock.env, &issuers_id);
         issuers.initialize(&admin);
@@ -105,14 +105,13 @@ mod tests {
     }
 
     fn register(fixture: &Fixture, id: u8, expires_at: u64) {
-        fixture.proofs.register_proof(
+        fixture.proofs.register_proof_with_type_identifier(
             &bytes(&fixture.clock.env, id),
             &bytes(&fixture.clock.env, id.wrapping_add(10)),
             &fixture.issuer,
             &1,
             &expires_at,
-            &None,
-            &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32]),
         );
     }
 
@@ -133,14 +132,13 @@ mod tests {
         let fixture = fixture();
         for (id, expires_at) in [(1, NOW - 1), (2, NOW), (3, 0)] {
             assert_eq!(
-                fixture.proofs.try_register_proof(
+                fixture.proofs.try_register_proof_with_type_identifier(
                     &bytes(&fixture.clock.env, id),
                     &bytes(&fixture.clock.env, id + 10),
                     &fixture.issuer,
                     &1,
                     &expires_at,
-                    &None,
-                    &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1; 32])
+                    &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
                 ),
                 Err(Ok(ProofError::ProofExpired))
             );
@@ -162,27 +160,25 @@ mod tests {
     fn zero_schema_and_pause_are_deterministic_guards() {
         let fixture = fixture();
         assert_eq!(
-            fixture.proofs.try_register_proof(
+            fixture.proofs.try_register_proof_with_type_identifier(
                 &bytes(&fixture.clock.env, 5),
                 &bytes(&fixture.clock.env, 6),
                 &fixture.issuer,
                 &0,
                 &(NOW + 1),
-                &None,
-                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::InvalidSchemaVersion))
         );
         fixture.config.pause();
         assert_eq!(
-            fixture.proofs.try_register_proof(
+            fixture.proofs.try_register_proof_with_type_identifier(
                 &bytes(&fixture.clock.env, 7),
                 &bytes(&fixture.clock.env, 8),
                 &fixture.issuer,
                 &1,
                 &(NOW + 1),
-                &None,
-                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::ContractPaused))
         );
@@ -234,14 +230,13 @@ mod tests {
         let fixture = fixture();
         fixture.config.deprecate_schema_version(&1);
         assert_eq!(
-            fixture.proofs.try_register_proof(
+            fixture.proofs.try_register_proof_with_type_identifier(
                 &bytes(&fixture.clock.env, 20),
                 &bytes(&fixture.clock.env, 30),
                 &fixture.issuer,
                 &1,
                 &(NOW + 1),
-                &None,
-                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::UnsupportedSchema))
         );
@@ -252,23 +247,16 @@ mod tests {
         let fixture = fixture();
         // Approve and deprecate at the same timestamp — no time passes.
         fixture.config.approve_schema_version(&2);
-        fixture
-            .config
-            .approve_proof_type(&soroban_sdk::BytesN::from_array(
-                &fixture.clock.env,
-                &[1; 32],
-            ));
         fixture.config.deprecate_schema_version(&2);
         assert!(!fixture.config.is_schema_version_approved(&2));
         assert_eq!(
-            fixture.proofs.try_register_proof(
+            fixture.proofs.try_register_proof_with_type_identifier(
                 &bytes(&fixture.clock.env, 21),
                 &bytes(&fixture.clock.env, 31),
                 &fixture.issuer,
                 &2,
                 &(NOW + 1),
-                &None,
-                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::UnsupportedSchema))
         );
@@ -286,14 +274,13 @@ mod tests {
             .is_valid_proof(&bytes(&fixture.clock.env, 22)));
         // But a new registration against the same (now deprecated) schema fails.
         assert_eq!(
-            fixture.proofs.try_register_proof(
+            fixture.proofs.try_register_proof_with_type_identifier(
                 &bytes(&fixture.clock.env, 23),
                 &bytes(&fixture.clock.env, 33),
                 &fixture.issuer,
                 &1,
                 &(NOW + 100),
-                &None,
-                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::UnsupportedSchema))
         );
@@ -305,14 +292,13 @@ mod tests {
     fn zero_expires_at_rejected() {
         let fixture = fixture();
         assert_eq!(
-            fixture.proofs.try_register_proof(
+            fixture.proofs.try_register_proof_with_type_identifier(
                 &bytes(&fixture.clock.env, 40),
                 &bytes(&fixture.clock.env, 50),
                 &fixture.issuer,
                 &1,
                 &0,
-                &None,
-                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&fixture.clock.env, &[1u8; 32])
             ),
             Err(Ok(ProofError::ProofExpired))
         );
@@ -327,7 +313,7 @@ mod tests {
         let config = ProtocolConfigContractClient::new(&clock.env, &config_id);
         config.initialize(&admin);
         config.approve_schema_version(&1);
-        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&clock.env, &[1; 32]));
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&clock.env, &[1u8; 32]));
         let issuers_id = clock.env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&clock.env, &issuers_id);
         issuers.initialize(&admin);
@@ -342,14 +328,13 @@ mod tests {
         proofs.initialize(&admin, &issuers_id, &config_id);
 
         // expires_at = 1, now = 0 → 1 > 0, should succeed.
-        proofs.register_proof(
+        proofs.register_proof_with_type_identifier(
             &bytes(&clock.env, 41),
             &bytes(&clock.env, 51),
             &issuer,
             &1,
             &1,
-            &None,
-            &soroban_sdk::BytesN::from_array(&clock.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&clock.env, &[1u8; 32]),
         );
         assert!(proofs.is_valid_proof(&bytes(&clock.env, 41)));
     }

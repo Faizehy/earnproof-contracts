@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol};
+use soroban_sdk::{
+    contracterror, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+};
 
 pub mod storage_namespaces;
 
@@ -41,6 +43,10 @@ pub const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
 /// Stale approvals expire and must be re-approved.
 /// ~30 days at 5s/ledger = 518_400 ledgers
 pub const UPGRADE_APPROVAL_EXPIRY_LEDGERS: u32 = 518_400;
+/// Maximum number of distinct signers in a critical-action approval policy.
+pub const MAX_CRITICAL_ACTION_SIGNERS: u32 = 16;
+/// Maximum lifetime of a critical-action proposal, in ledgers.
+pub const CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS: u32 = 518_400;
 /// Storage layout version for the migration checkpoint record.
 pub const MIGRATION_STATUS_VERSION: u32 = 1;
 
@@ -55,6 +61,14 @@ pub const MAX_MIGRATION_BATCH: u32 = 100;
 /// exceed that footprint limit at 25. 20 leaves comfortable headroom on
 /// both the registration and revocation paths.
 pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
+
+/// Maximum number of issuer entries a single bounded discovery page may return.
+/// The cap is intentionally strict and shared across the registry's public
+/// discovery APIs so callers cannot force large reads into the contract.
+pub const MAX_ISSUER_PAGE: u32 = 20;
+pub const MAX_ISSUER_DISCOVERY_PAGE: u32 = 20;
+pub const MAX_ISSUER_ENUM_PAGE: u32 = 20;
+pub const MAX_SCHEMA_PAGE: u32 = 20;
 
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
@@ -82,6 +96,16 @@ pub const DEFAULT_SCHEMA_PAYLOAD_LIMIT: u32 = 4096;
 /// limit. A zero maximum means registrations are paused for that schema.
 pub const DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS: u32 = 1_000;
 pub const DEFAULT_SCHEMA_RATE_LIMIT: u32 = u32::MAX;
+
+/// Maximum validity duration that protocol governance may assign to a schema.
+pub const MAX_SCHEMA_VALIDITY_SECONDS: u64 = 3_153_600_000;
+/// Maximum number of numeric proof types allowed in one schema policy.
+pub const MAX_SCHEMA_PROOF_TYPES: u32 = 16;
+/// Compatibility proof type used by legacy registration entry points.
+pub const LEGACY_PROOF_TYPE: u32 = 0;
+/// Stable commitment algorithm identifiers; zero retains the legacy behavior.
+pub const LEGACY_COMMITMENT_ALGORITHM: u32 = 0;
+pub const SHA256_COMMITMENT_ALGORITHM_V1: u32 = 1;
 
 /// Governed, fixed-size issuance policy for one schema version.
 #[contracttype]
@@ -146,6 +170,26 @@ pub struct ProofPayloadRecord {
     pub payload_len: u32,
     /// SHA-256 hash of the auxiliary payload.
     pub payload_hash: BytesN<32>,
+}
+
+/// Per-schema registration policy. Proof-type identifiers are stable numeric
+/// values defined by the integrating application; the legacy identifier `0`
+/// is reserved for the original registration API.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaPolicy {
+    pub proof_types: soroban_sdk::Vec<u32>,
+    pub max_validity_seconds: u64,
+}
+
+/// Immutable registration metadata kept separately from `ProofRecord` so
+/// existing persisted proof records remain decodable across upgrades.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofPolicySnapshot {
+    pub proof_type: u32,
+    pub commitment_algorithm: u32,
+    pub max_validity_seconds: u64,
 }
 
 pub fn protocol_config_digest(
@@ -308,7 +352,70 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceRole {
+    ProtocolPause,
+    SchemaManagement,
+    IssuerManagement,
+    ProofAdministration,
+    DependencyManagement,
+    UpgradeManagement,
+    Recovery,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceRoleAssignment {
+    pub role: GovernanceRole,
+    pub address: Address,
+    pub activation_ledger: u32,
+    pub expiration_ledger: Option<u32>,
+    pub proposal_id: BytesN<32>,
+}
+
+impl GovernanceRoleAssignment {
+    pub fn is_active_at(&self, ledger: u32) -> bool {
+        ledger >= self.activation_ledger
+            && self
+                .expiration_ledger
+                .map(|expiration| ledger < expiration)
+                .unwrap_or(true)
+    }
+
+    pub fn is_pending_at(&self, ledger: u32) -> bool {
+        ledger < self.activation_ledger
+    }
+}
+
+/// Derives a network- and contract-scoped key for one-time governance
+/// proposal execution tracking.
+pub fn proposal_domain_key(
+    env: &Env,
+    contract_name: Symbol,
+    proposal_id: &BytesN<32>,
+) -> BytesN<32> {
+    let network_id = env.ledger().network_id();
+    let payload = (
+        Symbol::new(env, "earnproof_proposal_v1"),
+        network_id,
+        contract_name,
+        proposal_id.clone(),
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RotationRecord {
+    pub old_address: Address,
+    pub new_address: Address,
+    pub rotated_at: u64,
+    pub ledger_sequence: u32,
+}
 
 /// Returns true when `actual` is compatible with the `required` minimum.
 ///
@@ -368,11 +475,11 @@ pub enum ContractError {
     // Input validation errors (60-79)
     InvalidInput = 60,
     InvalidAddress = 61,
-    // Batch query bounds (shared query rejection).
-    BatchTooLarge = 62,
+    /// A bounded batch query supplied more items than its documented maximum.
+    BatchTooLarge = 64,
     /// A cross-contract dependency reported an interface version outside the
     /// range the consumer accepts.
-    IncompatibleInterfaceVersion = 63,
+    IncompatibleInterfaceVersion = 62,
 
     // Protocol state errors (80-99)
     ProtocolPaused = 80,
@@ -383,6 +490,11 @@ pub enum ContractError {
     UpgradeApprovalExpired = 92,
     WasmHashMismatch = 93,
     InvalidTimingConfig = 94,
+    ThresholdApprovalRequired = 95,
+    ApprovalProposalNotFound = 96,
+    ApprovalProposalExpired = 97,
+    InsufficientApprovals = 98,
+    InvalidApprovalPolicy = 99,
 }
 
 /// Issuer-specific errors (200-299).
@@ -400,11 +512,11 @@ pub enum IssuerError {
     InvalidAddress = 207,
     /// Registering or reactivating this issuer would exceed the governed
     /// maximum active-issuer capacity.
-    IssuerCapacityExceeded = 211,
+    IssuerCapacityExceeded = 208,
     /// The metadata commitment did not match the required fixed-size format.
-    InvalidMetadataCommitment = 212,
+    InvalidMetadataCommitment = 211,
     /// A batch query supplied more identifiers than [`MAX_ISSUER_STATUS_BATCH`].
-    BatchTooLarge = 208,
+    BatchTooLarge = 212,
     /// A requested capacity limit is below the current active-issuer usage and
     /// no explicit override was supplied.
     MaxBelowActiveUsage = 209,
@@ -441,6 +553,12 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    /// The proof registry has reached its configured capacity.
+    ProofCapacityReached = 318,
+    /// Proof-count accounting must be reconciled before registration can proceed.
+    ProofAccountingUnavailable = 319,
+    /// A proof-count counter cannot be incremented without overflowing.
+    ProofCountOverflow = 320,
     /// A batch operation was given zero entries or more than
     /// `MAX_PROOF_BATCH_SIZE` entries.
     /// Recovery: split the batch into chunks of at most `MAX_PROOF_BATCH_SIZE`.
@@ -463,16 +581,187 @@ pub enum ProofError {
     /// (already withdrawn, resolved, or rejected).
     /// Recovery: read the dispute's current status; it is terminal.
     DisputeNotOpen = 315,
+    /// The proof-type identifier is unknown or deprecated in protocol config.
+    UnsupportedProofType = 316,
+    /// The network passphrase or asset identifier is not canonical, or the
+    /// passphrase does not match the current ledger network.
+    InvalidProofContext = 317,
     /// A proof cannot supersede itself or create a supersession cycle.
-    CyclicSupersession = 316,
+    CyclicSupersession = 321,
     /// Supersession is restricted to proofs from the same issuer.
-    CrossIssuerSupersession = 317,
+    CrossIssuerSupersession = 322,
     /// The specified predecessor proof was not found.
-    PredecessorNotFound = 318,
+    PredecessorNotFound = 323,
     /// The predecessor already has the maximum number of successors.
-    TooManySuccessors = 319,
-    /// The proof type is not supported by the protocol.
-    UnsupportedProofType = 320,
+    TooManySuccessors = 324,
+}
+
+/// Versioned asset identifier accepted by context-aware proof registration.
+/// Issued asset codes are case-sensitive ASCII alphanumeric strings of 1-12
+/// characters; the variant tag keeps native XLM distinct from an issued asset
+/// whose code happens to be `XLM`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProofAssetIdentifier {
+    Native,
+    Issued(String, Address),
+}
+
+/// Public commitments that bind a proof claim to the network and asset policy
+/// used by the backend. The raw network passphrase and asset identifier are
+/// never stored in proof-registry.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofContextCommitments {
+    pub version: u32,
+    pub network_commitment: BytesN<32>,
+    pub asset_commitment: BytesN<32>,
+    pub proof_context_commitment: BytesN<32>,
+}
+
+/// Context options supplied by an issuer during context-aware proof
+/// registration. Raw passphrases and asset identifiers are not persisted.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofRegistrationContext {
+    pub network_passphrase: String,
+    pub asset: ProofAssetIdentifier,
+    pub payload: Option<Bytes>,
+    /// Fixed-size opaque commitment. All-zero bytes mean no pseudonym was
+    /// supplied; non-zero values are stored as opaque bytes only.
+    pub subject_pseudonym_commitment: BytesN<32>,
+}
+
+/// Computes version-1 network, asset, and claim-context commitments.
+///
+/// Network passphrases must be 1-128 visible ASCII bytes with no leading or
+/// trailing spaces. Issued asset identifiers use the exact case-sensitive
+/// ASCII code and a valid Stellar account address as issuer.
+pub fn compute_proof_context_commitments(
+    env: &Env,
+    claim_commitment: &BytesN<32>,
+    network_passphrase: &String,
+    asset: &ProofAssetIdentifier,
+) -> Option<ProofContextCommitments> {
+    let network_bytes = network_passphrase.to_bytes();
+    let network_len = network_bytes.len();
+    if network_len == 0 || network_len > 128 {
+        return None;
+    }
+    for index in 0..network_len {
+        let byte = network_bytes.get(index)?;
+        if !(0x20..=0x7e).contains(&byte)
+            || (index == 0 || index == network_len - 1) && byte == b' '
+        {
+            return None;
+        }
+    }
+    if env.crypto().sha256(&network_bytes).to_bytes() != env.ledger().network_id() {
+        return None;
+    }
+
+    let mut network_preimage = Bytes::from_slice(env, b"earnproof.network.v1\0");
+    network_preimage.append(&network_bytes);
+    let network_commitment = env.crypto().sha256(&network_preimage).to_bytes();
+
+    let mut asset_preimage = Bytes::from_slice(env, b"earnproof.asset.v1\0");
+    match asset {
+        ProofAssetIdentifier::Native => asset_preimage.append(&Bytes::from_slice(env, b"native")),
+        ProofAssetIdentifier::Issued(code, issuer) => {
+            let code_bytes = code.to_bytes();
+            let code_len = code_bytes.len();
+            if code_len == 0 || code_len > 12 || !is_valid_account_address(issuer) {
+                return None;
+            }
+            for index in 0..code_len {
+                let byte = code_bytes.get(index)?;
+                if !byte.is_ascii_alphanumeric() {
+                    return None;
+                }
+            }
+            asset_preimage.append(&Bytes::from_slice(env, b"issued\0"));
+            asset_preimage.append(&Bytes::from_array(env, &[code_len as u8]));
+            asset_preimage.append(&code_bytes);
+            asset_preimage.append(&issuer.to_string().to_bytes());
+        }
+    };
+    let asset_commitment = env.crypto().sha256(&asset_preimage).to_bytes();
+
+    let mut context_preimage = Bytes::from_slice(env, b"earnproof.proof-context.v1\0");
+    context_preimage.append(&Bytes::from_slice(
+        env,
+        claim_commitment.to_array().as_slice(),
+    ));
+    context_preimage.append(&network_commitment.to_bytes());
+    context_preimage.append(&asset_commitment.to_bytes());
+    let proof_context_commitment = env.crypto().sha256(&context_preimage).to_bytes();
+
+    Some(ProofContextCommitments {
+        version: 1,
+        network_commitment,
+        asset_commitment,
+        proof_context_commitment,
+    })
+}
+
+/// Returns true for a canonical account address, excluding contract addresses
+/// that cannot issue a classic Stellar asset.
+pub fn is_valid_account_address(address: &Address) -> bool {
+    is_valid_principal_address(address) && address.to_string().to_bytes().get(0) == Some(b'G')
+}
+
+/// Derives a storage identifier for a context-bound proof record. Reusing the
+/// same caller claim ID with a different network or asset yields a distinct
+/// record key.
+pub fn derive_contextual_proof_id(
+    env: &Env,
+    claim_id: &BytesN<32>,
+    context_commitment: &BytesN<32>,
+) -> BytesN<32> {
+    let mut preimage = Bytes::from_slice(env, b"earnproof.proof-record.v1\0");
+    preimage.append(&claim_id.to_bytes());
+    preimage.append(&context_commitment.to_bytes());
+    env.crypto().sha256(&preimage).to_bytes()
+}
+
+/// Computes an issuer- and purpose-scoped commitment for a subject pseudonym.
+/// The raw pseudonym is input only and is never included in a persisted record.
+pub fn compute_subject_pseudonym_commitment(
+    env: &Env,
+    issuer_address: &Address,
+    domain: &String,
+    subject_pseudonym: &BytesN<32>,
+) -> Option<BytesN<32>> {
+    if !is_valid_account_address(issuer_address) {
+        return None;
+    }
+    let domain_bytes = domain.to_bytes();
+    let domain_len = domain_bytes.len();
+    if domain_len == 0 || domain_len > 64 {
+        return None;
+    }
+    for index in 0..domain_len {
+        let byte = domain_bytes.get(index)?;
+        if !(0x21..=0x7e).contains(&byte) {
+            return None;
+        }
+    }
+
+    let mut preimage = Bytes::from_slice(env, b"earnproof.subject-pseudonym.v1\0");
+    preimage.append(&Bytes::from_array(env, &[domain_len as u8]));
+    preimage.append(&domain_bytes);
+    preimage.append(&issuer_address.to_string().to_bytes());
+    preimage.append(&subject_pseudonym.to_bytes());
+    Some(env.crypto().sha256(&preimage).to_bytes())
+}
+
+/// Interprets the all-zero commitment sentinel as explicit absence.
+pub fn optional_subject_pseudonym_commitment(commitment: &BytesN<32>) -> Option<BytesN<32>> {
+    if commitment.to_array() == [0; 32] {
+        None
+    } else {
+        Some(commitment.clone())
+    }
 }
 
 /// Fixed capacity of the protocol-config change-history ring. Once this many
@@ -498,6 +787,72 @@ pub enum ConfigChangeCategory {
     SchemaApproval,
     SchemaDeprecation,
     SchemaPayloadLimit,
+    SchemaPolicy,
+    CommitmentAlgorithmPolicy,
+    ApprovalPolicyUpdate,
+}
+
+/// Category of a protocol mutation that may require threshold approval.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CriticalActionCategory {
+    SchemaApproval,
+    SchemaDeprecation,
+    SchemaPayloadLimit,
+    IssuerRegistryReplacement,
+    ProtocolConfigReplacement,
+    ApprovalPolicyUpdate,
+}
+
+/// Canonical parameters for a threshold-governed protocol action.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CriticalAction {
+    SchemaApproval(u32),
+    SchemaDeprecation(u32),
+    SchemaPayloadLimit(u32, u32),
+    IssuerRegistryReplacement(Address),
+    ProtocolConfigReplacement(Address),
+    ApprovalPolicyUpdate(CriticalActionPolicy),
+}
+
+impl CriticalAction {
+    pub fn category(&self) -> CriticalActionCategory {
+        match self {
+            Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
+            Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
+            Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
+            Self::IssuerRegistryReplacement(_) => {
+                CriticalActionCategory::IssuerRegistryReplacement
+            }
+            Self::ProtocolConfigReplacement(_) => {
+                CriticalActionCategory::ProtocolConfigReplacement
+            }
+            Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
+        }
+    }
+}
+
+/// Optional multi-party approval policy for critical protocol actions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CriticalActionPolicy {
+    pub enabled: bool,
+    pub threshold: u32,
+    pub signers: Vec<Address>,
+}
+
+/// Persisted proposal and approval window for a critical protocol action.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CriticalActionProposal {
+    pub action: CriticalAction,
+    pub category: CriticalActionCategory,
+    pub policy: CriticalActionPolicy,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u32,
+    pub expires_at: u32,
 }
 
 /// One bounded, on-chain summary of a governance change, as stored in the
@@ -535,6 +890,30 @@ pub enum IssuerStatus {
     Suspended,
     Revoked,
 }
+
+/// Public issuer summary intended for bounded discovery pages. It excludes the
+/// private metadata commitments and policy values, while still exposing the
+/// stable identifier and current status needed for indexing and filtering.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerDiscoveryEntry {
+    pub issuer_id_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub status: IssuerStatus,
+    pub updated_at: u64,
+}
+
+pub type IssuerSummary = IssuerDiscoveryEntry;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaVersionSummary {
+    pub version: u32,
+    pub approved: bool,
+}
+
+pub type SchemaSummary = SchemaVersionSummary;
+pub type SchemaVersionDiscoveryEntry = SchemaVersionSummary;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -616,6 +995,41 @@ pub struct IssuerPolicyCommitments {
     pub jurisdiction_commitment: BytesN<32>,
 }
 
+/// Maximum schema versions accepted by one bounded status query.
+pub const MAX_SCHEMA_STATUS_BATCH: u32 = 50;
+
+/// Lifecycle state for one schema version in a batch query.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchemaVersionState {
+    Unknown,
+    Approved,
+    Deprecated,
+}
+
+/// One version and its status in a bounded schema query response.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaStatusResult {
+    pub version: u32,
+    pub state: SchemaVersionState,
+}
+
+/// Maximum number of predecessor links a schema-lineage query may traverse.
+pub const MAX_SCHEMA_LINEAGE_DEPTH: u32 = 32;
+
+/// Canonical reason returned by the dependency-aware proof validity query.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProofValidityReason {
+    Valid,
+    Unknown,
+    Revoked,
+    Expired,
+    IssuerInactive,
+    SchemaDeprecated,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IssuerRecord {
@@ -653,18 +1067,22 @@ pub struct IssuerRecord {
 pub struct ProofRecord {
     pub proof_id_hash: BytesN<32>,
     pub commitment_hash: BytesN<32>,
+    pub disclosure_policy_hash: BytesN<32>,
     pub issuer_address: Address,
     pub status: ProofStatus,
     pub schema_version: u32,
     pub expires_at: u64,
     pub created_at: u64,
-    /// Ledger timestamp at which the proof was revoked. `0` while the proof is
-    /// active.
     pub revoked_at: u64,
     /// Ledger sequence at which the proof was revoked; zero while active.
     pub revoked_ledger: u32,
     pub predecessor_id_hash: Option<BytesN<32>>,
+    /// Stable protocol proof type. `None` is the explicit legacy marker for
+    /// records written before proof types were committed to storage.
     pub proof_type: Option<BytesN<32>>,
+    /// Monotonically increasing sequence number for proofs issued by this
+    /// issuer. The first proof for an issuer is `1`.
+    pub sequence_number: u64,
     /// Ledger sequence at which this proof was created (registered).
     /// [`LEDGER_SEQUENCE_UNSET`] marks a legacy record predating this field.
     pub created_ledger: u32,
@@ -726,6 +1144,18 @@ pub enum ProofValidity {
     Valid,
 }
 
+/// Detailed timing metadata returned alongside a proof validity summary.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofValidityDetails {
+    pub status: ProofStatus,
+    pub is_valid: bool,
+    pub expires_at: u64,
+    pub revoked: bool,
+    pub revoked_at: u64,
+    pub revoked_ledger: u32,
+}
+
 /// One entry of a bounded batch registration request.
 ///
 /// Mirrors the per-proof arguments of `register_proof` minus `issuer_address`,
@@ -737,6 +1167,7 @@ pub struct ProofRegistrationInput {
     pub commitment_hash: BytesN<32>,
     pub schema_version: u32,
     pub expires_at: u64,
+    pub proof_type: BytesN<32>,
 }
 
 /// Lifecycle state of a proof dispute. Terminal once `Withdrawn`, `Resolved`,
@@ -815,6 +1246,22 @@ pub struct UpgradeReceipt {
     pub new_version: u32,
     pub upgraded_at: u64,
     pub upgraded_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeCompatibilityAttestation {
+    pub version: u32,
+    pub abi_commitment: BytesN<32>,
+    pub storage_commitment: BytesN<32>,
+    pub review_commitment: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestedUpgradeReceipt {
+    pub receipt: UpgradeReceipt,
+    pub attestation: UpgradeCompatibilityAttestation,
 }
 
 /// Bounded, on-chain record of a proof that has been archived after
@@ -930,66 +1377,6 @@ pub enum ApprovalQuery {
     Revoked(UpgradeApprovalMetadata),
 }
 
-/// Structured validity answer for a single proof, delivering the effective
-/// revocation timing alongside the validity verdict.
-///
-/// The `revoked` flag is the guard for the timing fields: when it is `false`
-/// (any proof that is not revoked) `revoked_at` and `revoked_ledger` are `0` and
-/// carry no meaning, so an active proof never exposes a fabricated revocation
-/// time. When it is `true`, `revoked_at` and `revoked_ledger` are the timing
-/// captured atomically at revocation; `revoked_ledger` is `0` for a legacy
-/// record revoked before the sequence was recorded, where the timestamp remains
-/// authoritative.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProofValidityDetails {
-    pub status: ProofStatus,
-    pub is_valid: bool,
-    pub expires_at: u64,
-    pub revoked: bool,
-    pub revoked_at: u64,
-    pub revoked_ledger: u32,
-}
-
-/// Upper bound on the number of versions a single bounded batch schema status
-/// query may carry. The limit is enforced before any storage access so an
-/// oversized request cannot force unbounded host work.
-pub const MAX_SCHEMA_STATUS_BATCH: u32 = 50;
-
-/// Lifecycle state of a schema version, as reported by a bounded batch status
-/// query.
-///
-/// The three states are mutually exclusive and cover the whole lifecycle:
-/// `Unknown` is a version that was never approved (no stored record), `Approved`
-/// is one that is currently active, and `Deprecated` is one that was approved
-/// and later withdrawn. Keeping `Deprecated` distinct from `Unknown` lets a
-/// caller tell "never seen" apart from "withdrawn".
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SchemaVersionState {
-    Unknown,
-    Approved,
-    Deprecated,
-}
-
-/// One entry in a bounded batch schema status response.
-///
-/// The version is echoed back next to its state so callers can correlate
-/// results by value; combined with preserved input ordering this makes
-/// duplicate versions in the request unambiguous in the response.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SchemaStatusResult {
-    pub version: u32,
-    pub state: SchemaVersionState,
-}
-
-/// Maximum length of a schema lineage chain the contract will walk when
-/// validating a predecessor or answering a lineage query. It bounds the storage
-/// reads a single call can trigger and, together with the self-predecessor and
-/// cycle checks, keeps lineage traversal terminating.
-pub const MAX_SCHEMA_LINEAGE_DEPTH: u32 = 32;
-
 // ── Shared Test Utilities ──────────────────────────────────────────────────────
 // These utilities provide common patterns for initialization adversarial testing
 // across all contracts, ensuring consistent test coverage for re-initialization
@@ -1046,6 +1433,295 @@ mod interface_version_tests {
             &BASE,
             &InterfaceVersion::new(0, 9, 9)
         ));
+    }
+}
+
+#[cfg(test)]
+mod proof_context_tests {
+    extern crate std;
+
+    use super::*;
+    use soroban_sdk::{contract, contractimpl, testutils::Ledger as _, Env};
+
+    #[contract]
+    pub struct TestContextContract;
+
+    #[contractimpl]
+    impl TestContextContract {
+        pub fn ping(_env: Env) {}
+    }
+
+    const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+    const ISSUER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
+    const OTHER_ISSUER: &str = "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG";
+
+    fn bytes32(env: &Env, hex: &str) -> BytesN<32> {
+        assert_eq!(hex.len(), 64);
+        let mut bytes = [0_u8; 32];
+        for (index, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+            bytes[index] = u8::from_str_radix(core::str::from_utf8(pair).unwrap(), 16).unwrap();
+        }
+        BytesN::from_array(env, &bytes)
+    }
+
+    fn vector_hex(id: &str) -> &'static str {
+        include_str!("../../../tests/fixtures/encoding/vectors.tsv")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .find_map(|line| {
+                let fields: std::vec::Vec<&str> = line.split('\t').collect();
+                (fields[0] == id).then_some(fields[3])
+            })
+            .unwrap_or_else(|| panic!("missing encoding vector {id}"))
+    }
+
+    #[test]
+    fn cross_language_context_vectors_match() {
+        let env = Env::default();
+        let claim = bytes32(
+            &env,
+            "7261c38367d18cd03b133d7011956d1a8a35daf3e379aed2d45cdf33be235f35",
+        );
+        let claim_id = bytes32(
+            &env,
+            "c5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19",
+        );
+        let passphrase = String::from_str(&env, TESTNET_PASSPHRASE);
+        env.ledger()
+            .set_network_id(env.crypto().sha256(&passphrase.to_bytes()).to_array());
+
+        let native = compute_proof_context_commitments(
+            &env,
+            &claim,
+            &passphrase,
+            &ProofAssetIdentifier::Native,
+        )
+        .unwrap();
+        assert_eq!(
+            native.network_commitment,
+            bytes32(&env, vector_hex("network-v1"))
+        );
+        assert_eq!(
+            native.asset_commitment,
+            bytes32(&env, vector_hex("asset-native-v1"))
+        );
+        assert_eq!(
+            native.proof_context_commitment,
+            bytes32(&env, vector_hex("context-native-v1"))
+        );
+        assert_eq!(
+            derive_contextual_proof_id(&env, &claim_id, &native.proof_context_commitment),
+            bytes32(&env, vector_hex("record-native-v1"))
+        );
+
+        let issuer = Address::from_str(&env, ISSUER);
+        let issued = compute_proof_context_commitments(
+            &env,
+            &claim,
+            &passphrase,
+            &ProofAssetIdentifier::Issued(String::from_str(&env, "USDC"), issuer),
+        )
+        .unwrap();
+        assert_eq!(
+            issued.asset_commitment,
+            bytes32(&env, vector_hex("asset-issued-usdc-v1"))
+        );
+        assert_eq!(
+            issued.proof_context_commitment,
+            bytes32(&env, vector_hex("context-issued-usdc-v1"))
+        );
+        assert_eq!(
+            derive_contextual_proof_id(&env, &claim_id, &issued.proof_context_commitment),
+            bytes32(&env, vector_hex("record-issued-usdc-v1"))
+        );
+        assert_ne!(
+            native.proof_context_commitment,
+            issued.proof_context_commitment
+        );
+    }
+
+    #[test]
+    fn malformed_or_wrong_network_context_is_rejected() {
+        let env = Env::default();
+        let claim = BytesN::from_array(&env, &[1; 32]);
+        let passphrase = String::from_str(&env, TESTNET_PASSPHRASE);
+        let bad_code = ProofAssetIdentifier::Issued(
+            String::from_str(&env, "USDC-USD"),
+            Address::from_str(&env, ISSUER),
+        );
+        assert!(compute_proof_context_commitments(&env, &claim, &passphrase, &bad_code).is_none());
+
+        for value in [
+            "",
+            " Test SDF Network ; September 2015",
+            "Test SDF Network ; September 2015 ",
+            "Mainnet",
+        ] {
+            assert!(compute_proof_context_commitments(
+                &env,
+                &claim,
+                &String::from_str(&env, value),
+                &ProofAssetIdentifier::Native,
+            )
+            .is_none());
+        }
+
+        let contract_issuer = env.register(TestContextContract, ());
+        let contract_asset =
+            ProofAssetIdentifier::Issued(String::from_str(&env, "USDC"), contract_issuer);
+        assert!(
+            compute_proof_context_commitments(&env, &claim, &passphrase, &contract_asset).is_none()
+        );
+    }
+
+    #[test]
+    fn same_claim_is_bound_to_distinct_network_ids() {
+        let env = Env::default();
+        let claim = BytesN::from_array(&env, &[7; 32]);
+        let claim_id = BytesN::from_array(&env, &[8; 32]);
+        let testnet = String::from_str(&env, TESTNET_PASSPHRASE);
+        let testnet_id = env.crypto().sha256(&testnet.to_bytes()).to_array();
+        env.ledger().set_network_id(testnet_id);
+        let testnet_context = compute_proof_context_commitments(
+            &env,
+            &claim,
+            &testnet,
+            &ProofAssetIdentifier::Native,
+        )
+        .unwrap();
+
+        let public_passphrase =
+            String::from_str(&env, "Public Global Stellar Network ; September 2015");
+        let public_id = env
+            .crypto()
+            .sha256(&public_passphrase.to_bytes())
+            .to_array();
+        env.ledger().set_network_id(public_id);
+        let public_context = compute_proof_context_commitments(
+            &env,
+            &claim,
+            &public_passphrase,
+            &ProofAssetIdentifier::Native,
+        )
+        .unwrap();
+
+        assert_ne!(
+            testnet_context.network_commitment,
+            public_context.network_commitment
+        );
+        assert_ne!(
+            testnet_context.proof_context_commitment,
+            public_context.proof_context_commitment
+        );
+        assert_ne!(
+            derive_contextual_proof_id(&env, &claim_id, &testnet_context.proof_context_commitment),
+            derive_contextual_proof_id(&env, &claim_id, &public_context.proof_context_commitment)
+        );
+    }
+
+    #[test]
+    fn accepted_asset_code_and_network_length_boundaries() {
+        let env = Env::default();
+        let claim = BytesN::from_array(&env, &[9; 32]);
+        let issuer = Address::from_str(&env, ISSUER);
+        let network_text = "A".repeat(128);
+        let network = String::from_str(&env, &network_text);
+        env.ledger()
+            .set_network_id(env.crypto().sha256(&network.to_bytes()).to_array());
+        for code in ["A", "ABCDEFGHIJKL"] {
+            let asset = ProofAssetIdentifier::Issued(String::from_str(&env, code), issuer.clone());
+            assert!(compute_proof_context_commitments(&env, &claim, &network, &asset).is_some());
+        }
+        let too_long_code =
+            ProofAssetIdentifier::Issued(String::from_str(&env, "ABCDEFGHIJKLM"), issuer);
+        assert!(
+            compute_proof_context_commitments(&env, &claim, &network, &too_long_code).is_none()
+        );
+
+        let too_long_network_text = "A".repeat(129);
+        let too_long_network = String::from_str(&env, &too_long_network_text);
+        env.ledger()
+            .set_network_id(env.crypto().sha256(&too_long_network.to_bytes()).to_array());
+        assert!(compute_proof_context_commitments(
+            &env,
+            &claim,
+            &too_long_network,
+            &ProofAssetIdentifier::Native,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn subject_pseudonym_commitment_matches_vector_and_is_issuer_domain_scoped() {
+        let env = Env::default();
+        let pseudonym = bytes32(
+            &env,
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        );
+        let issuer = Address::from_str(&env, ISSUER);
+        let other_issuer = Address::from_str(&env, OTHER_ISSUER);
+        let domain = String::from_str(&env, "credential-verification");
+        let commitment =
+            compute_subject_pseudonym_commitment(&env, &issuer, &domain, &pseudonym).unwrap();
+
+        assert_eq!(
+            commitment,
+            bytes32(&env, vector_hex("subject-pseudonym-v1"))
+        );
+        assert_ne!(
+            commitment,
+            compute_subject_pseudonym_commitment(
+                &env,
+                &issuer,
+                &String::from_str(&env, "analytics"),
+                &pseudonym,
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            commitment,
+            compute_subject_pseudonym_commitment(&env, &other_issuer, &domain, &pseudonym).unwrap()
+        );
+    }
+
+    #[test]
+    fn subject_pseudonym_domain_and_zero_sentinel_boundaries_are_explicit() {
+        let env = Env::default();
+        let issuer = Address::from_str(&env, ISSUER);
+        let pseudonym = BytesN::from_array(&env, &[0x22; 32]);
+        for value in ["", "contains spaces", " bad-edge", "bad-edge "] {
+            assert!(compute_subject_pseudonym_commitment(
+                &env,
+                &issuer,
+                &String::from_str(&env, value),
+                &pseudonym,
+            )
+            .is_none());
+        }
+        let max_domain = String::from_str(&env, &"d".repeat(64));
+        let too_long_domain = String::from_str(&env, &"d".repeat(65));
+        assert!(
+            compute_subject_pseudonym_commitment(&env, &issuer, &max_domain, &pseudonym).is_some()
+        );
+        assert!(
+            compute_subject_pseudonym_commitment(&env, &issuer, &too_long_domain, &pseudonym)
+                .is_none()
+        );
+        assert!(
+            optional_subject_pseudonym_commitment(&BytesN::from_array(&env, &[0; 32])).is_none()
+        );
+        assert_eq!(
+            optional_subject_pseudonym_commitment(&pseudonym),
+            Some(pseudonym)
+        );
+        let contract_issuer = env.register(TestContextContract, ());
+        assert!(compute_subject_pseudonym_commitment(
+            &env,
+            &contract_issuer,
+            &String::from_str(&env, "credential-verification"),
+            &BytesN::from_array(&env, &[0x33; 32]),
+        )
+        .is_none());
     }
 }
 

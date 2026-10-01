@@ -34,6 +34,7 @@
 //!
 //!     // Approve schema version 1
 //!     protocol_client.approve_schema_version(&1);
+//!     protocol_client.approve_proof_type(&BytesN::from_array(&env, &[1u8; 32]));
 //!     assert!(protocol_client.is_schema_version_approved(&1));
 //!
 //!     // Initialize Issuer Registry
@@ -58,12 +59,13 @@
 //!     let current_timestamp = env.ledger().timestamp();
 //!     let expires_at = current_timestamp + 86400u64;
 //!
-//!     proof_client.register_proof(
+//!     proof_client.register_proof_with_type_identifier(
 //!         &proof_id_hash,
 //!         &commitment_hash,
 //!         &issuer,
 //!         &1,
 //!         &expires_at,
+//!         &BytesN::from_array(&env, &[1u8; 32]),
 //!     );
 //!
 //!     // Verify complete workflow succeeded
@@ -98,6 +100,7 @@
 //!     let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_id);
 //!     protocol_client.initialize(&admin);
 //!     protocol_client.approve_schema_version(&1);
+//!     protocol_client.approve_proof_type(&BytesN::from_array(&env, &[1u8; 32]));
 //!
 //!     let issuer_registry_id = env.register(IssuerRegistryContract, ());
 //!     let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
@@ -120,12 +123,13 @@
 //!     let current_timestamp = env.ledger().timestamp();
 //!     let expires_at = current_timestamp + 86400u64;
 //!
-//!     proof_client.register_proof(
+//!     proof_client.register_proof_with_type_identifier(
 //!         &proof_id_hash,
 //!         &commitment_hash,
 //!         &issuer,
 //!         &1,
 //!         &expires_at,
+//!         &BytesN::from_array(&env, &[1u8; 32]),
 //!     );
 //! }
 //! ```
@@ -155,6 +159,7 @@
 //!     let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_id);
 //!     protocol_client.initialize(&admin);
 //!     protocol_client.approve_schema_version(&1);
+//!     protocol_client.approve_proof_type(&BytesN::from_array(&env, &[1u8; 32]));
 //!
 //!     let issuer_registry_id = env.register(IssuerRegistryContract, ());
 //!     let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
@@ -177,12 +182,13 @@
 //!     let current_timestamp = env.ledger().timestamp();
 //!     let expires_at = current_timestamp + 86400u64;
 //!
-//!     proof_client.register_proof(
+//!     proof_client.register_proof_with_type_identifier(
 //!         &proof_id_hash,
 //!         &commitment_hash,
 //!         &issuer,
 //!         &1,
 //!         &expires_at,
+//!         &BytesN::from_array(&env, &[1u8; 32]),
 //!     );
 //! }
 //! ```
@@ -212,6 +218,7 @@
 //!     protocol_client.initialize(&admin);
 //!     // Only approve version 1, not version 2
 //!     protocol_client.approve_schema_version(&1);
+//!     protocol_client.approve_proof_type(&BytesN::from_array(&env, &[1u8; 32]));
 //!
 //!     let issuer_registry_id = env.register(IssuerRegistryContract, ());
 //!     let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
@@ -230,12 +237,13 @@
 //!     let current_timestamp = env.ledger().timestamp();
 //!     let expires_at = current_timestamp + 86400u64;
 //!
-//!     proof_client.register_proof(
+//!     proof_client.register_proof_with_type_identifier(
 //!         &proof_id_hash,
 //!         &commitment_hash,
 //!         &issuer,
 //!         &2, // Unapproved schema version
 //!         &expires_at,
+//!         &BytesN::from_array(&env, &[1u8; 32]),
 //!     );
 //! }
 //! ```

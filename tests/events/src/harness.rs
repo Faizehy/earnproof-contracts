@@ -122,7 +122,7 @@ impl Deployment<'_> {
         let config = ProtocolConfigContractClient::new(&env, &config_id);
         config.initialize(&admin);
         config.approve_schema_version(&APPROVED_SCHEMA);
-        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1; 32]));
+        config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
         let issuers_id = env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -179,14 +179,13 @@ impl Deployment<'_> {
     /// Registers a proof and returns its id hash.
     pub fn register_proof(&self, discriminator: u8) -> BytesN<32> {
         let proof_id = hash(&self.env, discriminator);
-        self.proofs.register_proof(
+        self.proofs.register_proof_with_type_identifier(
             &proof_id,
             &hash(&self.env, discriminator ^ 0xFF),
             &self.issuer,
             &APPROVED_SCHEMA,
             &(self.env.ledger().timestamp() + 100_000),
-            &None,
-            &soroban_sdk::BytesN::from_array(&self.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
         );
         proof_id
     }

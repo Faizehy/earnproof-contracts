@@ -18,7 +18,7 @@
 
 use crate::harness::{authorize, hash, Deployment, APPROVED_SCHEMA};
 use soroban_sdk::testutils::{AuthorizedFunction, AuthorizedInvocation};
-use soroban_sdk::{Address, BytesN, IntoVal, Symbol};
+use soroban_sdk::{Address, IntoVal, Symbol};
 
 /// Asserts that the most recent invocation demanded exactly one authorization:
 /// `signer` for `fn_name` on `contract` with `args`, and nothing else.
@@ -58,14 +58,13 @@ fn register_proof_demands_exactly_the_named_issuer() {
     let commitment = hash(&d.env, 0xA2);
     let expires_at = d.env.ledger().timestamp() + 100_000;
 
-    d.proofs.register_proof(
+    d.proofs.register_proof_with_type_identifier(
         &proof_id,
         &commitment,
         &d.issuer,
         &APPROVED_SCHEMA,
         &expires_at,
-        &None,
-        &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
+        &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
     );
 
     assert_single_auth_tree(
@@ -79,8 +78,7 @@ fn register_proof_demands_exactly_the_named_issuer() {
             &d.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
-            &None::<BytesN<32>>,
-            &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
         )
             .into_val(&d.env),
     );
@@ -214,21 +212,19 @@ fn registration_auth_is_not_forwardable_to_another_issuer() {
             &d.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
-            &None::<BytesN<32>>,
-            &soroban_sdk::BytesN::from_array(&d.env, &[1; 32]),
+            &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
         )
             .into_val(&d.env),
     );
     assert!(
         d.proofs
-            .try_register_proof(
+            .try_register_proof_with_type_identifier(
                 &proof_id,
                 &commitment,
                 &d.issuer,
                 &APPROVED_SCHEMA,
                 &expires_at,
-                &None,
-                &soroban_sdk::BytesN::from_array(&d.env, &[1; 32])
+                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32])
             )
             .is_err(),
         "issuer B must not register proofs in issuer A's name"
@@ -250,14 +246,13 @@ fn cross_contract_reads_leave_the_callees_untouched_on_rejection() {
     // No authorization at all.
     assert!(d
         .proofs
-        .try_register_proof(
+        .try_register_proof_with_type_identifier(
             &proof_id,
             &commitment,
             &d.issuer,
             &APPROVED_SCHEMA,
             &expires_at,
-            &None,
-            &soroban_sdk::BytesN::from_array(&d.env, &[1; 32])
+            &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32])
         )
         .is_err());
     d.assert_no_side_effects(

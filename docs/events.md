@@ -52,12 +52,12 @@ lineage link and `schema_approved` for the approval itself. A predecessor-less
 
 | Topic | Emitted by | Payload |
 |---|---|---|
-| `issuer_registered` | `register_issuer` | `issuer_id_hash`, `issuer_address`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `provenance_commitment`, `created_at`, `epoch` |
-| `issuer_metadata_updated` | `update_issuer`, `set_issuer_metadata_commitment` | `issuer_id_hash`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `updated_at`, `epoch` |
-| `issuer_suspended` | `suspend_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at`, `epoch` |
-| `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at`, `epoch` |
-| `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at`, `epoch` |
-| `issuer_address_rotated` | `rotate_issuer_address` | `issuer_id_hash`, `old_address`, `new_address`, `updated_at`, `epoch` |
+| `issuer_registered` | `register_issuer` | `issuer_id_hash`, `issuer_address`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `created_at` |
+| `issuer_metadata_updated` | `update_issuer`, `set_issuer_metadata_commitment` | `issuer_id_hash`, `metadata_hash`, `metadata_uri_hash`, `metadata_revision`, `updated_at` |
+| `issuer_suspended` | `suspend_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
+| `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
+| `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
+| `issuer_address_rotated` | `rotate_issuer_address` | `issuer_id_hash`, `old_address`, `new_address`, `updated_at` |
 
 `issuer_address_rotated` carries both addresses so an indexer can update its
 address→issuer mapping without scanning storage. An indexer that ignores
@@ -83,20 +83,15 @@ documented `0` sentinel.
 | Topic | Emitted by | Payload |
 |---|---|---|
 | `proof_registered` | `register_proof` | `proof_id_hash`, `issuer_address`, `schema_version`, `created_ledger`, `created_at`, `expires_at`, `epoch` |
-| `proof_registered_with_payload` | `register_proof_with_payload` | `proof_id_hash`, `payload_len`, `payload_hash`, `epoch` |
 | `proof_revoked` | `revoke_proof`, `admin_revoke_proof` | `proof_id_hash`, `revoked_at`, `revoked_ledger`, `by_admin`, `epoch` |
 
-Each successful proof registration publishes one event. `proof_registered`
-carries the issuer, schema, creation and expiry timing, and registry epoch;
-`proof_registered_with_payload` carries only the payload length and hash, never
-the raw auxiliary bytes. Creation timing is sourced from the host ledger.
-
-`proof_revoked` carries the effective revocation timing — the ledger timestamp
-(`revoked_at`) and sequence (`revoked_ledger`) — plus whether the admin
-performed the revocation and the post-mutation registry epoch. For a legacy
-record revoked before the sequence was recorded, `revoked_ledger` is `0` and
-the timestamp remains authoritative. A rejected or repeated mutation publishes
-no event and does not advance the epoch.
+`proof_registered` carries the on-chain creation timing, sourced from the
+ledger, and the registry epoch after the mutation. `proof_revoked` carries both
+revocation timing values and the epoch after revocation. The timing lets
+verifiers understand when a proof became invalid without a follow-up query;
+`by_admin` distinguishes an administrator revocation from an issuer revocation.
+For a legacy record without a recorded revocation sequence,
+`revoked_ledger` is `0` and `revoked_at` remains authoritative.
 
 ### Silent entry points
 

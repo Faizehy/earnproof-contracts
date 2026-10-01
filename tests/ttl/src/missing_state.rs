@@ -43,14 +43,13 @@ fn registration_against_an_uninitialized_registry_fails_closed() {
 
     // Without instance state there is no protocol config to consult, so the
     // call must not proceed to a write.
-    let result = client.try_register_proof(
+    let result = client.try_register_proof_with_type_identifier(
         &bytes(&env, 1),
         &bytes(&env, 2),
         &issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
-        &None,
-        &soroban_sdk::BytesN::from_array(&env, &[1; 32]),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
@@ -94,14 +93,13 @@ fn an_unapproved_schema_version_reads_as_unapproved_rather_than_failing() {
     assert!(!deployment.config.is_schema_version_approved(&7));
     assert!(!deployment.config.is_schema_version_approved(&0));
 
-    let result = deployment.proofs.try_register_proof(
+    let result = deployment.proofs.try_register_proof_with_type_identifier(
         &bytes(&deployment.env, 1),
         &bytes(&deployment.env, 2),
         &deployment.issuer,
         &7,
         &FAR_FUTURE,
-        &None,
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
     assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
 }
@@ -153,14 +151,13 @@ fn a_registration_pointed_at_an_empty_protocol_config_is_rejected() {
     let proofs = ProofRegistryContractClient::new(env, &proofs_id);
     proofs.initialize(&deployment.admin, &deployment.issuers_id, &empty_config);
 
-    let result = proofs.try_register_proof(
+    let result = proofs.try_register_proof_with_type_identifier(
         &bytes(env, 1),
         &bytes(env, 2),
         &deployment.issuer,
         &SCHEMA_VERSION,
         &FAR_FUTURE,
-        &None,
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1; 32]),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
 
     assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
