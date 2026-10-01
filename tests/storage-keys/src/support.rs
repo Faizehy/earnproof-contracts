@@ -65,6 +65,14 @@ pub fn schema_version_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaVersion"), version)
 }
 
+pub fn schema_version_index_key(env: &Env, index: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaVersionIndex"), index)
+}
+
+pub fn schema_version_index_count_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "SchemaVersionIndexCount"),)
+}
+
 #[allow(dead_code)]
 pub fn schema_record_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaRecord"), version)
@@ -103,6 +111,14 @@ pub fn proof_type_approved_key(env: &Env, proof_type: &BytesN<32>) -> (Symbol, B
 
 pub fn issuer_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Issuer"), id.clone())
+}
+
+pub fn issuer_index_key(env: &Env, index: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "IssuerIndex"), index)
+}
+
+pub fn issuer_index_count_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "IssuerIndexCount"),)
 }
 
 pub fn issuer_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
@@ -314,7 +330,7 @@ pub fn exercised_deployment() -> Deployment {
     let rotated_issuer = Address::generate(&env);
     let suspended_issuer = Address::generate(&env);
     let revoked_issuer = Address::generate(&env);
-    let held_suspended_issuer = Address::generate(&env);
+    let _held_suspended_issuer = Address::generate(&env);
     let issuer_id = bytes32(&env, 1);
     let proof_id = bytes32(&env, 5);
 

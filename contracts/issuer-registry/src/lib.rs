@@ -1,6 +1,14 @@
 #![no_std]
 
 use earnproof_shared::{
+    AttestedUpgradeReceipt, ContractError, IssuerError, IssuerRecord, IssuerStatus,
+    MigrationStatus, TtlStatus, UpgradeApproval, UpgradeCompatibilityAttestation, UpgradeReceipt,
+    MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
+
+const MAX_BULK_SUSPENSION_BATCH: u32 = 20;
     ContractError, GenesisRecord, InterfaceVersion, IssuerError, IssuerPolicyCommitments,
     IssuerQueryStatus, IssuerRecord, IssuerStatus, IssuerStatusResult, MigrationStatus,
     SigningKeyCommitment, TtlStatus, UpgradeApproval, UpgradeReceipt,
@@ -32,6 +40,9 @@ enum DataKey {
     LatestUpgradeReceipt,
     /// Upgrade approval with temporal metadata (timelock and expiry).
     UpgradeApproval,
+    UpgradeAttestationProposal(BytesN<32>),
+    UpgradeAttestationApproval(BytesN<32>),
+    LatestAttestedUpgradeReceipt,
     /// Immutable deployment identity, written once at `initialize`.
     Genesis,
     ActiveSigningKey(BytesN<32>),
@@ -39,6 +50,10 @@ enum DataKey {
     SigningKeyHistory(BytesN<32>, u32),
     SigningKeyHistoryCount(BytesN<32>),
     IssuerPolicy(BytesN<32>),
+    /// Monotonic registration-order index of issuers for bounded discovery.
+    IssuerIndex(u32),
+    /// Total number of issuer entries currently in the registration-order index.
+    IssuerIndexCount,
     /// Monotonic epoch, advanced once per externally visible issuer mutation.
     /// Off-chain consumers poll it as a cheap cache-invalidation signal.
     IssuerEpoch,
@@ -415,6 +430,9 @@ impl IssuerRegistryContract {
         env.storage().instance().set(&DataKey::IssuerEpoch, &0_u64);
         env.storage()
             .instance()
+            .set(&DataKey::IssuerIndexCount, &0_u32);
+        env.storage()
+            .instance()
             .set(&DataKey::MaxActiveIssuers, &u32::MAX);
         env.storage()
             .instance()
@@ -439,6 +457,11 @@ impl IssuerRegistryContract {
 
         if !env.storage().instance().has(&DataKey::IssuerEpoch) {
             env.storage().instance().set(&DataKey::IssuerEpoch, &0_u64);
+        }
+        if !env.storage().instance().has(&DataKey::IssuerIndexCount) {
+            env.storage()
+                .instance()
+                .set(&DataKey::IssuerIndexCount, &0_u32);
         }
         if !env.storage().instance().has(&DataKey::MaxActiveIssuers) {
             env.storage()
@@ -666,6 +689,7 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .set(&address_key, &issuer_id_hash);
+        Self::append_issuer_index(env.clone(), issuer_id_hash.clone());
         Self::extend_issuer_ttl(env.clone(), issuer_id_hash.clone());
         Self::extend_address_ttl(env.clone(), issuer_address.clone());
 
@@ -946,6 +970,62 @@ impl IssuerRegistryContract {
         )
     }
 
+    pub fn suspend_issuers(
+        env: Env,
+        issuer_id_hashes: Vec<BytesN<32>>,
+        incident_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
+        if issuer_id_hashes.is_empty()
+            || issuer_id_hashes.len() > MAX_BULK_SUSPENSION_BATCH
+            || incident_commitment == BytesN::from_array(&env, &[0u8; 32])
+        {
+            return Err(IssuerError::InvalidTransition);
+        }
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+
+        let mut records = Vec::new(&env);
+        for index in 0..issuer_id_hashes.len() {
+            let issuer_id_hash = issuer_id_hashes.get(index).unwrap();
+            for prior_index in 0..index {
+                if issuer_id_hashes.get(prior_index).unwrap() == issuer_id_hash {
+                    return Err(IssuerError::InvalidTransition);
+                }
+            }
+            let record: IssuerRecord = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Issuer(issuer_id_hash))
+                .ok_or(IssuerError::IssuerNotFound)?;
+            if record.status == IssuerStatus::Revoked {
+                return Err(IssuerError::IssuerRevoked);
+            }
+            if record.status == IssuerStatus::Suspended {
+                return Err(IssuerError::InvalidTransition);
+            }
+            records.push_back(record);
+        }
+
+        let now = env.ledger().timestamp();
+        for index in 0..records.len() {
+            let mut record = records.get(index).unwrap();
+            record.status = IssuerStatus::Suspended;
+            record.reason_commitment = Some(incident_commitment.clone());
+            record.updated_at = now;
+            let key = DataKey::Issuer(record.issuer_id_hash.clone());
+            env.storage().persistent().set(&key, &record);
+            Self::extend_issuer_key_ttl(env.clone(), &key);
+            IssuerSuspended {
+                issuer_id_hash: record.issuer_id_hash,
+                reason_commitment: incident_commitment.clone(),
+                updated_at: now,
+            }
+            .publish(&env);
+        }
+        Ok(())
+    }
+
     pub fn reactivate_issuer(
         env: Env,
         proposal_id: BytesN<32>,
@@ -1182,6 +1262,139 @@ impl IssuerRegistryContract {
             .ok_or(IssuerError::IssuerNotFound)?;
         Self::extend_issuer_key_ttl(env, &key);
         Ok(record)
+    }
+
+    /// Returns a bounded page of public issuer entries in registration order.
+    /// The cursor is the absolute index in the stable issuer index, not a
+    /// filtered tally; this keeps ordering stable across status changes.
+    pub fn get_issuer_index(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index_filtered(env, cursor, limit, None)
+    }
+
+    pub fn get_issuer_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index(env, cursor, limit)
+    }
+
+    pub fn list_issuers(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index(env, cursor, limit)
+    }
+
+    pub fn enumerate_issuers(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index(env, cursor, limit)
+    }
+
+    pub fn get_issuer_index_by_status(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        status: IssuerStatus,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index_filtered(env, cursor, limit, Some(status))
+    }
+
+    pub fn get_issuer_status_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        status: IssuerStatus,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        Self::get_issuer_index_by_status(env, cursor, limit, status)
+    }
+
+    pub fn get_issuer_index_filtered(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        status: Option<IssuerStatus>,
+    ) -> Vec<earnproof_shared::IssuerDiscoveryEntry> {
+        let total = Self::get_issuer_index_count(env.clone());
+        let capped_limit = limit.min(earnproof_shared::MAX_ISSUER_PAGE);
+        let mut page = Vec::new(&env);
+        if cursor >= total {
+            return page;
+        }
+
+        let mut kept = 0_u32;
+        for index in cursor..total {
+            if let Some(issuer_id) = env
+                .storage()
+                .persistent()
+                .get::<_, BytesN<32>>(&DataKey::IssuerIndex(index))
+            {
+                let record: IssuerRecord = match env
+                    .storage()
+                    .persistent()
+                    .get::<_, IssuerRecord>(&DataKey::Issuer(issuer_id.clone()))
+                {
+                    Some(record) => record,
+                    None => continue,
+                };
+                if status
+                    .as_ref()
+                    .is_some_and(|wanted| record.status != *wanted)
+                {
+                    continue;
+                }
+                if kept >= capped_limit {
+                    break;
+                }
+                page.push_back(earnproof_shared::IssuerDiscoveryEntry {
+                    issuer_id_hash: issuer_id,
+                    issuer_address: record.issuer_address,
+                    status: record.status,
+                    updated_at: record.updated_at,
+                });
+                kept += 1;
+            }
+        }
+        page
+    }
+
+    pub fn get_issuer_index_cursor(env: Env) -> u32 {
+        Self::get_issuer_index_count(env)
+    }
+
+    pub fn get_issuer_count(env: Env) -> u32 {
+        Self::get_issuer_index_count(env)
+    }
+
+    pub fn get_issuer_count_by_status(env: Env, status: IssuerStatus) -> u32 {
+        let total = Self::get_issuer_index_count(env.clone());
+        let mut count = 0_u32;
+        for index in 0..total {
+            if let Some(issuer_id) = env
+                .storage()
+                .persistent()
+                .get::<_, BytesN<32>>(&DataKey::IssuerIndex(index))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, IssuerRecord>(&DataKey::Issuer(issuer_id))
+                {
+                    if record.status == status {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
     }
 
     pub fn is_active_issuer(env: Env, issuer_id_hash: BytesN<32>) -> bool {
@@ -1567,6 +1780,63 @@ impl IssuerRegistryContract {
         Ok(())
     }
 
+    pub fn propose_upgrade_attestation(
+        env: Env,
+        wasm_hash: BytesN<32>,
+        attestation: UpgradeCompatibilityAttestation,
+    ) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
+        Self::require_auth(&admin);
+        if attestation.version == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        env.storage().instance().set(
+            &DataKey::UpgradeAttestationProposal(wasm_hash.clone()),
+            &attestation,
+        );
+        env.storage()
+            .instance()
+            .remove(&DataKey::UpgradeAttestationApproval(wasm_hash.clone()));
+        env.storage().instance().remove(&DataKey::UpgradeApproval);
+        env.storage()
+            .instance()
+            .remove(&DataKey::AllowedWasm(wasm_hash));
+        Self::extend_instance_ttl(env);
+        Ok(())
+    }
+
+    pub fn get_upgrade_attestation(
+        env: Env,
+        wasm_hash: BytesN<32>,
+    ) -> Option<UpgradeCompatibilityAttestation> {
+        env.storage()
+            .instance()
+            .get(&DataKey::UpgradeAttestationProposal(wasm_hash))
+    }
+
+    pub fn get_attested_upgrade_receipt(env: Env) -> Option<AttestedUpgradeReceipt> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LatestAttestedUpgradeReceipt)
+    }
+
+    pub fn approve_upgrade_with_attestation(
+        env: Env,
+        wasm_hash: BytesN<32>,
+        new_version: u32,
+    ) -> Result<(), ContractError> {
+        let attestation = Self::get_upgrade_attestation(env.clone(), wasm_hash.clone())
+            .ok_or(ContractError::NotFound)?;
+        Self::approve_upgrade(env.clone(), wasm_hash.clone(), new_version)?;
+        env.storage().instance().set(
+            &DataKey::UpgradeAttestationApproval(wasm_hash),
+            &attestation,
+        );
+        Self::extend_instance_ttl(env);
+        Ok(())
+    }
+
     /// Admin-only: remove a hash from the allowlist without applying it.
     pub fn revoke_upgrade(
         env: Env,
@@ -1584,6 +1854,9 @@ impl IssuerRegistryContract {
 
         // Remove the approval
         env.storage().instance().remove(&DataKey::UpgradeApproval);
+        env.storage()
+            .instance()
+            .remove(&DataKey::UpgradeAttestationApproval(wasm_hash.clone()));
 
         UpgradeRevoked {
             proposal_id,
@@ -1667,6 +1940,26 @@ impl IssuerRegistryContract {
             return Err(ContractError::WasmHashMismatch);
         }
 
+        let attestation: Option<UpgradeCompatibilityAttestation> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeAttestationApproval(wasm_hash.clone()));
+        if let Some(approved) = &attestation {
+            let proposed: Option<UpgradeCompatibilityAttestation> = env
+                .storage()
+                .instance()
+                .get(&DataKey::UpgradeAttestationProposal(wasm_hash.clone()));
+            if proposed.as_ref() != Some(approved) {
+                return Err(ContractError::WasmHashMismatch);
+            }
+        } else if env
+            .storage()
+            .instance()
+            .has(&DataKey::UpgradeAttestationProposal(wasm_hash.clone()))
+        {
+            return Err(ContractError::NoUpgradeApproval);
+        }
+
         // Verify version is still valid
         if new_version <= old_version {
             return Err(ContractError::InvalidInput);
@@ -1712,6 +2005,21 @@ impl IssuerRegistryContract {
         env.storage()
             .instance()
             .set(&DataKey::LatestUpgradeReceipt, &receipt);
+        if let Some(attestation) = attestation {
+            env.storage().instance().set(
+                &DataKey::LatestAttestedUpgradeReceipt,
+                &AttestedUpgradeReceipt {
+                    receipt: receipt.clone(),
+                    attestation,
+                },
+            );
+            env.storage()
+                .instance()
+                .remove(&DataKey::UpgradeAttestationProposal(wasm_hash.clone()));
+            env.storage()
+                .instance()
+                .remove(&DataKey::UpgradeAttestationApproval(wasm_hash.clone()));
+        }
         env.storage().instance().remove(&DataKey::MigrationStatus);
         Self::extend_instance_ttl(env.clone());
 
@@ -1738,10 +2046,20 @@ impl IssuerRegistryContract {
         let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
         Self::require_auth(&admin);
 
+        let wasm_hash = env
+            .storage()
+            .instance()
+            .get::<_, UpgradeApproval>(&DataKey::UpgradeApproval)
+            .map(|approval| approval.wasm_hash);
         Self::consume_proposal(&env, &proposal_id)?;
 
         // Allow revocation even if no approval exists (idempotent)
         env.storage().instance().remove(&DataKey::UpgradeApproval);
+        if let Some(wasm_hash) = wasm_hash {
+            env.storage()
+                .instance()
+                .remove(&DataKey::UpgradeAttestationApproval(wasm_hash));
+        }
 
         Ok(())
     }
@@ -1960,6 +2278,30 @@ impl IssuerRegistryContract {
         next
     }
 
+    fn append_issuer_index(env: Env, issuer_id_hash: BytesN<32>) {
+        let total = Self::get_issuer_index_count(env.clone());
+        let next_index = total;
+        env.storage()
+            .persistent()
+            .set(&DataKey::IssuerIndex(next_index), &issuer_id_hash);
+        env.storage().persistent().extend_ttl(
+            &DataKey::IssuerIndex(next_index),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::IssuerIndexCount, &(total.saturating_add(1)));
+        Self::extend_instance_ttl(env);
+    }
+
+    fn get_issuer_index_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::IssuerIndexCount)
+            .unwrap_or(0)
+    }
+
     /// Reserves one active-issuer slot, rejecting if the governed capacity is
     /// already full. Increments the active count on success.
     fn reserve_active_capacity(env: &Env) -> Result<(), IssuerError> {
@@ -2089,6 +2431,10 @@ mod test {
         ContractError, IssuerError, IssuerQueryStatus, IssuerStatus, IssuerStatusResult,
         MAX_ISSUER_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
     };
+    use super::{
+        DataKey, IssuerRegistryContract, IssuerRegistryContractClient, MAX_BULK_SUSPENSION_BATCH,
+    };
+    use earnproof_shared::{ContractError, IssuerError, IssuerStatus, TTL_THRESHOLD_LEDGERS};
     use soroban_sdk::{
         testutils::{
             storage::Persistent as _, Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke,
@@ -2671,6 +3017,155 @@ mod test {
             1,
             "expected exactly one event on suspension"
         );
+    }
+
+    #[test]
+    fn bulk_suspend_updates_records_with_shared_metadata_and_events() {
+        let (env, client, _admin) = setup();
+        let first_id = bytes(&env, 31);
+        let second_id = bytes(&env, 32);
+        client.register_issuer(
+            &first_id,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        client.register_issuer(
+            &second_id,
+            &Address::from_str(&env, ISSUER_TWO),
+            &bytes(&env, 3),
+            &bytes(&env, 99),
+        );
+        let mut issuer_ids = soroban_sdk::Vec::new(&env);
+        issuer_ids.push_back(first_id.clone());
+        issuer_ids.push_back(second_id.clone());
+        let incident = bytes(&env, 44);
+
+        client.suspend_issuers(&issuer_ids, &incident);
+        assert_eq!(env.events().all().events().len(), 2);
+
+        let first = client.get_issuer(&first_id);
+        let second = client.get_issuer(&second_id);
+        assert_eq!(first.status, IssuerStatus::Suspended);
+        assert_eq!(second.status, IssuerStatus::Suspended);
+        assert_eq!(first.reason_commitment, Some(incident.clone()));
+        assert_eq!(second.reason_commitment, Some(incident));
+        assert_eq!(first.updated_at, second.updated_at);
+    }
+
+    #[test]
+    fn bulk_suspend_rejects_mixed_states_without_partial_mutation() {
+        let (env, client, _admin) = setup();
+        let active_id = bytes(&env, 41);
+        let suspended_id = bytes(&env, 42);
+        client.register_issuer(
+            &active_id,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        client.register_issuer(
+            &suspended_id,
+            &Address::from_str(&env, ISSUER_TWO),
+            &bytes(&env, 3),
+            &bytes(&env, 99),
+        );
+        client.suspend_issuer(&suspended_id, &bytes(&env, 55));
+        let mut issuer_ids = soroban_sdk::Vec::new(&env);
+        issuer_ids.push_back(active_id.clone());
+        issuer_ids.push_back(suspended_id);
+
+        let result = client.try_suspend_issuers(&issuer_ids, &bytes(&env, 56));
+
+        assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
+        assert_eq!(env.events().all().events().len(), 0);
+        assert_eq!(client.get_issuer(&active_id).status, IssuerStatus::Active);
+    }
+
+    #[test]
+    fn bulk_suspend_rejects_revoked_items_atomically_and_replay() {
+        let (env, client, _admin) = setup();
+        let active_id = bytes(&env, 43);
+        let revoked_id = bytes(&env, 44);
+        client.register_issuer(
+            &active_id,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        client.register_issuer(
+            &revoked_id,
+            &Address::from_str(&env, ISSUER_TWO),
+            &bytes(&env, 3),
+            &bytes(&env, 99),
+        );
+        client.revoke_issuer(&revoked_id, &bytes(&env, 45));
+
+        let mut mixed = soroban_sdk::Vec::new(&env);
+        mixed.push_back(active_id.clone());
+        mixed.push_back(revoked_id);
+        assert_eq!(
+            client.try_suspend_issuers(&mixed, &bytes(&env, 46)),
+            Err(Ok(IssuerError::IssuerRevoked))
+        );
+        assert_eq!(client.get_issuer(&active_id).status, IssuerStatus::Active);
+        assert_eq!(env.events().all().events().len(), 0);
+
+        let mut active_batch = soroban_sdk::Vec::new(&env);
+        active_batch.push_back(active_id.clone());
+        let incident = bytes(&env, 47);
+        client.suspend_issuers(&active_batch, &incident);
+        assert_eq!(env.events().all().events().len(), 1);
+        assert_eq!(
+            client.try_suspend_issuers(&active_batch, &incident),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+        assert_eq!(env.events().all().events().len(), 0);
+        assert_eq!(
+            client.get_issuer(&active_id).status,
+            IssuerStatus::Suspended
+        );
+    }
+
+    #[test]
+    fn bulk_suspend_rejects_empty_duplicate_oversized_and_unauthorized_batches() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 51);
+        client.register_issuer(
+            &issuer_id,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        let incident = bytes(&env, 57);
+        let empty = soroban_sdk::Vec::new(&env);
+        assert_eq!(
+            client.try_suspend_issuers(&empty, &incident),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+
+        let mut duplicate = soroban_sdk::Vec::new(&env);
+        duplicate.push_back(issuer_id.clone());
+        duplicate.push_back(issuer_id.clone());
+        assert_eq!(
+            client.try_suspend_issuers(&duplicate, &incident),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+
+        let mut oversized = soroban_sdk::Vec::new(&env);
+        for index in 0..=MAX_BULK_SUSPENSION_BATCH {
+            oversized.push_back(bytes(&env, index as u8));
+        }
+        assert_eq!(
+            client.try_suspend_issuers(&oversized, &incident),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+
+        let mut valid = soroban_sdk::Vec::new(&env);
+        valid.push_back(issuer_id.clone());
+        env.set_auths(&[]);
+        assert!(client.try_suspend_issuers(&valid, &incident).is_err());
+        assert_eq!(client.get_issuer(&issuer_id).status, IssuerStatus::Active);
     }
 
     /// reactivate_issuer emits exactly one event.
@@ -3261,6 +3756,85 @@ mod test {
         );
     }
 
+    #[test]
+    fn issuer_index_tracks_registration_order_and_status_filters() {
+        let (env, client, _admin) = setup();
+        let one = bytes(&env, 0x10);
+        let two = bytes(&env, 0x20);
+        let three = bytes(&env, 0x30);
+        let addr_one = Address::from_str(&env, ISSUER_ONE);
+        let addr_two = Address::from_str(&env, ISSUER_TWO);
+        let addr_three = Address::generate(&env);
+
+        client.register_issuer(&one, &addr_one, &bytes(&env, 0x1), &bytes(&env, 0x99));
+        client.register_issuer(&two, &addr_two, &bytes(&env, 0x2), &bytes(&env, 0x98));
+        client.register_issuer(&three, &addr_three, &bytes(&env, 0x3), &bytes(&env, 0x97));
+
+        client.suspend_issuer(&two, &bytes(&env, 0x61));
+        client.rotate_issuer_address(&three, &Address::generate(&env));
+        client.revoke_issuer(&three, &bytes(&env, 0x62));
+
+        let all = client.get_issuer_index(&0, &10);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all.get(0).unwrap().issuer_id_hash, one);
+        assert_eq!(all.get(1).unwrap().issuer_id_hash, two);
+        assert_eq!(all.get(2).unwrap().issuer_id_hash, three);
+        assert_eq!(all.get(1).unwrap().status, IssuerStatus::Suspended);
+        assert_eq!(all.get(2).unwrap().status, IssuerStatus::Revoked);
+
+        let active = client.get_issuer_index_by_status(&0, &10, &IssuerStatus::Active);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.get(0).unwrap().issuer_id_hash, one);
+
+        let revoked = client.get_issuer_index_by_status(&0, &10, &IssuerStatus::Revoked);
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked.get(0).unwrap().issuer_id_hash, three);
+
+        let bounded = client.get_issuer_index(&0, &(earnproof_shared::MAX_ISSUER_PAGE + 5));
+        assert_eq!(bounded.len(), 3);
+        assert!(bounded.len() <= earnproof_shared::MAX_ISSUER_PAGE);
+    }
+
+    #[test]
+    fn issuer_index_cursor_pages_stably_across_status_updates() {
+        let (env, client, _admin) = setup();
+        let first = bytes(&env, 0x41);
+        let second = bytes(&env, 0x42);
+        let third = bytes(&env, 0x43);
+
+        client.register_issuer(
+            &first,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 0x1),
+            &bytes(&env, 0x99),
+        );
+        client.register_issuer(
+            &second,
+            &Address::from_str(&env, ISSUER_TWO),
+            &bytes(&env, 0x2),
+            &bytes(&env, 0x98),
+        );
+        client.register_issuer(
+            &third,
+            &Address::generate(&env),
+            &bytes(&env, 0x3),
+            &bytes(&env, 0x97),
+        );
+
+        let page_one = client.get_issuer_index(&0, &2);
+        let page_two = client.get_issuer_index(&2, &2);
+        assert_eq!(page_one.len(), 2);
+        assert_eq!(page_two.len(), 1);
+        assert_eq!(page_one.get(0).unwrap().issuer_id_hash, first);
+        assert_eq!(page_one.get(1).unwrap().issuer_id_hash, second);
+        assert_eq!(page_two.get(0).unwrap().issuer_id_hash, third);
+
+        client.revoke_issuer(&second, &bytes(&env, 0x66));
+        let refreshed = client.get_issuer_index(&0, &2);
+        assert_eq!(refreshed.get(1).unwrap().issuer_id_hash, second);
+        assert_eq!(refreshed.get(1).unwrap().status, IssuerStatus::Revoked);
+    }
+
     // ── genesis identity (issue #192) ────────────────────────────────────────
 
     #[test]
@@ -3757,7 +4331,8 @@ mod upgrade_timelock_tests {
 
     use super::{DataKey, IssuerRegistryContract, IssuerRegistryContractClient};
     use earnproof_shared::{
-        ContractError, UpgradeApproval, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+        ContractError, UpgradeApproval, UpgradeCompatibilityAttestation,
+        UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
     };
     use soroban_sdk::{testutils::Ledger as _, Address, BytesN, Env};
 
@@ -3775,6 +4350,68 @@ mod upgrade_timelock_tests {
         let admin = Address::from_str(&env, ADMIN);
         client.initialize(&admin);
         (env, client, admin)
+    }
+
+    #[test]
+    fn attested_upgrade_receipt_carries_exact_approved_commitments() {
+        let (env, client, _) = setup();
+        let wasm_hash = make_wasm_hash(&env);
+        let attestation = UpgradeCompatibilityAttestation {
+            version: 1,
+            abi_commitment: BytesN::from_array(&env, &[2; 32]),
+            storage_commitment: BytesN::from_array(&env, &[3; 32]),
+            review_commitment: BytesN::from_array(&env, &[4; 32]),
+        };
+
+        client.propose_upgrade_attestation(&wasm_hash, &attestation);
+        assert_eq!(
+            client.get_upgrade_attestation(&wasm_hash),
+            Some(attestation.clone())
+        );
+        client.approve_upgrade_with_attestation(&wasm_hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&wasm_hash, &2);
+
+        let receipt = client.get_attested_upgrade_receipt().unwrap();
+        assert_eq!(receipt.attestation, attestation);
+        assert_eq!(receipt.receipt.wasm_hash, wasm_hash);
+        assert_eq!(receipt.receipt.new_version, 2);
+        assert_eq!(
+            client.try_upgrade_contract(&wasm_hash, &2),
+            Err(Ok(ContractError::NoUpgradeApproval))
+        );
+    }
+
+    #[test]
+    fn changing_or_cancelling_issuer_attestation_removes_approval() {
+        let (env, client, _) = setup();
+        let wasm_hash = make_wasm_hash(&env);
+        let first = UpgradeCompatibilityAttestation {
+            version: 1,
+            abi_commitment: BytesN::from_array(&env, &[5; 32]),
+            storage_commitment: BytesN::from_array(&env, &[6; 32]),
+            review_commitment: BytesN::from_array(&env, &[7; 32]),
+        };
+        let revised = UpgradeCompatibilityAttestation {
+            review_commitment: BytesN::from_array(&env, &[8; 32]),
+            ..first.clone()
+        };
+
+        client.propose_upgrade_attestation(&wasm_hash, &first);
+        client.approve_upgrade_with_attestation(&wasm_hash, &2);
+        client.propose_upgrade_attestation(&wasm_hash, &revised);
+        assert_eq!(
+            client.try_upgrade_contract(&wasm_hash, &2),
+            Err(Ok(ContractError::NoUpgradeApproval))
+        );
+
+        client.approve_upgrade_with_attestation(&wasm_hash, &2);
+        client.revoke_upgrade_approval();
+        assert_eq!(
+            client.try_upgrade_contract(&wasm_hash, &2),
+            Err(Ok(ContractError::NoUpgradeApproval))
+        );
     }
 
     // ── SUITE 1: Approve stores correct timing ────────────────

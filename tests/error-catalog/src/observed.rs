@@ -232,7 +232,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     initial_dep.issuers.revoke_issuer(
         &bytes32(env, 20),
-        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
     );
     observed.record(
         "issuer-registry update revoked issuer",
@@ -246,7 +246,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         "issuer-registry reactivate revoked issuer",
         code(initial_dep.issuers.try_reactivate_issuer(
             &bytes32(env, 20),
-            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
         )),
     );
 

@@ -13,8 +13,10 @@
 //! computed, round-tripped through a real contract invocation.
 
 use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Address, BytesN, Env, Symbol, TryFromVal, Val};
 
+use earnproof_shared::UpgradeCompatibilityAttestation;
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
 use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
 use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
@@ -96,6 +98,42 @@ fn events(env: &Env) -> std::vec::Vec<ObservedEvent> {
         .iter()
         .filter_map(|event| ObservedEvent::from_xdr(env, event))
         .collect()
+}
+
+#[test]
+fn upgrade_compatibility_attestation_xdr_matches_golden() {
+    let env = Env::default();
+    let attestation = UpgradeCompatibilityAttestation {
+        version: 1,
+        abi_commitment: BytesN::from_array(&env, &[0x11; 32]),
+        storage_commitment: BytesN::from_array(&env, &[0x22; 32]),
+        review_commitment: BytesN::from_array(&env, &[0x33; 32]),
+    };
+    let encoded = attestation.to_xdr(&env);
+    let actual: String = encoded.iter().map(|byte| format!("{byte:02x}")).collect();
+
+    let expected = format!(
+        "0000001100000001000000040000000f0000000e6162695f636f6d6d69746d656e7400000000000d00000020{}0000000f000000117265766965775f636f6d6d69746d656e740000000000000d00000020{}0000000f0000001273746f726167655f636f6d6d69746d656e7400000000000d00000020{}0000000f0000000776657273696f6e000000000300000001",
+        "11".repeat(32),
+        "33".repeat(32),
+        "22".repeat(32),
+    );
+    let first_difference = actual
+        .bytes()
+        .zip(expected.bytes())
+        .position(|(actual_byte, expected_byte)| actual_byte != expected_byte);
+    assert_eq!(
+        actual,
+        expected,
+        "canonical XDR differs at {:?}; lengths are {} and {}; actual [{}], expected [{}]",
+        first_difference,
+        actual.len(),
+        expected.len(),
+        &actual[first_difference.unwrap_or(0).saturating_sub(8)
+            ..(first_difference.unwrap_or(0) + 16).min(actual.len())],
+        &expected[first_difference.unwrap_or(0).saturating_sub(8)
+            ..(first_difference.unwrap_or(0) + 16).min(expected.len())]
+    );
 }
 
 /// `issuer-registry::register_issuer` accepts backend-computed

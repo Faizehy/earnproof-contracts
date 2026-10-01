@@ -1,7 +1,7 @@
 # scenario: initialized
-# revision: 10
-# reason: Regenerate after merging develop's issuer-epoch/capacity fields into PR 237
-# body-digest: cf85e069bd9c38779f3c20bde5b41faa5521d65c5215ec99ac3dadf232ef0dd7
+# revision: 12
+# reason: Add the stable issuer index count to the initialized and active ledger states
+# body-digest: 780b3dea1e435962ed06317e47660fe25975089ca466441d4c931fd2c9d47701
 
 [ledger]
 sequence = 1000
@@ -14,6 +14,7 @@ issuer-registry instance [sym:ContractVersion] = u32:1
 issuer-registry instance [sym:Genesis] = {sym:genesis_id: bytes:1bb3d1dc4dc8313672e6dc56c6b7051f74fd611eb1b8d59faa5d787789e4e115, sym:initialized_at_ledger: u32:1000}
 issuer-registry instance [sym:InstanceLiveUntil] = u32:501000
 issuer-registry instance [sym:IssuerEpoch] = u64:0
+issuer-registry instance [sym:IssuerIndexCount] = u32:0
 issuer-registry instance [sym:MaxActiveIssuers] = u32:4294967295
 issuer-registry instance [sym:ReactivationCooldown] = u64:0
 proof-registry instance [sym:Admin] = addr:admin

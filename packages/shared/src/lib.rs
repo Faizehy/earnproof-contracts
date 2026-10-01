@@ -62,6 +62,14 @@ pub const MAX_MIGRATION_BATCH: u32 = 100;
 /// both the registration and revocation paths.
 pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
 
+/// Maximum number of issuer entries a single bounded discovery page may return.
+/// The cap is intentionally strict and shared across the registry's public
+/// discovery APIs so callers cannot force large reads into the contract.
+pub const MAX_ISSUER_PAGE: u32 = 20;
+pub const MAX_ISSUER_DISCOVERY_PAGE: u32 = 20;
+pub const MAX_ISSUER_ENUM_PAGE: u32 = 20;
+pub const MAX_SCHEMA_PAGE: u32 = 20;
+
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -517,6 +525,12 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    /// The proof registry has reached its configured capacity.
+    ProofCapacityReached = 311,
+    /// Proof-count accounting must be reconciled before registration can proceed.
+    ProofAccountingUnavailable = 312,
+    /// A proof-count counter cannot be incremented without overflowing.
+    ProofCountOverflow = 313,
     /// A batch operation was given zero entries or more than
     /// `MAX_PROOF_BATCH_SIZE` entries.
     /// Recovery: split the batch into chunks of at most `MAX_PROOF_BATCH_SIZE`.
@@ -777,6 +791,30 @@ pub enum IssuerStatus {
     Revoked,
 }
 
+/// Public issuer summary intended for bounded discovery pages. It excludes the
+/// private metadata commitments and policy values, while still exposing the
+/// stable identifier and current status needed for indexing and filtering.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerDiscoveryEntry {
+    pub issuer_id_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub status: IssuerStatus,
+    pub updated_at: u64,
+}
+
+pub type IssuerSummary = IssuerDiscoveryEntry;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaVersionSummary {
+    pub version: u32,
+    pub approved: bool,
+}
+
+pub type SchemaSummary = SchemaVersionSummary;
+pub type SchemaVersionDiscoveryEntry = SchemaVersionSummary;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProofStatus {
@@ -932,6 +970,9 @@ pub struct ProofRecord {
     pub proof_type: Option<BytesN<32>>,
     /// Ledger sequence at revocation; zero marks legacy records without it.
     pub revoked_ledger: u32,
+    /// Monotonically increasing sequence number for proofs issued by this
+    /// issuer. The first proof for an issuer is `1`.
+    pub sequence_number: u64,
     /// Ledger sequence at which this proof was created (registered).
     /// [`LEDGER_SEQUENCE_UNSET`] marks a legacy record predating this field.
     pub created_ledger: u32,
@@ -1097,6 +1138,20 @@ pub struct UpgradeReceipt {
     pub upgraded_by: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeCompatibilityAttestation {
+    pub version: u32,
+    pub abi_commitment: BytesN<32>,
+    pub storage_commitment: BytesN<32>,
+    pub review_commitment: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestedUpgradeReceipt {
+    pub receipt: UpgradeReceipt,
+    pub attestation: UpgradeCompatibilityAttestation,
 /// Bounded, on-chain record of a proof that has been archived after
 /// expiring or being revoked. Kept separate from `ProofRecord` storage so
 /// live-proof lookups never have to filter out archived entries.

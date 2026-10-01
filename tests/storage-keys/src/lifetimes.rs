@@ -100,13 +100,14 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     let deployment = exercised_deployment();
     let env = &deployment.env;
 
-    // Three issuers, each with a record and a reverse-index entry. The rotated
-    // address replaces the old index entry rather than adding to it, so the
-    // count is twelve including one TTL tracker for every record and reverse
-    // index; the rotated address and its tracker replace their old entries.
+    // Three issuers, each with a record, a registration-order index entry, and a
+    // reverse-index entry. The rotated address replaces the old reverse-index entry
+    // rather than adding to it, so the count is fifteen including one TTL tracker
+    // for every issuer and index entry; the rotated address and its tracker replace
+    // their old entries.
     assert_eq!(
         keys_in(env, &deployment.issuers_id, StorageClass::Persistent).len(),
-        12
+        15
     );
 
     // Proof records, TTL trackers, per-issuer accounting, schema rate usage,

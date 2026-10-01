@@ -28,6 +28,18 @@ jobs:
       - run: cargo test --doc --workspace
       - run: cargo build --workspace
 
+  schema-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifests against JSON Schema
+        run: |
+          npx ajv-cli@5 validate \
+            -s schemas/deployment-manifest.schema.json \
+            -d "scripts/*.json" \
+            --spec=draft7 \
+            --all-errors
+
   coverage:
     runs-on: ubuntu-latest
     steps:

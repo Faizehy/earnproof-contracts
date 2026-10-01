@@ -1,6 +1,11 @@
 #![no_std]
 
 use earnproof_shared::{
+    AttestedUpgradeReceipt, ContractError, MigrationStatus, PauseScope,
+    UpgradeCompatibilityAttestation, UpgradeReceipt, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
+    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
     ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
     MigrationStatus, PauseScope, SchemaRateLimit, SchemaStatusResult, SchemaVersionState,
     CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT, DEFAULT_SCHEMA_RATE_LIMIT,
@@ -25,8 +30,14 @@ enum DataKey {
     Paused,
     ScopedPause(PauseScope),
     ConfigVersion,
+    MaxProofs,
     SchemaVersion(u32),
     ProofTypeApproved(BytesN<32>),
+    SchemaVersionIndex(u32),
+    SchemaVersionIndexCount,
+    SchemaLifecycle(u32),
+    SchemaTransitionCount,
+    SchemaTransitionSlot(u32),
     PendingAdmin,
     /// Optional lineage link: maps an approved schema version to the prior
     /// version it intentionally succeeds. Absent for root (predecessor-less) and
@@ -35,6 +46,9 @@ enum DataKey {
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
     AllowedWasm(BytesN<32>),
+    UpgradeAttestationProposal(BytesN<32>),
+    UpgradeAttestationApproval(BytesN<32>),
+    LatestAttestedUpgradeReceipt,
     /// Monotonically-increasing contract version stored in instance storage.
     /// Prevents installing an older (or equal) version over a newer one.
     ContractVersion,
@@ -51,6 +65,48 @@ enum DataKey {
     /// Monotonic count of change-history entries ever appended.
     ConfigHistoryTotal,
     GovernanceAssignment(GovernanceRole, Address),
+}
+
+const SCHEMA_TRANSITION_HISTORY_CAPACITY: u32 = 32;
+const MAX_SCHEMA_TRANSITION_PAGE_SIZE: u32 = 16;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchemaTransitionKind {
+    Proposal,
+    Approval,
+    Activation,
+    Deprecation,
+    PolicyRevision,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaTransition {
+    pub sequence: u64,
+    pub version: u32,
+    pub kind: SchemaTransitionKind,
+    pub transitioned_at: u64,
+    pub lineage_commitment: Option<BytesN<32>>,
+    pub policy_commitment: Option<BytesN<32>>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaTransitionPage {
+    pub transitions: soroban_sdk::Vec<SchemaTransition>,
+    pub next_cursor: u64,
+    pub oldest_cursor: u64,
+    pub total_cursor: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SchemaLifecycle {
+    lineage_commitment: BytesN<32>,
+    policy_commitment: BytesN<32>,
+    active: bool,
+    deprecated: bool,
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -117,6 +173,9 @@ pub struct ProofTypeApprovedEvent {
 #[contractevent]
 pub struct ProofTypeDeprecatedEvent {
     pub proof_type: BytesN<32>,
+pub struct ProofCapacityChanged {
+    pub max_proofs: u32,
+    pub changed_by: Address,
 }
 
 #[contractevent]
@@ -224,6 +283,10 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ConfigVersion, &1_u32);
+        env.storage().instance().set(&DataKey::MaxProofs, &u32::MAX);
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersionIndexCount, &0_u32);
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
@@ -512,6 +575,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
+        Self::append_schema_version_index(env.clone(), version);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
@@ -648,6 +712,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &false);
+        Self::append_schema_version_index(env.clone(), version);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
@@ -771,6 +836,47 @@ impl ProtocolConfigContract {
         approved
     }
 
+    pub fn propose_schema_version(
+        env: Env,
+        version: u32,
+        lineage_commitment: BytesN<32>,
+        policy_commitment: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+
+        let schema_key = DataKey::SchemaVersion(version);
+        let lifecycle_key = DataKey::SchemaLifecycle(version);
+        if env.storage().persistent().has(&schema_key)
+            || env.storage().persistent().has(&lifecycle_key)
+        {
+            return Err(ContractError::AlreadyExists);
+        }
+
+        env.storage().persistent().set(&schema_key, &false);
+        env.storage().persistent().set(
+            &lifecycle_key,
+            &SchemaLifecycle {
+                lineage_commitment: lineage_commitment.clone(),
+                policy_commitment: policy_commitment.clone(),
+                active: false,
+                deprecated: false,
+            },
+        );
+        Self::extend_schema_ttl(env.clone(), version);
+        env.storage().persistent().extend_ttl(
+            &lifecycle_key,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        Self::bump_config_version(env.clone());
+        Self::append_schema_transition(env.clone(), version, SchemaTransitionKind::Proposal);
+        Ok(())
+    }
+
+    pub fn approve_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
     /// Sets a bounded ledger-window registration limit for a schema. A zero
     /// maximum intentionally pauses new registrations; a zero window is invalid.
     pub fn set_schema_rate_limit(
@@ -782,6 +888,13 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
+        if env
+            .storage()
+            .persistent()
+            .get::<_, SchemaLifecycle>(&DataKey::SchemaLifecycle(version))
+            .is_some_and(|lifecycle| lifecycle.deprecated)
+        {
+            return Err(ContractError::InvalidState);
         if limit.window_ledgers == 0 {
             return Err(ContractError::InvalidInput);
         }
@@ -831,6 +944,130 @@ impl ProtocolConfigContract {
             .unwrap_or(0)
     }
 
+    pub fn get_schema_index(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index_filtered(env, cursor, limit, None)
+    }
+
+    pub fn get_schema_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index(env, cursor, limit)
+    }
+
+    pub fn list_schema_versions(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index(env, cursor, limit)
+    }
+
+    pub fn enumerate_schema_versions(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index(env, cursor, limit)
+    }
+
+    pub fn get_schema_index_by_status(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        approved: bool,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index_filtered(env, cursor, limit, Some(approved))
+    }
+
+    pub fn get_schema_status_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        approved: bool,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index_by_status(env, cursor, limit, approved)
+    }
+
+    pub fn get_schema_index_filtered(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        approved: Option<bool>,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        let total = Self::get_schema_version_index_count(env.clone());
+        let capped_limit = limit.min(earnproof_shared::MAX_SCHEMA_PAGE);
+        let mut page = Vec::new(&env);
+        if cursor >= total {
+            return page;
+        }
+
+        let mut kept = 0_u32;
+        for index in cursor..total {
+            if let Some(version) = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::SchemaVersionIndex(index))
+            {
+                let is_approved = env
+                    .storage()
+                    .persistent()
+                    .get::<_, bool>(&DataKey::SchemaVersion(version))
+                    .unwrap_or(false);
+                if approved
+                    .as_ref()
+                    .is_some_and(|wanted| is_approved != *wanted)
+                {
+                    continue;
+                }
+                if kept >= capped_limit {
+                    break;
+                }
+                page.push_back(earnproof_shared::SchemaVersionSummary {
+                    version,
+                    approved: is_approved,
+                });
+                kept += 1;
+            }
+        }
+        page
+    }
+
+    pub fn get_schema_version_cursor(env: Env) -> u32 {
+        Self::get_schema_version_index_count(env)
+    }
+
+    pub fn get_schema_version_count(env: Env) -> u32 {
+        Self::get_schema_version_index_count(env)
+    }
+
+    pub fn get_schema_count_by_status(env: Env, approved: bool) -> u32 {
+        let total = Self::get_schema_version_index_count(env.clone());
+        let mut count = 0_u32;
+        for index in 0..total {
+            if let Some(version) = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::SchemaVersionIndex(index))
+            {
+                let is_approved = env
+                    .storage()
+                    .persistent()
+                    .get::<_, bool>(&DataKey::SchemaVersion(version))
+                    .unwrap_or(false);
+                if is_approved == approved {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
     // ── schema payload size limits ───────────────────────────────────────────
 
     /// Admin-only: set the maximum auxiliary payload size (in bytes) a proof
@@ -852,6 +1089,42 @@ impl ProtocolConfigContract {
             .set(&DataKey::SchemaPayloadLimit(version), &max_size);
         Self::extend_schema_payload_limit_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
+        Self::append_schema_transition(env.clone(), version, SchemaTransitionKind::Approval);
+        SchemaApproved { version }.publish(&env);
+        Ok(())
+    }
+
+    pub fn activate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+
+        if !Self::is_schema_version_approved(env.clone(), version) {
+            return Err(ContractError::InvalidState);
+        }
+        let lifecycle_key = DataKey::SchemaLifecycle(version);
+        let mut lifecycle: SchemaLifecycle = env
+            .storage()
+            .persistent()
+            .get(&lifecycle_key)
+            .ok_or(ContractError::InvalidState)?;
+        if lifecycle.active || lifecycle.deprecated {
+            return Err(ContractError::InvalidState);
+        }
+        lifecycle.active = true;
+        env.storage().persistent().set(&lifecycle_key, &lifecycle);
+        env.storage().persistent().extend_ttl(
+            &lifecycle_key,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        Self::bump_config_version(env.clone());
+        Self::append_schema_transition(env.clone(), version, SchemaTransitionKind::Activation);
+        Ok(())
+    }
+
+    pub fn deprecate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
         Self::append_config_history(
             env.clone(),
             ConfigChangeCategory::SchemaPayloadLimit,
@@ -879,6 +1152,113 @@ impl ProtocolConfigContract {
             .storage()
             .persistent()
             .has(&DataKey::SchemaVersion(version))
+            .get::<_, SchemaLifecycle>(&DataKey::SchemaLifecycle(version))
+            .is_some_and(|lifecycle| lifecycle.deprecated)
+        {
+            return Err(ContractError::InvalidState);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion(version), &false);
+        if let Some(mut lifecycle) = env
+            .storage()
+            .persistent()
+            .get::<_, SchemaLifecycle>(&DataKey::SchemaLifecycle(version))
+        {
+            lifecycle.active = false;
+            lifecycle.deprecated = true;
+            env.storage()
+                .persistent()
+                .set(&DataKey::SchemaLifecycle(version), &lifecycle);
+            env.storage().persistent().extend_ttl(
+                &DataKey::SchemaLifecycle(version),
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        Self::extend_schema_ttl(env.clone(), version);
+        Self::bump_config_version(env.clone());
+        Self::append_schema_transition(env.clone(), version, SchemaTransitionKind::Deprecation);
+        SchemaDeprecated { version }.publish(&env);
+        Ok(())
+    }
+
+    pub fn revise_schema_policy(
+        env: Env,
+        version: u32,
+        policy_commitment: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+
+        let lifecycle_key = DataKey::SchemaLifecycle(version);
+        let mut lifecycle: SchemaLifecycle = env
+            .storage()
+            .persistent()
+            .get(&lifecycle_key)
+            .ok_or(ContractError::NotFound)?;
+        if lifecycle.deprecated || lifecycle.policy_commitment == policy_commitment {
+            return Err(ContractError::InvalidState);
+        }
+
+        lifecycle.policy_commitment = policy_commitment;
+        lifecycle.active = false;
+        env.storage().persistent().set(&lifecycle_key, &lifecycle);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion(version), &false);
+        env.storage().persistent().extend_ttl(
+            &lifecycle_key,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        Self::extend_schema_ttl(env.clone(), version);
+        Self::bump_config_version(env.clone());
+        Self::append_schema_transition(env.clone(), version, SchemaTransitionKind::PolicyRevision);
+        Ok(())
+    }
+
+    pub fn get_schema_transition_history(
+        env: Env,
+        cursor: u64,
+        limit: u32,
+    ) -> Result<SchemaTransitionPage, ContractError> {
+        if limit == 0 || limit > MAX_SCHEMA_TRANSITION_PAGE_SIZE {
+            return Err(ContractError::InvalidInput);
+        }
+        let total_cursor: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SchemaTransitionCount)
+            .unwrap_or(0);
+        let oldest_cursor = total_cursor.saturating_sub(SCHEMA_TRANSITION_HISTORY_CAPACITY as u64);
+        let start = cursor.max(oldest_cursor).min(total_cursor);
+        let end = start.saturating_add(limit as u64).min(total_cursor);
+        let mut transitions = Vec::new(&env);
+        for sequence in start..end {
+            let slot = (sequence % SCHEMA_TRANSITION_HISTORY_CAPACITY as u64) as u32;
+            let transition: SchemaTransition = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SchemaTransitionSlot(slot))
+                .ok_or(ContractError::InvalidState)?;
+            if transition.sequence != sequence {
+                return Err(ContractError::InvalidState);
+            }
+            transitions.push_back(transition);
+        }
+        Ok(SchemaTransitionPage {
+            transitions,
+            next_cursor: end,
+            oldest_cursor,
+            total_cursor,
+        })
+    }
+
+    pub fn is_schema_version_approved(env: Env, version: u32) -> bool {
+        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
             || proof_types.is_empty()
             || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
             || max_validity_seconds == 0
@@ -1049,6 +1429,29 @@ impl ProtocolConfigContract {
             .unwrap_or(0)
     }
 
+    pub fn get_max_proofs(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxProofs)
+            .unwrap_or(u32::MAX)
+    }
+
+    pub fn set_max_proofs(env: Env, max_proofs: u32) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxProofs, &max_proofs);
+        Self::bump_config_version(env.clone());
+        ProofCapacityChanged {
+            max_proofs,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     // ── upgrade governance ───────────────────────────────────────────────────
 
     /// Returns the stored monotonic contract version (separate from the
@@ -1094,6 +1497,63 @@ impl ProtocolConfigContract {
         .publish(&env);
     }
 
+    pub fn propose_upgrade_attestation(
+        env: Env,
+        wasm_hash: BytesN<32>,
+        attestation: UpgradeCompatibilityAttestation,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if attestation.version == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+
+        env.storage().instance().set(
+            &DataKey::UpgradeAttestationProposal(wasm_hash.clone()),
+            &attestation,
+        );
+        env.storage()
+            .instance()
+            .remove(&DataKey::UpgradeAttestationApproval(wasm_hash.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::AllowedWasm(wasm_hash));
+        Self::extend_instance_ttl(env);
+        Ok(())
+    }
+
+    pub fn get_upgrade_attestation(
+        env: Env,
+        wasm_hash: BytesN<32>,
+    ) -> Option<UpgradeCompatibilityAttestation> {
+        env.storage()
+            .instance()
+            .get(&DataKey::UpgradeAttestationProposal(wasm_hash))
+    }
+
+    pub fn get_attested_upgrade_receipt(env: Env) -> Option<AttestedUpgradeReceipt> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LatestAttestedUpgradeReceipt)
+    }
+
+    pub fn approve_upgrade_with_attestation(
+        env: Env,
+        wasm_hash: BytesN<32>,
+        new_version: u32,
+    ) -> Result<(), ContractError> {
+        let attestation = Self::get_upgrade_attestation(env.clone(), wasm_hash.clone())
+            .ok_or(ContractError::NotFound)?;
+        Self::approve_upgrade(env.clone(), wasm_hash.clone(), new_version);
+        env.storage().instance().set(
+            &DataKey::UpgradeAttestationApproval(wasm_hash),
+            &attestation,
+        );
+        Self::extend_instance_ttl(env);
+        Ok(())
+    }
+
     /// Admin-only: remove a previously allowlisted WASM hash without applying
     /// it.  Safe to call even if the hash was never allowlisted.
     pub fn revoke_upgrade(env: Env, wasm_hash: BytesN<32>) {
@@ -1106,6 +1566,9 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .remove(&DataKey::AllowedWasm(wasm_hash.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::UpgradeAttestationApproval(wasm_hash.clone()));
 
         UpgradeRevoked {
             wasm_hash,
@@ -1148,6 +1611,29 @@ impl ProtocolConfigContract {
             .get(&DataKey::AllowedWasm(wasm_hash.clone()))
             .expect("wasm hash not on allowlist");
 
+        let attestation: Option<UpgradeCompatibilityAttestation> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeAttestationApproval(wasm_hash.clone()));
+        if let Some(approved) = &attestation {
+            let proposed: Option<UpgradeCompatibilityAttestation> = env
+                .storage()
+                .instance()
+                .get(&DataKey::UpgradeAttestationProposal(wasm_hash.clone()));
+            assert_eq!(
+                proposed.as_ref(),
+                Some(approved),
+                "upgrade attestation changed"
+            );
+        } else {
+            assert!(
+                !env.storage()
+                    .instance()
+                    .has(&DataKey::UpgradeAttestationProposal(wasm_hash.clone())),
+                "upgrade requires attested approval"
+            );
+        }
+
         let old_version = Self::get_contract_version(env.clone());
         if new_version <= old_version {
             panic!("upgrade would not advance contract version");
@@ -1170,6 +1656,29 @@ impl ProtocolConfigContract {
             .instance()
             .set(&DataKey::ContractVersion, &new_version);
         Self::extend_instance_ttl(env.clone());
+
+        if let Some(attestation) = attestation {
+            let receipt = UpgradeReceipt {
+                wasm_hash: wasm_hash.clone(),
+                old_version,
+                new_version,
+                upgraded_at: env.ledger().timestamp(),
+                upgraded_by: admin.clone(),
+            };
+            env.storage().instance().set(
+                &DataKey::LatestAttestedUpgradeReceipt,
+                &AttestedUpgradeReceipt {
+                    receipt,
+                    attestation,
+                },
+            );
+            env.storage()
+                .instance()
+                .remove(&DataKey::UpgradeAttestationProposal(wasm_hash.clone()));
+            env.storage()
+                .instance()
+                .remove(&DataKey::UpgradeAttestationApproval(wasm_hash.clone()));
+        }
 
         ContractUpgraded {
             new_wasm_hash: wasm_hash,
@@ -1251,6 +1760,43 @@ impl ProtocolConfigContract {
         Self::extend_instance_ttl(env);
     }
 
+    fn append_schema_version_index(env: Env, version: u32) {
+        let total = Self::get_schema_version_index_count(env.clone());
+        for index in 0..total {
+            if let Some(existing) = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::SchemaVersionIndex(index))
+            {
+                if existing == version {
+                    return;
+                }
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersionIndex(total), &version);
+        env.storage().persistent().extend_ttl(
+            &DataKey::SchemaVersionIndex(total),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        let next_total = total
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("schema version index overflow: reached maximum"));
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersionIndexCount, &next_total);
+        Self::extend_instance_ttl(env);
+    }
+
+    fn get_schema_version_index_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SchemaVersionIndexCount)
+            .unwrap_or(0)
+    }
+
     fn extend_instance_ttl(env: Env) {
         env.storage()
             .instance()
@@ -1265,6 +1811,38 @@ impl ProtocolConfigContract {
         );
     }
 
+    fn append_schema_transition(env: Env, version: u32, kind: SchemaTransitionKind) {
+        let sequence: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SchemaTransitionCount)
+            .unwrap_or(0);
+        let lifecycle: Option<SchemaLifecycle> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaLifecycle(version));
+        let transition = SchemaTransition {
+            sequence,
+            version,
+            kind,
+            transitioned_at: env.ledger().timestamp(),
+            lineage_commitment: lifecycle
+                .as_ref()
+                .map(|record| record.lineage_commitment.clone()),
+            policy_commitment: lifecycle.map(|record| record.policy_commitment),
+        };
+        let slot = (sequence % SCHEMA_TRANSITION_HISTORY_CAPACITY as u64) as u32;
+        let key = DataKey::SchemaTransitionSlot(slot);
+        env.storage().persistent().set(&key, &transition);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        let next_sequence = sequence
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("schema transition cursor overflow"));
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaTransitionCount, &next_sequence);
     fn extend_schema_payload_limit_ttl(env: Env, version: u32) {
         env.storage().persistent().extend_ttl(
             &DataKey::SchemaPayloadLimit(version),
@@ -1524,6 +2102,11 @@ impl ProtocolConfigContract {
 mod test {
     extern crate std;
 
+    use super::{
+        DataKey, ProtocolConfigContract, ProtocolConfigContractClient, SchemaTransitionKind,
+    };
+    use earnproof_shared::{UpgradeCompatibilityAttestation, TTL_THRESHOLD_LEDGERS};
+    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
         ConfigChangeCategory, ContractError, SchemaStatusResult, SchemaVersionState,
@@ -1599,6 +2182,184 @@ mod test {
 
         client.deprecate_schema_version(&p(&env, 2), &1);
         assert!(!client.is_schema_version_approved(&1));
+    }
+
+    #[test]
+    fn schema_lifecycle_history_preserves_order_and_commitments() {
+        let (env, client, _admin) = setup();
+        let lineage = bytes(&env, 11);
+        let original_policy = bytes(&env, 12);
+        let revised_policy = bytes(&env, 13);
+
+        client.propose_schema_version(&7, &lineage, &original_policy);
+        client.approve_schema_version(&7);
+        client.activate_schema_version(&7);
+        client.revise_schema_policy(&7, &revised_policy);
+        assert!(!client.is_schema_version_approved(&7));
+        client.approve_schema_version(&7);
+        client.activate_schema_version(&7);
+        client.deprecate_schema_version(&7);
+
+        let page = client.get_schema_transition_history(&0, &16);
+        assert_eq!(page.oldest_cursor, 0);
+        assert_eq!(page.total_cursor, 7);
+        assert_eq!(page.next_cursor, 7);
+        assert_eq!(page.transitions.len(), 7);
+        assert_eq!(
+            page.transitions.get(0).unwrap().kind,
+            SchemaTransitionKind::Proposal
+        );
+        assert_eq!(
+            page.transitions.get(1).unwrap().kind,
+            SchemaTransitionKind::Approval
+        );
+        assert_eq!(
+            page.transitions.get(2).unwrap().kind,
+            SchemaTransitionKind::Activation
+        );
+        assert_eq!(
+            page.transitions.get(3).unwrap().kind,
+            SchemaTransitionKind::PolicyRevision
+        );
+        assert_eq!(
+            page.transitions.get(4).unwrap().kind,
+            SchemaTransitionKind::Approval
+        );
+        assert_eq!(
+            page.transitions.get(5).unwrap().kind,
+            SchemaTransitionKind::Activation
+        );
+        assert_eq!(
+            page.transitions.get(6).unwrap().kind,
+            SchemaTransitionKind::Deprecation
+        );
+        for index in 0..page.transitions.len() {
+            let transition = page.transitions.get(index).unwrap();
+            assert_eq!(transition.sequence, index as u64);
+            assert_eq!(transition.version, 7);
+            assert_eq!(transition.lineage_commitment, Some(lineage.clone()));
+        }
+        assert_eq!(
+            page.transitions.get(0).unwrap().policy_commitment,
+            Some(original_policy)
+        );
+        assert_eq!(
+            page.transitions.get(3).unwrap().policy_commitment,
+            Some(revised_policy)
+        );
+    }
+
+    #[test]
+    fn schema_lifecycle_rejects_invalid_transitions_without_history() {
+        let (env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
+
+        assert_eq!(
+            client.try_activate_schema_version(&1),
+            Err(Ok(ContractError::InvalidState))
+        );
+        client.propose_schema_version(&1, &bytes(&env, 1), &bytes(&env, 2));
+        assert_eq!(
+            client.try_propose_schema_version(&1, &bytes(&env, 3), &bytes(&env, 4)),
+            Err(Ok(ContractError::AlreadyExists))
+        );
+        client.approve_schema_version(&1);
+        client.activate_schema_version(&1);
+        assert_eq!(
+            client.try_activate_schema_version(&1),
+            Err(Ok(ContractError::InvalidState))
+        );
+        client.deprecate_schema_version(&1);
+        assert_eq!(
+            client.try_revise_schema_policy(&1, &bytes(&env, 5)),
+            Err(Ok(ContractError::InvalidState))
+        );
+        assert_eq!(
+            client.try_approve_schema_version(&1),
+            Err(Ok(ContractError::InvalidState))
+        );
+        assert_eq!(
+            client.try_deprecate_schema_version(&1),
+            Err(Ok(ContractError::InvalidState))
+        );
+        assert!(!client.is_schema_version_approved(&1));
+        assert_eq!(
+            client.get_schema_transition_history(&0, &16).total_cursor,
+            4
+        );
+    }
+
+    #[test]
+    fn schema_transition_history_rollover_is_deterministic_and_bounded() {
+        let (_env, client, _admin) = setup();
+
+        for version in 1..=35 {
+            client.approve_schema_version(&version);
+        }
+
+        let first_page = client.get_schema_transition_history(&0, &16);
+        assert_eq!(first_page.oldest_cursor, 3);
+        assert_eq!(first_page.total_cursor, 35);
+        assert_eq!(first_page.next_cursor, 19);
+        assert_eq!(first_page.transitions.len(), 16);
+        assert_eq!(first_page.transitions.get(0).unwrap().sequence, 3);
+        assert_eq!(first_page.transitions.get(0).unwrap().version, 4);
+
+        let second_page = client.get_schema_transition_history(&first_page.next_cursor, &16);
+        assert_eq!(second_page.transitions.len(), 16);
+        assert_eq!(second_page.transitions.get(15).unwrap().sequence, 34);
+        assert_eq!(second_page.transitions.get(15).unwrap().version, 35);
+        assert_eq!(second_page.next_cursor, 35);
+    }
+
+    #[test]
+    fn legacy_schema_state_is_readable_and_history_is_bounded() {
+        let (env, client, _admin) = setup();
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SchemaVersion(9), &true);
+        });
+
+        assert!(client.is_schema_version_approved(&9));
+        client.deprecate_schema_version(&9);
+        let page = client.get_schema_transition_history(&0, &16);
+        assert_eq!(page.transitions.len(), 1);
+        assert_eq!(
+            page.transitions.get(0).unwrap().kind,
+            SchemaTransitionKind::Deprecation
+        );
+        assert_eq!(page.transitions.get(0).unwrap().lineage_commitment, None);
+    }
+
+    #[test]
+    fn schema_transition_history_rejects_invalid_page_sizes() {
+        let (_env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
+
+        assert_eq!(
+            client.try_get_schema_transition_history(&0, &0),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert_eq!(
+            client.try_get_schema_transition_history(&0, &17),
+            Err(Ok(ContractError::InvalidInput))
+        );
+    }
+
+    #[test]
+    fn schema_transition_history_slots_receive_persistent_ttl() {
+        let (env, client, _admin) = setup();
+        client.approve_schema_version(&3);
+
+        env.as_contract(&client.address, || {
+            assert!(
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::SchemaTransitionSlot(0))
+                    > TTL_THRESHOLD_LEDGERS
+            );
+        });
     }
 
     #[test]
@@ -1970,6 +2731,77 @@ mod test {
         assert_eq!(client.get_contract_version(), 2);
         // Allowlist entry must have been consumed.
         assert!(!client.is_upgrade_allowed(&hash));
+    }
+
+    #[test]
+    fn attested_upgrade_exposes_and_carries_exact_commitments() {
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x51);
+        let attestation = UpgradeCompatibilityAttestation {
+            version: 1,
+            abi_commitment: bytes(&env, 0x52),
+            storage_commitment: bytes(&env, 0x53),
+            review_commitment: bytes(&env, 0x54),
+        };
+
+        client.propose_upgrade_attestation(&hash, &attestation);
+        assert_eq!(
+            client.get_upgrade_attestation(&hash),
+            Some(attestation.clone())
+        );
+        client.approve_upgrade_with_attestation(&hash, &2);
+        client.upgrade_contract(&hash);
+
+        let receipt = client.get_attested_upgrade_receipt().unwrap();
+        assert_eq!(receipt.attestation, attestation);
+        assert_eq!(receipt.receipt.wasm_hash, hash);
+        assert_eq!(receipt.receipt.old_version, 1);
+        assert_eq!(receipt.receipt.new_version, 2);
+        assert!(client.get_upgrade_attestation(&hash).is_none());
+        assert!(client.try_upgrade_contract(&hash).is_err());
+    }
+
+    #[test]
+    fn changing_or_cancelling_attestation_invalidates_upgrade_approval() {
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x61);
+        let first = UpgradeCompatibilityAttestation {
+            version: 1,
+            abi_commitment: bytes(&env, 1),
+            storage_commitment: bytes(&env, 2),
+            review_commitment: bytes(&env, 3),
+        };
+        let revised = UpgradeCompatibilityAttestation {
+            review_commitment: bytes(&env, 4),
+            ..first.clone()
+        };
+
+        client.propose_upgrade_attestation(&hash, &first);
+        client.approve_upgrade_with_attestation(&hash, &2);
+        assert!(client.is_upgrade_allowed(&hash));
+        client.propose_upgrade_attestation(&hash, &revised);
+        assert!(!client.is_upgrade_allowed(&hash));
+        assert!(client.try_upgrade_contract(&hash).is_err());
+
+        client.approve_upgrade_with_attestation(&hash, &2);
+        client.revoke_upgrade(&hash);
+        assert!(!client.is_upgrade_allowed(&hash));
+        assert!(client.try_upgrade_contract(&hash).is_err());
+    }
+
+    #[test]
+    fn attestation_type_round_trips_as_canonical_contract_data() {
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x71);
+        let attestation = UpgradeCompatibilityAttestation {
+            version: 7,
+            abi_commitment: bytes(&env, 0xa1),
+            storage_commitment: bytes(&env, 0xb2),
+            review_commitment: bytes(&env, 0xc3),
+        };
+
+        client.propose_upgrade_attestation(&hash, &attestation);
+        assert_eq!(client.get_upgrade_attestation(&hash), Some(attestation));
     }
 
     /// After a successful upgrade the same hash cannot be applied a second

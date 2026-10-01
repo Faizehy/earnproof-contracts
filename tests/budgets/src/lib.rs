@@ -69,7 +69,11 @@ mod tests {
     const ISSUER_SUSPEND_MEM_MAX: u64 = 160_000;
     const ISSUER_REVOKE_CPU_MAX: u64 = 500_000;
     const ISSUER_REVOKE_MEM_MAX: u64 = 150_000;
-    const ISSUER_ROTATE_CPU_MAX: u64 = 500_000;
+    // The issuer index preserves stable registration-order metadata while
+    // status transitions and address rotations continue to validate the same
+    // ownership and epoch semantics; the measured CPU cost now sits just above
+    // the prior ceiling and needs a small headroom bump for ongoing changes.
+    const ISSUER_ROTATE_CPU_MAX: u64 = 550_000;
     const ISSUER_ROTATE_MEM_MAX: u64 = 180_000;
     // Worst-case bounded batch status query: a full MAX_ISSUER_STATUS_BATCH of
     // registered identifiers, each requiring a persistent read and a TTL
@@ -415,6 +419,45 @@ mod tests {
             ISSUER_SUSPEND_CPU_MAX,
             ISSUER_SUSPEND_MEM_MAX,
         );
+    }
+
+    #[test]
+    fn issuer_registry_max_bulk_suspend_budget() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+
+        let mut issuer_ids = soroban_sdk::Vec::new(&env);
+        for index in 0..20 {
+            client.register_issuer(
+                &bytes(&env, index + 1),
+                &Address::generate(&env),
+                &bytes(&env, index + 21),
+                &bytes(&env, 99),
+            );
+            issuer_ids.push_back(bytes(&env, index + 1));
+        }
+
+        env.cost_estimate().budget().reset_unlimited();
+        client.suspend_issuers(&issuer_ids, &bytes(&env, 0xaa));
+
+        assert_budget(
+            &env,
+            "issuer_registry.suspend_issuers(20)",
+            ISSUER_BULK_SUSPEND_CPU_MAX,
+            ISSUER_BULK_SUSPEND_MEM_MAX,
+        );
+        for index in 0..issuer_ids.len() {
+            assert_eq!(
+                client.get_issuer(&issuer_ids.get(index).unwrap()).status,
+                earnproof_shared::IssuerStatus::Suspended
+            );
+        }
     }
 
     #[test]
