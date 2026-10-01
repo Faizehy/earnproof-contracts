@@ -1,0 +1,182 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/earnproof/earnproof-contracts/schemas/deployment-manifest.schema.json",
+  "title": "EarnProof Deployment Manifest",
+  "description": "Schema for EarnProof contract deployment manifests (scripts/*.json). Enforces required fields, Stellar address patterns, SHA-256 hash patterns, network enum, manifestVersion, and forbids secret material at the top level.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "network",
+    "contracts",
+    "wasm",
+    "admin",
+    "initialIssuer",
+    "schemaVersions",
+    "deployedAt"
+  ],
+  "patternProperties": {
+    "^[Ss][Ee][Ee][Dd]$": false,
+    "^[Mm][Nn][Ee][Mm][Oo][Nn][Ii][Cc]$": false,
+    "^[Ss][Ee][Cc][Rr][Ee][Tt][Kk][Ee][Yy]$": false,
+    "^[Pp][Rr][Ii][Vv][Aa][Tt][Ee][Kk][Ee][Yy]$": false,
+    "^[Ss][Ee][Cc][Rr][Ee][Tt]$": false
+  },
+  "properties": {
+    "manifestVersion": {
+      "description": "Schema format version integer. Starts at 1 and is incremented on every breaking schema change. See docs/schema-versioning.md.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "network": {
+      "description": "The Stellar network this manifest targets.",
+      "type": "string",
+      "enum": ["stellar-testnet", "testnet", "stellar-mainnet", "mainnet"]
+    },
+    "deployedAt": {
+      "description": "ISO 8601 date-time of when the deployment was performed.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T"
+    },
+    "admin": {
+      "description": "Primary admin Stellar G-address (public key).",
+      "type": "string",
+      "pattern": "^G[A-Z2-7]{55}$"
+    },
+    "admins": {
+      "description": "Optional per-contract admin G-addresses. Present when contracts were initialized with different admin keys.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^G[A-Z2-7]{55}$"
+      }
+    },
+    "source": {
+      "description": "Free-form identifier for the deployer account or tool.",
+      "type": "string"
+    },
+    "contracts": {
+      "description": "Deployed contract IDs on the target network.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolConfig", "issuerRegistry", "proofRegistry"],
+      "properties": {
+        "protocolConfig": {
+          "description": "Protocol-Config contract ID (C-address).",
+          "type": "string",
+          "pattern": "^C[A-Z2-7]{55}$"
+        },
+        "issuerRegistry": {
+          "description": "Issuer-Registry contract ID (C-address).",
+          "type": "string",
+          "pattern": "^C[A-Z2-7]{55}$"
+        },
+        "proofRegistry": {
+          "description": "Proof-Registry contract ID (C-address).",
+          "type": "string",
+          "pattern": "^C[A-Z2-7]{55}$"
+        }
+      }
+    },
+    "wasm": {
+      "description": "WASM artifact metadata for each contract.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolConfig", "issuerRegistry", "proofRegistry"],
+      "properties": {
+        "protocolConfig": {
+          "$ref": "#/definitions/wasmEntry"
+        },
+        "issuerRegistry": {
+          "$ref": "#/definitions/wasmEntry"
+        },
+        "proofRegistry": {
+          "$ref": "#/definitions/wasmEntry"
+        }
+      }
+    },
+    "initialIssuer": {
+      "description": "The issuer registered during deployment initialization.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "issuerIdHash", "metadataHash"],
+      "properties": {
+        "address": {
+          "description": "Issuer's Stellar G-address (public key).",
+          "type": "string",
+          "pattern": "^G[A-Z2-7]{55}$"
+        },
+        "issuerIdHash": {
+          "description": "SHA-256 hex digest of the issuer ID.",
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "metadataHash": {
+          "description": "SHA-256 hex digest of the issuer's public metadata.",
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        }
+      }
+    },
+    "schemaVersions": {
+      "description": "On-chain schema version IDs approved in the protocol-config contract during this deployment.",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "minItems": 1
+    },
+    "transactions": {
+      "description": "Optional map of transaction names to Stellar explorer URLs.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "explorer": {
+      "description": "Optional map of contract names to Stellar Lab explorer URLs.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "commands": {
+      "description": "Optional list of shell commands used during deployment, for documentation purposes.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "description": "Optional free-form notes about the deployment.",
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "wasmEntry": {
+      "description": "WASM artifact record for a single contract. Requires path and sha256; allows additional metadata fields.",
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "description": "Relative path to the compiled WASM artifact.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "SHA-256 hex digest of the WASM artifact.",
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "contractVersion": {
+          "description": "Optional contract version integer.",
+          "type": "integer"
+        },
+        "buildMetadata": {
+          "description": "Optional build metadata object.",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
