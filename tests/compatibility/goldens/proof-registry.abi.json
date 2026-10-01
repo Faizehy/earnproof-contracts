@@ -323,7 +323,7 @@
     { "name": "InvalidSchemaVersion", "code": 304, "category": "domain", "shared": true, "note": "Overloaded: schema_version == 0, protocol paused, issuer inactive" },
     { "name": "SchemaVersionNotApproved", "code": 305, "category": "domain", "shared": true },
     { "name": "InvalidAddress", "code": 306, "category": "domain", "shared": true },
-    { "name": "InvalidProofContext", "code": 311, "category": "domain", "shared": true }
+    { "name": "InvalidProofContext", "code": 317, "category": "domain", "shared": true }
   ],
 
   "events": [

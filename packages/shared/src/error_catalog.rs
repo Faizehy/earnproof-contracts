@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 38] = [
+pub const ERROR_CATALOG: [ErrorSpec; 44] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -671,6 +671,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 38] = [
         remediation: "Call is_proof_type_approved on the protocol config contract to verify the proof type is approved. An operator must approve the proof type before it can be used for proof registration.",
         http_status: 400,
         client_message: "Proof type not supported",
+    },
+    ErrorSpec {
+        code: 317,
+        name: "InvalidProofContext",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Reserved,
+        cause: "The network passphrase or native/issued asset identifier is not canonical, or the passphrase does not match the ledger network.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Use the exact active Stellar network passphrase and either Native or a case-sensitive ASCII alphanumeric asset code with a valid account issuer.",
+        http_status: 400,
+        client_message: "Invalid proof network or asset context",
     },
 ];
 

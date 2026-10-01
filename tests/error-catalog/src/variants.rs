@@ -197,6 +197,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "UnsupportedProofType",
             ProofError::UnsupportedProofType as u32,
         ),
+        (
+            "ProofError",
+            "InvalidProofContext",
+            ProofError::InvalidProofContext as u32,
+        ),
     ]
 }
 

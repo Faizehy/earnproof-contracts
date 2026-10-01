@@ -49,7 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 52] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 53] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "ActiveIssuerCount",

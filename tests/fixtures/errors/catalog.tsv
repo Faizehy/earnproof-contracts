@@ -39,3 +39,4 @@
 314	DisputeNotFound	ProofError	proof-registry	returned	after-caller-change	404
 315	DisputeNotOpen	ProofError	proof-registry	returned	never	400
 316	UnsupportedProofType	ProofError	proof-registry	returned	after-operator-action	400
+317	InvalidProofContext	ProofError	proof-registry	reserved	after-caller-change	400

@@ -117,6 +117,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 314 | `DisputeNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 315 | `DisputeNotOpen` | `ProofError` | proof-registry | returned | never | 400 |
 | 316 | `UnsupportedProofType` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 317 | `InvalidProofContext` | `ProofError` | proof-registry | reserved | after-caller-change | 400 |
 
 ## Details
 
@@ -537,5 +538,16 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Call is_proof_type_approved on the protocol config contract to verify the proof type is approved. An operator must approve the proof type before it can be used for proof registration.
 - Suggested HTTP status: 400
 - Client message: "Proof type not supported"
+
+### 317 - `InvalidProofContext`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: reserved
+- Retry: after-caller-change
+- Cause: The network passphrase or native/issued asset identifier is not canonical, or the passphrase does not match the ledger network.
+- Remediation: Use the exact active Stellar network passphrase and either Native or a case-sensitive ASCII alphanumeric asset code with a valid account issuer.
+- Suggested HTTP status: 400
+- Client message: "Invalid proof network or asset context"
 
 <!-- END GENERATED -->
