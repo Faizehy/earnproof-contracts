@@ -13,8 +13,10 @@
 //! computed, round-tripped through a real contract invocation.
 
 use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Address, BytesN, Env, Symbol, TryFromVal, Val};
 
+use earnproof_shared::UpgradeCompatibilityAttestation;
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
 use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
 use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
@@ -96,6 +98,42 @@ fn events(env: &Env) -> std::vec::Vec<ObservedEvent> {
         .iter()
         .filter_map(|event| ObservedEvent::from_xdr(env, event))
         .collect()
+}
+
+#[test]
+fn upgrade_compatibility_attestation_xdr_matches_golden() {
+    let env = Env::default();
+    let attestation = UpgradeCompatibilityAttestation {
+        version: 1,
+        abi_commitment: BytesN::from_array(&env, &[0x11; 32]),
+        storage_commitment: BytesN::from_array(&env, &[0x22; 32]),
+        review_commitment: BytesN::from_array(&env, &[0x33; 32]),
+    };
+    let encoded = attestation.to_xdr(&env);
+    let actual: String = encoded.iter().map(|byte| format!("{byte:02x}")).collect();
+
+    let expected = format!(
+        "0000001100000001000000040000000f0000000e6162695f636f6d6d69746d656e7400000000000d00000020{}0000000f000000117265766965775f636f6d6d69746d656e740000000000000d00000020{}0000000f0000001273746f726167655f636f6d6d69746d656e7400000000000d00000020{}0000000f0000000776657273696f6e000000000300000001",
+        "11".repeat(32),
+        "33".repeat(32),
+        "22".repeat(32),
+    );
+    let first_difference = actual
+        .bytes()
+        .zip(expected.bytes())
+        .position(|(actual_byte, expected_byte)| actual_byte != expected_byte);
+    assert_eq!(
+        actual,
+        expected,
+        "canonical XDR differs at {:?}; lengths are {} and {}; actual [{}], expected [{}]",
+        first_difference,
+        actual.len(),
+        expected.len(),
+        &actual[first_difference.unwrap_or(0).saturating_sub(8)
+            ..(first_difference.unwrap_or(0) + 16).min(actual.len())],
+        &expected[first_difference.unwrap_or(0).saturating_sub(8)
+            ..(first_difference.unwrap_or(0) + 16).min(expected.len())]
+    );
 }
 
 /// `issuer-registry::register_issuer` accepts backend-computed
@@ -189,18 +227,30 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
 
     let proof_id_hash = bytes_from_hex(&env, vector_hex("proof-1"));
     let commitment_hash = bytes_from_hex(&env, vector_hex("commitment-1"));
+    let disclosure_policy_hash = bytes_from_hex(&env, vector_hex("disclosure-policy-basic"));
 
-    proofs.register_proof(
+    proofs.register_proof_with_policy(
         &proof_id_hash,
         &commitment_hash,
+        &disclosure_policy_hash,
         &issuer_address,
         &1,
         &(env.ledger().timestamp() + 1_000),
     );
 
+    let registered = events(&env)
+        .into_iter()
+        .find(|event| event.is(&env, "proof_registered"))
+        .expect("ProofRegistered must be emitted");
+    let event_policy_hash: BytesN<32> = registered
+        .field(&env, "disclosure_policy_hash")
+        .expect("ProofRegistered must carry disclosure_policy_hash");
+    assert_eq!(event_policy_hash, disclosure_policy_hash);
+
     let record = proofs.get_proof(&proof_id_hash);
     assert_eq!(record.proof_id_hash, proof_id_hash);
     assert_eq!(record.commitment_hash, commitment_hash);
+    assert_eq!(record.disclosure_policy_hash, disclosure_policy_hash);
     assert!(proofs.is_valid_proof(&proof_id_hash));
 }
 

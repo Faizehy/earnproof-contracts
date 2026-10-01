@@ -257,6 +257,16 @@ fn rotate_issuer_address_emits_both_old_and_new_address() {
             .issuers
             .rotate_issuer_address(&deployment.issuer_id, &replacement)
     });
+    let event = expect_single(&deployment.env, &events, "issuer_rotation_nominated");
+
+    let nominated_new: Address = event.field(&deployment.env, "new_address").unwrap();
+    assert_eq!(nominated_new, replacement);
+
+    let events = deployment.capture(|| {
+        deployment
+            .issuers
+            .accept_issuer_address_rotation(&deployment.issuer_id)
+    });
     let event = expect_single(&deployment.env, &events, "issuer_address_rotated");
 
     let announced_old: Address = event.field(&deployment.env, "old_address").unwrap();

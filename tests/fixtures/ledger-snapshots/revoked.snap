@@ -47,7 +47,7 @@ protocol-config persistent [sym:SchemaVersion, u32:1] = true
 protocol-config topics=[sym:initialized] data={sym:admin: addr:admin}
 protocol-config topics=[sym:schema_approved] data={sym:version: u32:1}
 issuer-registry topics=[sym:issuer_registered] data={sym:created_at: u64:1000, sym:epoch: u64:1, sym:issuer_address: addr:issuer, sym:issuer_id_hash: bytes:1111111111111111111111111111111111111111111111111111111111111111, sym:metadata_hash: bytes:2222222222222222222222222222222222222222222222222222222222222222, sym:metadata_revision: u32:1, sym:metadata_uri_hash: bytes:0000000000000000000000000000000000000000000000000000000000000000, sym:provenance_commitment: bytes:6363636363636363636363636363636363636363636363636363636363636363}
-proof-registry topics=[sym:proof_registered] data={sym:epoch: u32:1, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333}
+proof-registry topics=[sym:proof_registered] data={sym:disclosure_policy_hash: bytes:0000000000000000000000000000000000000000000000000000000000000000, sym:epoch: u32:1, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333}
 proof-registry topics=[sym:proof_revoked] data={sym:by_admin: false, sym:epoch: u32:2, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333}
 issuer-registry topics=[sym:issuer_revoked] data={sym:effective_ledger: u32:1000, sym:effective_timestamp: u64:1000, sym:epoch: u64:2, sym:issuer_id_hash: bytes:1111111111111111111111111111111111111111111111111111111111111111, sym:updated_at: u64:1000}
 

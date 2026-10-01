@@ -5,3 +5,5 @@ issuer-1	sha256	issuer:example:1	053b8e36043a20ef299e4f154b78a44f7d2583556f39a67
 metadata-1	sha256	metadata:example:1	e92b184606982856761714e76aa125ef86ab5c2dcad7947fe8cd1e5c60c0b558	e92b184606982856761714e76aa125ef86ab5c2dcad7947fe8cd1e5c60c0b558	UTF-8, case-sensitive
 schema-7	u32-be	7	00000007	00000007	unsigned big-endian
 expiration-1700000000	u64-be	1700000000	000000006553f100	000000006553f100	unsigned big-endian
+disclosure-policy-basic	policy-json-sha256	{"fields":["amount","date"],"version":1}	508f1ecf8ffe53de7d1e6330072bf756696f995d2e368896db023f46943cb902	508f1ecf8ffe53de7d1e6330072bf756696f995d2e368896db023f46943cb902	RFC 8785 canonical JSON UTF-8
+disclosure-policy-eligibility	policy-json-sha256	{"fields":["amount"],"purpose":"eligibility","version":1}	dffbb4fc507d601e82b54c769ff56b983180d92838bc0628dfcb0b8310306dbb	dffbb4fc507d601e82b54c769ff56b983180d92838bc0628dfcb0b8310306dbb	RFC 8785 canonical JSON UTF-8

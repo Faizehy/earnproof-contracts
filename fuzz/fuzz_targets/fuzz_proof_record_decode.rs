@@ -11,8 +11,8 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    // Skip if data is too short for a ProofRecord (32+32+32+4+8+8+8 = 124 bytes minimum)
-    if data.len() < 124 {
+    // Skip if data is too short for the fixed hashes and scalar fields.
+    if data.len() < 129 {
         return;
     }
 
@@ -25,12 +25,8 @@ fuzz_target!(|data: &[u8]| {
     // Try to construct a ProofRecord by parsing fixed fields:
     // - proof_id_hash: BytesN<32> (bytes 0-32)
     // - commitment_hash: BytesN<32> (bytes 32-64)
-    // - issuer_address: Address (variable length, typically 32-40 bytes in XDR)
-    // - status: ProofStatus (enum: 0 or 1)
-    // - schema_version: u32
-    // - expires_at: u64
-    // - created_at: u64
-    // - revoked_at: u64
+    // - disclosure_policy_hash: BytesN<32> (bytes 64-96)
+    // - remaining fields are represented by the fuzz target's compact layout
 
     // Extract proof_id_hash (first 32 bytes)
     let proof_id_hash = match BytesN::<32>::try_from(Bytes::from_slice(&env, &data[0..32])) {
@@ -43,6 +39,11 @@ fuzz_target!(|data: &[u8]| {
         Ok(h) => h,
         Err(_) => return,
     };
+    let disclosure_policy_hash =
+        match BytesN::<32>::try_from(Bytes::from_slice(&env, &data[64..96])) {
+            Ok(h) => h,
+            Err(_) => return,
+        };
 
     // Verify that we can safely handle the record
     // In a real scenario, Address parsing would come from the fuzzer input,
@@ -54,11 +55,7 @@ fuzz_target!(|data: &[u8]| {
     );
 
     // Parse status (byte 64, or next available)
-    let status_discriminant = if data.len() > 64 {
-        data[64] % 2 // 0 = Active, 1 = Revoked
-    } else {
-        0
-    };
+    let status_discriminant = data[96] % 2;
 
     let status = match status_discriminant {
         0 => earnproof_shared::ProofStatus::Active,
@@ -66,45 +63,36 @@ fuzz_target!(|data: &[u8]| {
     };
 
     // Parse schema_version (u32, bytes 65-69, big-endian)
-    let schema_version = if data.len() > 68 {
-        u32::from_be_bytes([data[65], data[66], data[67], data[68]])
-    } else {
-        1
-    };
+    let schema_version = u32::from_be_bytes([data[97], data[98], data[99], data[100]]);
 
     // Parse expires_at (u64, bytes 69-77, big-endian)
-    let expires_at = if data.len() > 76 {
+    let expires_at = if data.len() > 108 {
         u64::from_be_bytes([
-            data[69], data[70], data[71], data[72], data[73], data[74], data[75], data[76],
+            data[101], data[102], data[103], data[104], data[105], data[106], data[107], data[108],
         ])
     } else {
         1_000_000
     };
 
     // Parse created_at (u64, bytes 77-85, big-endian)
-    let created_at = if data.len() > 84 {
+    let created_at = if data.len() > 116 {
         u64::from_be_bytes([
-            data[77], data[78], data[79], data[80], data[81], data[82], data[83], data[84],
+            data[109], data[110], data[111], data[112], data[113], data[114], data[115], data[116],
         ])
     } else {
         1_000
     };
 
     // Parse revoked_at (u64, bytes 85-93, big-endian)
-    let revoked_at = if data.len() > 92 {
+    let revoked_at = if data.len() > 124 {
         u64::from_be_bytes([
-            data[85], data[86], data[87], data[88], data[89], data[90], data[91], data[92],
+            data[117], data[118], data[119], data[120], data[121], data[122], data[123], data[124],
         ])
     } else {
         0
     };
 
-    // Parse created_ledger (u32, bytes 93-97, big-endian) when available.
-    let created_ledger = if data.len() > 96 {
-        u32::from_be_bytes([data[93], data[94], data[95], data[96]])
-    } else {
-        1
-    };
+    let created_ledger = u32::from_be_bytes([data[125], data[126], data[127], data[128]]);
 
     let sequence_number = if data.len() > 105 {
         u64::from_be_bytes([
@@ -127,6 +115,7 @@ fuzz_target!(|data: &[u8]| {
     let _proof = ProofRecord {
         proof_id_hash,
         commitment_hash,
+        disclosure_policy_hash,
         issuer_address: dummy_address,
         status,
         schema_version,

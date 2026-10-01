@@ -108,6 +108,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 52] = [
     },
     StorageNamespace {
         contract: "issuer-registry",
+        namespace: "GovernanceAssignment",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "GovernanceRoleAssignment",
+        owner: "governance operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
         namespace: "InstanceLiveUntil",
         arity: 0,
         class: StorageClass::Instance,
