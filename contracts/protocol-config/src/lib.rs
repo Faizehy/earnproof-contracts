@@ -29,6 +29,8 @@ enum DataKey {
     ConfigVersion,
     MaxProofs,
     SchemaVersion(u32),
+    SchemaVersionIndex(u32),
+    SchemaVersionIndexCount,
     SchemaLifecycle(u32),
     SchemaTransitionCount,
     SchemaTransitionSlot(u32),
@@ -260,6 +262,9 @@ impl ProtocolConfigContract {
             .instance()
             .set(&DataKey::ConfigVersion, &1_u32);
         env.storage().instance().set(&DataKey::MaxProofs, &u32::MAX);
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersionIndexCount, &0_u32);
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
@@ -535,6 +540,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
+        Self::append_schema_version_index(env.clone(), version);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
@@ -554,6 +560,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &false);
+        Self::append_schema_version_index(env.clone(), version);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
@@ -692,6 +699,130 @@ impl ProtocolConfigContract {
             .instance()
             .get(&DataKey::ConfigVersion)
             .unwrap_or(0)
+    }
+
+    pub fn get_schema_index(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index_filtered(env, cursor, limit, None)
+    }
+
+    pub fn get_schema_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index(env, cursor, limit)
+    }
+
+    pub fn list_schema_versions(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index(env, cursor, limit)
+    }
+
+    pub fn enumerate_schema_versions(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index(env, cursor, limit)
+    }
+
+    pub fn get_schema_index_by_status(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        approved: bool,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index_filtered(env, cursor, limit, Some(approved))
+    }
+
+    pub fn get_schema_status_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        approved: bool,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        Self::get_schema_index_by_status(env, cursor, limit, approved)
+    }
+
+    pub fn get_schema_index_filtered(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+        approved: Option<bool>,
+    ) -> Vec<earnproof_shared::SchemaVersionSummary> {
+        let total = Self::get_schema_version_index_count(env.clone());
+        let capped_limit = limit.min(earnproof_shared::MAX_SCHEMA_PAGE);
+        let mut page = Vec::new(&env);
+        if cursor >= total {
+            return page;
+        }
+
+        let mut kept = 0_u32;
+        for index in cursor..total {
+            if let Some(version) = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::SchemaVersionIndex(index))
+            {
+                let is_approved = env
+                    .storage()
+                    .persistent()
+                    .get::<_, bool>(&DataKey::SchemaVersion(version))
+                    .unwrap_or(false);
+                if approved
+                    .as_ref()
+                    .is_some_and(|wanted| is_approved != *wanted)
+                {
+                    continue;
+                }
+                if kept >= capped_limit {
+                    break;
+                }
+                page.push_back(earnproof_shared::SchemaVersionSummary {
+                    version,
+                    approved: is_approved,
+                });
+                kept += 1;
+            }
+        }
+        page
+    }
+
+    pub fn get_schema_version_cursor(env: Env) -> u32 {
+        Self::get_schema_version_index_count(env)
+    }
+
+    pub fn get_schema_version_count(env: Env) -> u32 {
+        Self::get_schema_version_index_count(env)
+    }
+
+    pub fn get_schema_count_by_status(env: Env, approved: bool) -> u32 {
+        let total = Self::get_schema_version_index_count(env.clone());
+        let mut count = 0_u32;
+        for index in 0..total {
+            if let Some(version) = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::SchemaVersionIndex(index))
+            {
+                let is_approved = env
+                    .storage()
+                    .persistent()
+                    .get::<_, bool>(&DataKey::SchemaVersion(version))
+                    .unwrap_or(false);
+                if is_approved == approved {
+                    count += 1;
+                }
+            }
+        }
+        count
     }
 
     // ── schema payload size limits ───────────────────────────────────────────
@@ -1343,6 +1474,43 @@ impl ProtocolConfigContract {
             .instance()
             .set(&DataKey::ConfigVersion, &new_version);
         Self::extend_instance_ttl(env);
+    }
+
+    fn append_schema_version_index(env: Env, version: u32) {
+        let total = Self::get_schema_version_index_count(env.clone());
+        for index in 0..total {
+            if let Some(existing) = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::SchemaVersionIndex(index))
+            {
+                if existing == version {
+                    return;
+                }
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersionIndex(total), &version);
+        env.storage().persistent().extend_ttl(
+            &DataKey::SchemaVersionIndex(total),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        let next_total = total
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("schema version index overflow: reached maximum"));
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersionIndexCount, &next_total);
+        Self::extend_instance_ttl(env);
+    }
+
+    fn get_schema_version_index_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SchemaVersionIndexCount)
+            .unwrap_or(0)
     }
 
     fn extend_instance_ttl(env: Env) {

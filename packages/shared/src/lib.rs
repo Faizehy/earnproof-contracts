@@ -62,6 +62,14 @@ pub const MAX_MIGRATION_BATCH: u32 = 100;
 /// both the registration and revocation paths.
 pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
 
+/// Maximum number of issuer entries a single bounded discovery page may return.
+/// The cap is intentionally strict and shared across the registry's public
+/// discovery APIs so callers cannot force large reads into the contract.
+pub const MAX_ISSUER_PAGE: u32 = 20;
+pub const MAX_ISSUER_DISCOVERY_PAGE: u32 = 20;
+pub const MAX_ISSUER_ENUM_PAGE: u32 = 20;
+pub const MAX_SCHEMA_PAGE: u32 = 20;
+
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -596,6 +604,30 @@ pub enum IssuerStatus {
     Revoked,
 }
 
+/// Public issuer summary intended for bounded discovery pages. It excludes the
+/// private metadata commitments and policy values, while still exposing the
+/// stable identifier and current status needed for indexing and filtering.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerDiscoveryEntry {
+    pub issuer_id_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub status: IssuerStatus,
+    pub updated_at: u64,
+}
+
+pub type IssuerSummary = IssuerDiscoveryEntry;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaVersionSummary {
+    pub version: u32,
+    pub approved: bool,
+}
+
+pub type SchemaSummary = SchemaVersionSummary;
+pub type SchemaVersionDiscoveryEntry = SchemaVersionSummary;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProofStatus {
@@ -690,6 +722,9 @@ pub struct ProofRecord {
     pub expires_at: u64,
     pub created_at: u64,
     pub revoked_at: u64,
+    /// Monotonically increasing sequence number for proofs issued by this
+    /// issuer. The first proof for an issuer is `1`.
+    pub sequence_number: u64,
     /// Ledger sequence at which this proof was created (registered).
     /// [`LEDGER_SEQUENCE_UNSET`] marks a legacy record predating this field.
     pub created_ledger: u32,

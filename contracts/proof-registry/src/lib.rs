@@ -684,6 +684,7 @@ impl ProofRegistryContract {
         // `set`, so a proof never exists without its creation metadata.
         let now = env.ledger().timestamp();
         let created_ledger = env.ledger().sequence();
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
@@ -693,6 +694,7 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            sequence_number,
             created_ledger,
             activates_at: 0,
         };
@@ -937,6 +939,7 @@ impl ProofRegistryContract {
         Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
 
         let now = env.ledger().timestamp();
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
@@ -946,6 +949,7 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            sequence_number,
             created_ledger: env.ledger().sequence(),
             activates_at: 0,
         };
@@ -1039,6 +1043,8 @@ impl ProofRegistryContract {
         // `set`, so a proof never exists without its creation metadata.
         let now = env.ledger().timestamp();
         let created_ledger = env.ledger().sequence();
+        let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
+        Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
@@ -1049,6 +1055,7 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            sequence_number,
             created_ledger,
         };
 
@@ -1269,6 +1276,21 @@ impl ProofRegistryContract {
             None
         };
 
+            let sequence_number = Self::next_issuer_proof_sequence(&env, &issuer_address)?;
+            Self::consume_issuer_proof_capacity(&env, &issuer_address)?;
+            let record = ProofRecord {
+                proof_id_hash: entry.proof_id_hash.clone(),
+                commitment_hash: entry.commitment_hash.clone(),
+                issuer_address: issuer_address.clone(),
+                status: ProofStatus::Active,
+                schema_version: entry.schema_version,
+                expires_at: entry.expires_at,
+                created_at: now,
+                revoked_at: 0,
+                sequence_number,
+                created_ledger,
+                activates_at: 0,
+            };
         let key = DataKey::Proof(proof_id_hash.clone());
         if env.storage().persistent().has(&key) {
             return Err(ProofError::ProofAlreadyRegistered);
@@ -1593,6 +1615,125 @@ impl ProofRegistryContract {
             Ok(record) => record.status == ProofStatus::Revoked,
             Err(_) => false,
         }
+    }
+
+    pub fn get_issuer_proof_sequence(env: Env, issuer: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::IssuerLifetimeProofCount(issuer))
+            .unwrap_or(0)
+    }
+
+    pub fn get_proof_sequence_number(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<u64, ProofError> {
+        let record = Self::get_proof(env, proof_id_hash)?;
+        Ok(record.sequence_number)
+    }
+
+    // ── dispute lifecycle ─────────────────────────────────────────────────────
+
+    /// Opens a dispute against a proof, recording a commitment to off-chain
+    /// evidence rather than the evidence itself.
+    ///
+    /// `disputant` must authorize the call; any address may dispute any
+    /// proof regardless of the proof's current status — dispute state is
+    /// tracked entirely independently of `is_valid_proof`, `is_revoked`, and
+    /// expiration, so opening (or resolving, or rejecting) a dispute never
+    /// changes a proof's validity, and revoking or expiring a proof never
+    /// changes its dispute state.
+    ///
+    /// Fails with [`ProofError::DisputeAlreadyOpen`] if this proof already
+    /// has a dispute whose status is `Open`: at most one dispute may be open
+    /// per proof at a time. A prior dispute that reached `Withdrawn`,
+    /// `Resolved`, or `Rejected` does not block a new one — opening again
+    /// simply overwrites that terminal record.
+    pub fn open_dispute(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        disputant: Address,
+        evidence_commitment: BytesN<32>,
+    ) -> Result<(), ProofError> {
+        Self::ensure_not_decommissioned(&env)?;
+        if let Ok(protocol_config) = Self::get_protocol_config(env.clone()) {
+            let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
+            if protocol_client.is_scope_paused(&PauseScope::Disputes) {
+                return Err(ProofError::ContractPaused);
+            }
+        }
+
+        // Confirm the proof exists (any status is disputable).
+        let proof_key = DataKey::Proof(proof_id_hash.clone());
+        let proof: ProofRecord = env
+            .storage()
+            .persistent()
+            .get(&proof_key)
+            .ok_or(ProofError::ProofNotFound)?;
+
+        Self::require_auth(&disputant);
+
+        if let Some(existing) = Self::read_dispute(&env, &proof_id_hash) {
+            if existing.status == DisputeStatus::Open {
+                return Err(ProofError::DisputeAlreadyOpen);
+            }
+        }
+
+        let actor_class = Self::classify_actor(&env, &disputant, &proof.issuer_address);
+        let now = env.ledger().timestamp();
+        let record = DisputeRecord {
+            proof_id_hash: proof_id_hash.clone(),
+            evidence_commitment,
+            status: DisputeStatus::Open,
+            opened_by: disputant.clone(),
+            opened_by_class: actor_class,
+            updated_by: disputant.clone(),
+            updated_by_class: actor_class,
+            opened_at: now,
+            updated_at: now,
+        };
+
+        let dispute_key = DataKey::Dispute(proof_id_hash.clone());
+        env.storage().persistent().set(&dispute_key, &record);
+        Self::extend_proof_key_ttl(env.clone(), &dispute_key);
+
+        DisputeOpened {
+            proof_id_hash,
+            opened_by: disputant,
+            opened_by_class: actor_class,
+            opened_at: now,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Withdraws an open dispute. Only the address that opened it may
+    /// withdraw it — not the admin, and not the proof's issuer unless the
+    /// issuer is the one who opened it.
+    pub fn withdraw_dispute(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        Self::transition_dispute(env, proof_id_hash, DisputeTransition::Withdraw)
+    }
+
+    /// Admin-only: resolves an open dispute in the disputant's favor.
+    pub fn resolve_dispute(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        Self::transition_dispute(env, proof_id_hash, DisputeTransition::Resolve)
+    }
+
+    /// Admin-only: rejects an open dispute as without merit.
+    pub fn reject_dispute(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        Self::transition_dispute(env, proof_id_hash, DisputeTransition::Reject)
+    }
+
+    /// Returns the current dispute record for a proof, if one exists.
+    pub fn get_dispute(env: Env, proof_id_hash: BytesN<32>) -> Result<DisputeRecord, ProofError> {
+        let key = DataKey::Dispute(proof_id_hash);
+        let record = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ProofError::DisputeNotFound)?;
+        Self::extend_proof_key_ttl(env, &key);
+        Ok(record)
     }
 
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
@@ -1950,15 +2091,25 @@ impl ProofRegistryContract {
         if active >= max_active || lifetime >= max_lifetime {
             return Err(ProofError::MalformedInput);
         }
+        let next_active = active.checked_add(1).ok_or(ProofError::MalformedInput)?;
+        let next_lifetime = lifetime.checked_add(1).ok_or(ProofError::MalformedInput)?;
         env.storage().persistent().set(
             &DataKey::IssuerActiveProofCount(issuer.clone()),
-            &active.checked_add(1).ok_or(ProofError::MalformedInput)?,
+            &next_active,
         );
         env.storage().persistent().set(
             &DataKey::IssuerLifetimeProofCount(issuer.clone()),
-            &lifetime.checked_add(1).ok_or(ProofError::MalformedInput)?,
+            &next_lifetime,
         );
         Ok(())
+    }
+
+    fn next_issuer_proof_sequence(env: &Env, issuer: &Address) -> Result<u64, ProofError> {
+        let (_, lifetime, _, _) = Self::get_issuer_proof_usage(env.clone(), issuer.clone());
+        let next = lifetime
+            .checked_add(1)
+            .ok_or(ProofError::MalformedInput)? as u64;
+        Ok(next)
     }
 
     fn consume_schema_rate_limit(
@@ -2399,7 +2550,7 @@ mod test {
             );
         }
 
-        #[cfg(not(any(test, feature = "testutils")))]
+        #[cfg(not(test))]
         env.deployer()
             .update_current_contract_wasm(wasm_hash.clone());
 
@@ -2580,12 +2731,18 @@ mod test {
     ) -> Result<(), ContractError> {
         let issuer_version =
             IssuerRegistryContractClient::new(env, issuer_registry).interface_version();
-        if !earnproof_shared::is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &issuer_version) {
+        if !earnproof_shared::is_interface_compatible(
+            &REQUIRED_ISSUER_REGISTRY_VERSION,
+            &issuer_version,
+        ) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
         let config_version =
             ProtocolConfigContractClient::new(env, protocol_config).interface_version();
-        if !earnproof_shared::is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &config_version) {
+        if !earnproof_shared::is_interface_compatible(
+            &REQUIRED_PROTOCOL_CONFIG_VERSION,
+            &config_version,
+        ) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
         Ok(())
