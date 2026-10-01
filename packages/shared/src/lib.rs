@@ -503,6 +503,12 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    /// The proof registry has reached its configured capacity.
+    ProofCapacityReached = 311,
+    /// Proof-count accounting must be reconciled before registration can proceed.
+    ProofAccountingUnavailable = 312,
+    /// A proof-count counter cannot be incremented without overflowing.
+    ProofCountOverflow = 313,
     /// A batch operation was given zero entries or more than
     /// `MAX_PROOF_BATCH_SIZE` entries.
     /// Recovery: split the batch into chunks of at most `MAX_PROOF_BATCH_SIZE`.
@@ -836,6 +842,20 @@ pub struct UpgradeReceipt {
     pub upgraded_by: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeCompatibilityAttestation {
+    pub version: u32,
+    pub abi_commitment: BytesN<32>,
+    pub storage_commitment: BytesN<32>,
+    pub review_commitment: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestedUpgradeReceipt {
+    pub receipt: UpgradeReceipt,
+    pub attestation: UpgradeCompatibilityAttestation,
 /// Bounded, on-chain record of a proof that has been archived after
 /// expiring or being revoked. Kept separate from `ProofRecord` storage so
 /// live-proof lookups never have to filter out archived entries.

@@ -238,6 +238,15 @@ impl Deployment<'_> {
             &self.admin,
             &self.issuers_address,
             "suspend_issuer",
+            (
+                issuer_id,
+                &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
+            )
+                .into_val(&self.env),
+        );
+        self.issuers.suspend_issuer(
+            issuer_id,
+            &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
             (issuer_id, &reason_commitment).into_val(&self.env),
         );
         self.issuers.suspend_issuer(issuer_id, &reason_commitment);

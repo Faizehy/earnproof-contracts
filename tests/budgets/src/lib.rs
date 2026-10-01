@@ -346,6 +346,45 @@ mod tests {
     }
 
     #[test]
+    fn issuer_registry_max_bulk_suspend_budget() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+
+        let mut issuer_ids = soroban_sdk::Vec::new(&env);
+        for index in 0..20 {
+            client.register_issuer(
+                &bytes(&env, index + 1),
+                &Address::generate(&env),
+                &bytes(&env, index + 21),
+                &bytes(&env, 99),
+            );
+            issuer_ids.push_back(bytes(&env, index + 1));
+        }
+
+        env.cost_estimate().budget().reset_unlimited();
+        client.suspend_issuers(&issuer_ids, &bytes(&env, 0xaa));
+
+        assert_budget(
+            &env,
+            "issuer_registry.suspend_issuers(20)",
+            ISSUER_BULK_SUSPEND_CPU_MAX,
+            ISSUER_BULK_SUSPEND_MEM_MAX,
+        );
+        for index in 0..issuer_ids.len() {
+            assert_eq!(
+                client.get_issuer(&issuer_ids.get(index).unwrap()).status,
+                earnproof_shared::IssuerStatus::Suspended
+            );
+        }
+    }
+
+    #[test]
     fn issuer_registry_revoke_issuer_budget() {
         let env = Env::default();
         env.mock_all_auths();
